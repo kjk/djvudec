@@ -28,6 +28,10 @@ All 11 files are DJVM (multi-page bundled, BZZ-compressed DIRM directory).
 ## C API (include/djvu.h) — jbig2dec flavor
 Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 
+Internal headers are consolidated into a single `src/djvu_internal.h` (one
+labeled section per module: core, zpcodec, bitmap, bzz, jb2, iw44). Every `.c`
+file includes just that one header.
+
 ## Architecture / port map
 | C module            | from C# (DjvuNet)                       | status |
 |---------------------|-----------------------------------------|--------|
@@ -106,6 +110,8 @@ whose INFO gamma != 2.2.
 `bun build.ts test` — runs verification over Specs/*.djvu.
 
 ## Change log (most recent first)
+- merged per-module headers (bitmap/bzz/iw44/jb2/zp) into one src/djvu_internal.h
+  (no functional change; verification unchanged).
 - composite (mask+bg+fg) + GPixmapScaler: 188/189 pages == ddjvu (1 mask edge case).
 - IW44 wavelet decoder (BG44/FG44): 26/26 color images == DjVuLibre IW44Image.
 - text extraction (TXTz/TXTa): 144/144 text pages == djvutxt content.
