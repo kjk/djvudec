@@ -15,6 +15,7 @@ struct djvu_ctx;
 uint8_t *djvu_bzz_decode_all(struct djvu_ctx *ctx, const uint8_t *data,
                              size_t len, size_t *out_len);
 void djvu_free(struct djvu_ctx *ctx, void *ptr);
+void djvu_debug_dump_comps(djvu_doc *doc);
 
 static void on_error(void *user, djvu_severity sev, const char *msg)
 {
@@ -70,6 +71,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "-info")) do_info = 1;
         else if (!strcmp(argv[i], "-text")) do_text = 1;
         else if (!strcmp(argv[i], "-bzzdec")) do_bzz = 1;
+        else if (!strcmp(argv[i], "-comps")) do_info = 2;
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
@@ -100,6 +102,8 @@ int main(int argc, char **argv)
     }
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) { fprintf(stderr, "cannot open document\n"); free(data); djvu_ctx_free(ctx); return 1; }
+
+    if (do_info == 2) djvu_debug_dump_comps(doc);
 
     if (do_info || (!out && !do_text)) {
         int n = djvu_doc_page_count(doc);

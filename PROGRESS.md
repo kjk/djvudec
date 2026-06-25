@@ -31,11 +31,11 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 ## Architecture / port map
 | C module            | from C# (DjvuNet)                       | status |
 |---------------------|-----------------------------------------|--------|
-| bytestream.c        | IO/DjvuReader.cs (BE/LE memory reader)  | DONE   |
+| (readers inline)    | IO/DjvuReader.cs (BE/LE in djvu_internal)| DONE   |
 | zptable.c           | Compression/ZPCodec.cs default table    | DONE   |
 | zpcodec.c           | Compression/ZPCodec.cs (decode only)    | DONE   |
-| iff.c / document.c  | Parser + DataChunks (DJVM/DIRM/INFO)    | WIP    |
-| bzz.c               | Compression/BSInputStream + BzzReader   | TODO   |
+| document.c          | Parser + DataChunks (DJVM/DIRM/INFO)    | DONE   |
+| bzz.c               | Compression/BSInputStream (decode)      | DONE   |
 | jb2.c               | JB2/* (decode)                          | TODO   |
 | iw44.c              | Wavelet/* (decode)                      | TODO   |
 | bitmap.c / pixmap.c | Graphics/Bitmap, PixelMap               | TODO   |
@@ -43,13 +43,26 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 | render/compose      | DjvuPage composite (mask+fg+bg)         | TODO   |
 
 ## Milestones
-1. **Page info** (no codecs): DJVM/DIRM offset scan + INFO chunk → page count + dims.
-   Verify against `ddjvu` dims. ← current
-2. **ZP + JB2** → bitonal page bitmap; verify vs `ddjvu -format=pgm`.
-3. **BZZ** → DIRM names (INCL resolution), text chunks.
-4. **Text extraction**; verify vs `djvutxt`.
+1. **Page info** (no codecs): DJVM/DIRM + INFO → page count + dims. ✅ DONE
+   (all 11 Specs files match ddjvu dims)
+2. **BZZ** decompressor. ✅ DONE (round-trips vs `bzz -e`; decodes real DIRM)
+   - full DIRM parse: component ids/types resolved (INCL resolution ready)
+3. **ZP + JB2** → bitonal page bitmap; verify vs `ddjvu -format=pgm`. ← NEXT
+   (9/11 files are bitonal; pages reference a shared Djbz dict via INCL→DJVI)
+4. **Text extraction** (Txta/Txtz, BZZ); verify vs `djvutxt`.
 5. **IW44** → color page; full composite; verify vs `ddjvu`.
 6. Page scaling / subsample to requested dimensions.
+
+## Notes for next session (JB2)
+- Page FORM:DJVU layout: INFO, INCL (-> "dict0006.iff" shared dict), Sjbz (the
+  JB2 bitonal mask), optional FG44/BG44 (color), FGbz (palette), Txta/Txtz.
+- INCL id resolves via djvu_doc_component_offset(); shared dict is a FORM:DJVI
+  containing a Djbz chunk (JB2 dictionary, no image).
+- Sjbz + Djbz both decode with the JB2 codec (JB2/JB2Codec.cs). JB2 uses the ZP
+  coder directly (djvu_zp_decode with NumContext context arrays).
+- For bitonal pages the composite output == the JB2 mask rendered 0/255 gray;
+  compare against `ddjvu -format=pgm -page=N`.
+- C# entry points: JB2Image.Decode / JB2Dictionary; JB2Codec.cs is the core.
 
 ## Build / test
 `bun build.ts` — builds ref tools (once), the C library + test harness with clang.

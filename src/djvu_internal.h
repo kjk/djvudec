@@ -16,6 +16,14 @@ void *djvu_alloc(djvu_ctx *ctx, size_t size);
 void  djvu_free(djvu_ctx *ctx, void *ptr);
 void  djvu_errorf(djvu_ctx *ctx, djvu_severity sev, const char *fmt, ...);
 
+/* A component listed in the DJVM directory (DIRM). */
+typedef struct {
+    uint32_t offset;     /* file offset of the component's "FORM" tag */
+    uint32_t size;       /* component size from DIRM (0 if unknown) */
+    char    *id;         /* component id used by INCL refs (NUL-term, owned) */
+    int      type;       /* 0=include(DJVI) 1=page 2=thumb 3=shared-anno */
+} djvu_component;
+
 /* A displayable page = a FORM:DJVU component in the document. */
 typedef struct {
     uint32_t form_off;   /* file offset of the "FORM" tag */
@@ -30,7 +38,12 @@ struct djvu_doc {
     size_t len;
     int npages;
     djvu_page_int *pages;
+    int ncomp;
+    djvu_component *comps;   /* all DIRM components, in directory order */
 };
+
+/* Resolve an INCL component id to its FORM file offset; 0 if not found. */
+uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id);
 
 /* big-endian / little-endian readers over the file buffer (bounds-checked
    by callers; return 0 past end) */

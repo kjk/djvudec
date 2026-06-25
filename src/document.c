@@ -1,6 +1,7 @@
 /* document.c -- context, document open/close, IFF/DJVM/DIRM/INFO parsing.
  * Ported from DjvuNet Parser/DjvuParser.cs + DataChunks/{DirmChunk,InfoChunk}.cs */
 #include "djvu_internal.h"
+#include "djvu_bzz.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -107,7 +108,19 @@ static int page_load_info(djvu_doc *doc, djvu_page_int *pg)
 
 /* ---- container ---- */
 
-/* Collect all FORM:DJVU components from a DJVM directory (DIRM offsets). */
+static char *dup_cstr(djvu_ctx *ctx, const char *s, size_t maxlen, size_t *consumed)
+{
+    size_t n = 0;
+    char *r;
+    while (n < maxlen && s[n]) n++;
+    r = (char *)djvu_alloc(ctx, n + 1);
+    if (r) { memcpy(r, s, n); r[n] = 0; }
+    *consumed = (n < maxlen) ? n + 1 : n;   /* skip the NUL if present */
+    return r;
+}
+
+/* Parse a DJVM directory (DIRM): component offsets + BZZ-compressed
+   sizes/flags/ids. Builds doc->comps and doc->pages. */
 static int load_djvm(djvu_doc *doc, uint32_t dirm_data, uint32_t dirm_size)
 {
     djvu_ctx *ctx = doc->ctx;
@@ -115,38 +128,117 @@ static int load_djvm(djvu_doc *doc, uint32_t dirm_data, uint32_t dirm_size)
     size_t len = doc->len;
     uint32_t pos = dirm_data;
     uint32_t dirm_end = dirm_data + dirm_size;
-    int count, i;
-    uint32_t *offs;
-    int npages = 0;
+    int count, i, npages = 0;
+    int version, bundled;
+    uint8_t flagbyte;
+    uint8_t *dir = NULL;       /* decompressed directory */
+    size_t dirlen = 0, dp = 0;
+    int have_dir = 0;
 
     if (pos + 3 > dirm_end || dirm_end > len) return -1;
-    /* flag byte (bundled bit + version), then u16 count */
-    pos += 1;
+    flagbyte = data[pos++];
+    bundled = (flagbyte >> 7) & 1;
+    version = flagbyte & 0x7f;
     count = (int)djvu_rd_u16be(data + pos);
     pos += 2;
-    if (count <= 0 || (size_t)pos + (size_t)count * 4 > len) return -1;
+    if (count <= 0) return -1;
 
-    offs = (uint32_t *)djvu_alloc(ctx, sizeof(uint32_t) * count);
-    if (!offs) return -1;
-    for (i = 0; i < count; i++)
-        offs[i] = djvu_rd_u32be(data + pos + (uint32_t)i * 4);
-    /* (the remaining BZZ-compressed name/size section is parsed later) */
-
+    doc->comps = (djvu_component *)djvu_alloc(ctx, sizeof(djvu_component) * count);
     doc->pages = (djvu_page_int *)djvu_alloc(ctx, sizeof(djvu_page_int) * count);
-    if (!doc->pages) { djvu_free(ctx, offs); return -1; }
+    if (!doc->comps || !doc->pages) return -1;
+    memset(doc->comps, 0, sizeof(djvu_component) * count);
     memset(doc->pages, 0, sizeof(djvu_page_int) * count);
+    doc->ncomp = count;
 
+    /* component offsets (bundled documents only) */
+    if (bundled) {
+        if ((size_t)pos + (size_t)count * 4 > len) return -1;
+        for (i = 0; i < count; i++)
+            doc->comps[i].offset = djvu_rd_u32be(data + pos + (uint32_t)i * 4);
+        pos += (uint32_t)count * 4;
+    }
+
+    /* BZZ-compressed section: sizes, flags, ids */
+    if (pos < dirm_end) {
+        dir = djvu_bzz_decode_all(ctx, data + pos, dirm_end - pos, &dirlen);
+    }
+    if (dir) {
+        size_t flags_off, sp;
+        /* sizes: u24 BE * count */
+        for (i = 0; i < count && dp + 3 <= dirlen; i++, dp += 3)
+            doc->comps[i].size = djvu_rd_u24be(dir + dp);
+        /* flags: u8 * count */
+        flags_off = dp;
+        for (i = 0; i < count && dp < dirlen; i++, dp++) {
+            uint8_t fl = dir[dp];
+            doc->comps[i].type = (version == 0) ? ((fl & 0x01) ? 1 : 0)
+                                                : (fl & 0x3f);
+        }
+        /* strings: id [name] [title] per component */
+        sp = dp;
+        for (i = 0; i < count && sp < dirlen; i++) {
+            uint8_t fl = (flags_off + (size_t)i < dirlen) ? dir[flags_off + i] : 0;
+            int has_name, has_title;
+            size_t used;
+            if (version == 0) {
+                has_name = (fl & 0x02) != 0; has_title = (fl & 0x04) != 0;
+            } else {
+                has_name = (fl & 0x80) != 0; has_title = (fl & 0x40) != 0;
+            }
+            doc->comps[i].id = dup_cstr(ctx, (char *)dir + sp, dirlen - sp, &used);
+            sp += used;
+            if (has_name && sp < dirlen) {
+                char *nm = dup_cstr(ctx, (char *)dir + sp, dirlen - sp, &used);
+                djvu_free(ctx, nm); sp += used;   /* name (file name) unused */
+            }
+            if (has_title && sp < dirlen) {
+                char *tt = dup_cstr(ctx, (char *)dir + sp, dirlen - sp, &used);
+                djvu_free(ctx, tt); sp += used;   /* title unused */
+            }
+        }
+        djvu_free(ctx, dir);
+        dir = NULL;
+        have_dir = 1;
+    }
+
+    /* build page list: components of type "page" (or, fallback, FORM:DJVU). */
     for (i = 0; i < count; i++) {
-        uint32_t o = offs[i];
-        if ((size_t)o + 12 > len) continue;
-        if (!djvu_tag_eq(data + o, "FORM")) continue;
-        if (!djvu_tag_eq(data + o + 8, "DJVU")) continue;  /* only pages */
+        uint32_t o = doc->comps[i].offset;
+        int is_page = (doc->comps[i].type == 1);
+        if (!bundled) continue;
+        if ((size_t)o + 12 > len || !djvu_tag_eq(data + o, "FORM")) continue;
+        if (!have_dir) is_page = djvu_tag_eq(data + o + 8, "DJVU");
+        if (!is_page) continue;
         doc->pages[npages].form_off = o;
         doc->pages[npages].form_size = djvu_rd_u32be(data + o + 4);
         npages++;
     }
     doc->npages = npages;
-    djvu_free(ctx, offs);
+    return 0;
+}
+
+/* debug: list components (used by the test harness) */
+void djvu_debug_dump_comps(djvu_doc *doc)
+{
+    int i;
+    const char *tn[4] = {"incl", "page", "thumb", "anno"};
+    if (!doc) return;
+    printf("components: %d\n", doc->ncomp);
+    for (i = 0; i < doc->ncomp; i++) {
+        djvu_component *c = &doc->comps[i];
+        printf("  [%d] off=%u size=%u type=%s id=%s\n", i, c->offset, c->size,
+               (c->type >= 0 && c->type < 4) ? tn[c->type] : "?",
+               c->id ? c->id : "(null)");
+    }
+}
+
+uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id)
+{
+    int i;
+    if (!doc || !id) return 0;
+    for (i = 0; i < doc->ncomp; i++)
+        if (doc->comps[i].id && strcmp(doc->comps[i].id, id) == 0)
+            return doc->comps[i].offset;
     return 0;
 }
 
@@ -224,7 +316,13 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
 
 void djvu_doc_close(djvu_doc *doc)
 {
+    int i;
     if (!doc) return;
+    if (doc->comps) {
+        for (i = 0; i < doc->ncomp; i++)
+            djvu_free(doc->ctx, doc->comps[i].id);
+        djvu_free(doc->ctx, doc->comps);
+    }
     djvu_free(doc->ctx, doc->pages);
     djvu_free(doc->ctx, doc);
 }
