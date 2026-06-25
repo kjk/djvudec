@@ -11,6 +11,7 @@
 // ignored). Runs over every .djvu under testfiles/ recursively; set the
 // DJVU_SPECS env var to point the scan at a different directory. Files are
 // tested in parallel across one worker per CPU; `-cpu N` overrides the count.
+// `-rand N` limits the run to N randomly chosen files from the corpus.
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
 import { tmpdir, cpus } from "os";
 import { join, dirname, basename } from "path";
@@ -169,7 +170,24 @@ async function main(): Promise<number> {
   const bad: string[] = [];
   const tbad: string[] = [];
 
-  const files = walkDjvu(SPECS).sort();
+  let files = walkDjvu(SPECS).sort();
+  const totalFiles = files.length;
+
+  // -rand N: test only N randomly chosen files from the corpus.
+  const randArg = process.argv.indexOf("-rand");
+  if (randArg >= 0) {
+    const nRand = parseInt(process.argv[randArg + 1]);
+    if (nRand > 0 && nRand < files.length) {
+      const shuffled = [...files];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      files = shuffled.slice(0, nRand);
+    } else if (nRand > 0) {
+      files = files.slice(0, nRand);
+    }
+  }
 
   // -cpu N overrides the worker count (default: number of logical CPUs).
   const cpuArg = process.argv.indexOf("-cpu");
@@ -180,7 +198,11 @@ async function main(): Promise<number> {
       files.length || 1,
     ),
   );
-  console.log(`testing ${files.length} files with ${nWorkers} workers`);
+  const randNote =
+    randArg >= 0 && files.length < totalFiles
+      ? ` (${files.length} random of ${totalFiles})`
+      : "";
+  console.log(`testing ${files.length} files${randNote} with ${nWorkers} workers`);
 
   // Test one file: render+text every page, accumulate global counters, and
   // print one line when done. ref/mine are this worker's private temp paths.
