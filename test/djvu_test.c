@@ -173,15 +173,22 @@ int main(int argc, char **argv)
 
     if (do_bench) {
         int n = djvu_doc_page_count(doc);
+        const int REPS = 3;   /* time each page REPS times, keep the fastest */
         for (i = 0; i < n; i++) {
-            double t0 = bench_now_ms();
-            djvu_image *img = djvu_page_render(doc, i, 1);
-            double mine = bench_now_ms() - t0;
-            if (img) djvu_image_destroy(ctx, img);
-            double lib = bench_ddjvu_page_ms(in, i);
-            if (lib < 0 || !img) {
+            double mine = -1, lib = -1;
+            int ok = 1, r;
+            for (r = 0; r < REPS; r++) {
+                double t0 = bench_now_ms();
+                djvu_image *img = djvu_page_render(doc, i, 1);
+                double dt = bench_now_ms() - t0;
+                if (img) djvu_image_destroy(ctx, img); else ok = 0;
+                if (mine < 0 || dt < mine) mine = dt;
+                double l = bench_ddjvu_page_ms(in, i);
+                if (l >= 0 && (lib < 0 || l < lib)) lib = l;
+            }
+            if (lib < 0 || !ok) {
                 printf("page %d, djvulibre %s, ours %.2f ms%s\n", i + 1,
-                       lib < 0 ? "ERROR" : "ok", mine, img ? "" : " (ours FAILED)");
+                       lib < 0 ? "ERROR" : "ok", mine, ok ? "" : " (ours FAILED)");
                 continue;
             }
             double diff = mine - lib;            /* + => ours slower */
