@@ -4,11 +4,11 @@
 //
 //   bun cmd/ensure-ascii-names.ts <dir>
 //
-// Walks <dir> recursively. For each file with a non-ASCII name it strips
-// diacritics (NFKD) and replaces any remaining non-ASCII character with '_',
-// resolving collisions with a numeric suffix. Directories are descended into
-// but not renamed. Prints each rename (old -> new) and a progress line every
-// 100 files processed.
+// Walks <dir> recursively. For each file or subdirectory with a non-ASCII name
+// it strips diacritics (NFKD) and replaces any remaining non-ASCII character
+// with '_', resolving collisions with a numeric suffix. Directories are renamed
+// bottom-up (contents first) so paths stay valid mid-walk. Prints each rename
+// (old -> new) and a progress line every 100 files processed.
 import { readdirSync, statSync, renameSync, existsSync } from "fs";
 import { join, extname } from "path";
 
@@ -48,19 +48,25 @@ function uniqueAsciiName(dir: string, name: string): string {
 
 let processed = 0;
 
+// Strip non-ASCII from `name` in `parent`, renaming the entry. Returns nothing;
+// used for both files and (after their contents) directories.
+function fixName(parent: string, name: string, p: string) {
+  if (!hasNonAscii(name)) return;
+  const np = join(parent, uniqueAsciiName(parent, name));
+  process.stdout.write(`rename: ${p} -> ${np}\n`);
+  renameSync(p, np);
+}
+
 function walk(d: string) {
   for (const entry of readdirSync(d, { withFileTypes: true })) {
     const p = join(d, entry.name);
     if (entry.isDirectory()) {
-      walk(p);
+      walk(p); // descend first; p is still valid under the old name
+      fixName(d, entry.name, p); // then rename the directory itself
       continue;
     }
     processed++;
-    if (hasNonAscii(entry.name)) {
-      const np = join(d, uniqueAsciiName(d, entry.name));
-      process.stdout.write(`rename: ${p} -> ${np}\n`);
-      renameSync(p, np);
-    }
+    fixName(d, entry.name, p);
     if (processed % 100 === 0) process.stdout.write(`processed ${processed} files\n`);
   }
 }
