@@ -389,6 +389,20 @@ static void init_library(jb2_codec *c, jb2_image *jim)
 
 /* ---------- short list (row bottom tracking) ---------- */
 
+/* ResetNumcoder: clear all number-coder distributions and the bitcell tree.
+   Emitted periodically by the encoder (RequiredDictOrReset) to bound memory. */
+static void reset_numcoder(jb2_codec *c)
+{
+    c->dist_comment_byte = 0; c->dist_comment_length = 0;
+    c->dist_record_type = 0; c->dist_match_index = 0;
+    c->abs_loc_x = 0; c->abs_loc_y = 0; c->abs_size_x = 0; c->abs_size_y = 0;
+    c->image_size_dist = 0; c->inherited_shape_count_dist = 0;
+    c->rel_loc_x_cur = 0; c->rel_loc_x_last = 0;
+    c->rel_loc_y_cur = 0; c->rel_loc_y_last = 0;
+    c->rel_size_x = 0; c->rel_size_y = 0;
+    c->ncells = 1;   /* drop the tree; index 0 stays reserved */
+}
+
 static void fill_shortlist(jb2_codec *c, int v)
 {
     c->shortlist[0] = c->shortlist[1] = c->shortlist[2] = v;
@@ -640,9 +654,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
 
     case REC_RequiredDictOrReset:
         if (!c->got_start_record) code_inherited_shape_count(c, jim);
-        /* else: ResetNumcoder -- not needed for our single-stream decode of
-           the test corpus; left unimplemented intentionally. */
-        else c->error = c->error; /* no-op */
+        else reset_numcoder(c);
         break;
 
     case REC_EndOfData:

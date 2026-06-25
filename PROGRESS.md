@@ -44,8 +44,13 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 | render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
 
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
-`python3 test/verify.py`:
+`python3 test/verify.py` (Specs/*.djvu):
   render (mask=pgm, bg/color=ppm): MATCH=188 MISMATCH=1; text: MATCH=144.
+`python3 test/verify_dir.py <dir>` (sampled, Unicode-path safe) on a 36-file
+real-world set (Z:\sumtest, books up to 1177 pages): render 138 match / 3
+mismatch / 0 err; text 141/141. The 3 render misses are the same fg-stencil
+ddjvu quirk (GPU Gems, ~2-9 px/page). Rotation, pure-photo (BG44-only) pages,
+and large shared dictionaries with mid-stream numcoder resets all handled.
 - The 1 render mismatch is 1998_compression p19 (680 px / 0.008%). Diagnosed:
   NOT a decode bug. Verified byte-for-byte against DjVuLibre internals:
     * our JB2 mask == JB2Image::get_bitmap (0 diff, whole image)

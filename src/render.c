@@ -52,6 +52,34 @@ static jb2_image *load_page_dict(djvu_doc *doc, uint32_t form_off)
     return NULL;
 }
 
+/* Rotate a top-down image clockwise by k quarter-turns (k=1,2,3). Returns a
+   new image; frees nothing. */
+static djvu_image *image_rotate_cw(djvu_ctx *ctx, djvu_image *src, int k)
+{
+    int comp = (int)src->format;   /* 1 or 3 bytes/pixel */
+    int sw = src->width, sh = src->height;
+    int dw = (k == 2) ? sw : sh;
+    int dh = (k == 2) ? sh : sw;
+    djvu_image *d = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
+    int x, y, c;
+    if (!d) return NULL;
+    d->width = dw; d->height = dh; d->format = src->format; d->stride = dw * comp;
+    d->data = (uint8_t *)djvu_alloc(ctx, (size_t)dw * dh * comp);
+    if (!d->data) { djvu_free(ctx, d); return NULL; }
+    for (y = 0; y < dh; y++) {
+        for (x = 0; x < dw; x++) {
+            int sx, sy;
+            if (k == 1) { sx = y; sy = sh - 1 - x; }          /* 90 CW */
+            else if (k == 2) { sx = sw - 1 - x; sy = sh - 1 - y; } /* 180 */
+            else { sx = sw - 1 - y; sy = x; }                  /* 270 CW */
+            for (c = 0; c < comp; c++)
+                d->data[((size_t)y * dw + x) * comp + c] =
+                    src->data[((size_t)sy * sw + sx) * comp + c];
+        }
+    }
+    return d;
+}
+
 djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
 {
     djvu_ctx *ctx;
@@ -69,28 +97,32 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
     pg = &doc->pages[page_no];
     form_off = pg->form_off;
 
-    sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL);
-    if (!sjbz) {
-        djvu_errorf(ctx, DJVU_SEVERITY_ERROR,
-                    "page %d: no Sjbz (color pages not yet supported)", page_no);
-        return NULL;
-    }
-
-    dict = load_page_dict(doc, form_off);
-    img = djvu_jb2_decode(ctx, sjbz, sz, dict);
-    if (!img) goto done;
-
-    /* color/gray-background page: composite mask + BG44 + foreground */
     {
         uint32_t cs;
         int has_bg = djvu_form_find_chunk(doc, form_off, "BG44", &cs, NULL) != NULL;
         int has_fg = djvu_form_find_chunk(doc, form_off, "FG44", &cs, NULL) != NULL;
+
+        sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL);
+        if (sjbz) {
+            dict = load_page_dict(doc, form_off);
+            img = djvu_jb2_decode(ctx, sjbz, sz, dict);
+            if (!img) goto done;
+        }
+
+        /* color/gray page: composite (background + optional mask/foreground).
+           Works with img == NULL too (pure-photo pages = BG44 only). */
         if ((has_bg || has_fg) && subsample == 1 && !getenv("DJVU_NOCOMPOSE")) {
             djvu_page_info pi;
             if (djvu_doc_page_info(doc, page_no, &pi) == 0) {
                 out = djvu_compose_page(doc, page_no, img, pi.width, pi.height);
                 goto done;
             }
+        }
+
+        if (!sjbz) {
+            djvu_errorf(ctx, DJVU_SEVERITY_ERROR,
+                        "page %d: nothing to render (no Sjbz/BG44)", page_no);
+            goto done;
         }
     }
 
@@ -151,6 +183,15 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
 done:
     djvu_jb2_free(ctx, img);
     djvu_jb2_free(ctx, dict);
+    /* apply page rotation (INFO flag) to match ddjvu's upright display */
+    if (out && subsample == 1) {
+        djvu_page_info pi;
+        if (djvu_doc_page_info(doc, page_no, &pi) == 0 && pi.rotation != 0) {
+            int k = (pi.rotation == 90) ? 3 : (pi.rotation == 180) ? 2 : 1;
+            djvu_image *r = image_rotate_cw(ctx, out, k);
+            if (r) { djvu_image_destroy(ctx, out); out = r; }
+        }
+    }
     return out;
 }
 
