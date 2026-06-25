@@ -10,6 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* test hook into the internal BZZ decoder */
+struct djvu_ctx;
+uint8_t *djvu_bzz_decode_all(struct djvu_ctx *ctx, const uint8_t *data,
+                             size_t len, size_t *out_len);
+void djvu_free(struct djvu_ctx *ctx, void *ptr);
+
 static void on_error(void *user, djvu_severity sev, const char *msg)
 {
     (void)user;
@@ -55,7 +61,7 @@ static int write_pnm(const char *path, djvu_image *img)
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
-    int do_info = 0, do_text = 0, page = 1;
+    int do_info = 0, do_text = 0, do_bzz = 0, page = 1;
     int i, rc = 0;
     uint8_t *data; size_t len;
     djvu_ctx *ctx; djvu_doc *doc;
@@ -63,6 +69,7 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-info")) do_info = 1;
         else if (!strcmp(argv[i], "-text")) do_text = 1;
+        else if (!strcmp(argv[i], "-bzzdec")) do_bzz = 1;
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
@@ -76,6 +83,21 @@ int main(int argc, char **argv)
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
 
     ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
+
+    if (do_bzz) {
+        /* decode a raw BZZ stream and write to -out (or stdout) */
+        size_t olen = 0;
+        uint8_t *o = djvu_bzz_decode_all(ctx, data, len, &olen);
+        if (!o) { rc = 1; }
+        else {
+            FILE *f = out ? fopen(out, "wb") : stdout;
+            if (f) { fwrite(o, 1, olen, f); if (out) fclose(f); }
+            djvu_free(ctx, o);
+        }
+        djvu_ctx_free(ctx);
+        free(data);
+        return rc;
+    }
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) { fprintf(stderr, "cannot open document\n"); free(data); djvu_ctx_free(ctx); return 1; }
 

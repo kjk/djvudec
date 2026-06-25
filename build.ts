@@ -15,6 +15,7 @@ const REF = `${ROOT}/ref_build`;
 const SRCS = [
   "src/zptable.c",
   "src/zpcodec.c",
+  "src/bzz.c",
   "src/document.c",
   "src/render.c",
   "src/text.c",
@@ -32,7 +33,7 @@ async function buildRef() {
     `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
     `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
   const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
-  for (const tool of ["ddjvu", "djvutxt"]) {
+  for (const tool of ["ddjvu", "djvutxt", "bzz"]) {
     const exe = `${REF}/${tool}.exe`;
     if (existsSync(exe)) continue;
     console.log(`building ref tool ${tool}...`);
