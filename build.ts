@@ -1,0 +1,77 @@
+// build.ts -- build & test driver for the djvu C port (run with `bun build.ts`).
+//
+//   bun build.ts          build ref tools (if needed) + the C library/harness
+//   bun build.ts ref      (re)build the DjVuLibre reference tools
+//   bun build.ts test     build, then verify against ddjvu/djvutxt
+//
+import { $ } from "bun";
+import { existsSync, readdirSync, mkdirSync } from "fs";
+
+const ROOT = import.meta.dir;
+const DJVULIBRE = "C:/Users/kjk/src/DjVuLibre";
+const SPECS = "C:/Users/kjk/src/DjvuNet/Specs";
+const REF = `${ROOT}/ref_build`;
+
+const SRCS = [
+  "src/zptable.c",
+  "src/zpcodec.c",
+  "src/document.c",
+  "src/render.c",
+  "src/text.c",
+];
+
+function specFiles(): string[] {
+  return readdirSync(SPECS).filter((f) => f.toLowerCase().endsWith(".djvu"));
+}
+
+// Build ddjvu.exe / djvutxt.exe from DjVuLibre (static, decode oracle).
+async function buildRef() {
+  mkdirSync(REF, { recursive: true });
+  const common =
+    `-std=c++14 -w -O1 -DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
+    `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
+    `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
+  const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
+  for (const tool of ["ddjvu", "djvutxt"]) {
+    const exe = `${REF}/${tool}.exe`;
+    if (existsSync(exe)) continue;
+    console.log(`building ref tool ${tool}...`);
+    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${DJVULIBRE}/tools/${tool}.cpp -ladvapi32 -o ${exe}`;
+  }
+  console.log("ref tools ready");
+}
+
+// Build the C library + test harness.
+async function build() {
+  console.log("building djvu_test...");
+  await $`clang -std=c11 -g -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Iinclude -Isrc ${{ raw: SRCS.join(" ") }} test/djvu_test.c -o djvu_test.exe`.cwd(ROOT);
+  console.log("built djvu_test.exe");
+}
+
+// Verify page info (count + dimensions) against ddjvu, and text against djvutxt.
+async function test() {
+  await buildRef();
+  await build();
+  let pass = 0, fail = 0;
+  for (const f of specFiles()) {
+    const path = `${SPECS}/${f}`;
+    // our page info
+    const mine = await $`./djvu_test.exe -info ${path}`.cwd(ROOT).quiet().text();
+    const myPages = parseInt((mine.match(/pages: (\d+)/) || [])[1] || "-1");
+    // reference: render page 1 to pgm and read its dimensions
+    const tmp = `${REF}/_ref.pgm`;
+    await $`${REF}/ddjvu.exe -format=pgm -page=1 ${path} ${tmp}`.quiet().nothrow();
+    const head = await $`head -c 32 ${tmp}`.quiet().text().catch(() => "");
+    const dims = head.split(/\s+/).slice(1, 3).join("x");
+    const myP1 = (mine.match(/page 1: (\d+x\d+)/) || [])[1] || "?";
+    const ok = myP1 === dims;
+    console.log(`${ok ? "PASS" : "FAIL"} ${f}: pages=${myPages} p1=${myP1} ref=${dims}`);
+    ok ? pass++ : fail++;
+  }
+  console.log(`\n${pass} pass, ${fail} fail`);
+}
+
+const cmd = process.argv[2];
+if (cmd === "ref") await buildRef();
+else if (cmd === "test") await test();
+else { await buildRef(); await build(); }

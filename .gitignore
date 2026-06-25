@@ -1,0 +1,14 @@
+# build outputs
+*.exe
+*.lib
+*.exp
+*.pdb
+*.o
+*.obj
+# reference tools are rebuilt from DjVuLibre by build.ts
+ref_build/
+# scratch render/text outputs
+*.pnm
+*.pgm
+*.ppm
+*.pbm
