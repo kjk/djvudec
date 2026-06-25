@@ -132,9 +132,11 @@ subsample=1. Test harness flags: `-type -zones -outline -links`.
 
 ## Internal headers
 All internal declarations live in a **single** `src/djvu_internal.h` (one
-labeled section per module: core, zpcodec, bitmap, bzz, jb2, iw44). Every `.c`
-file includes just that one header. (Previously these were five separate
-headers: djvu_bitmap.h / djvu_bzz.h / djvu_iw44.h / djvu_jb2.h / djvu_zp.h.)
+labeled section per module: core, zpcodec, bitmap, bzz, jb2, iw44, scaler,
+compose, debug). Every `.c` file includes just that one header. The test
+harness (`test/djvu_test.c`) also includes it for `djvu_debug_*` and BZZ hooks.
+(Previously these were five separate headers: djvu_bitmap.h / djvu_bzz.h /
+djvu_iw44.h / djvu_jb2.h / djvu_zp.h.)
 
 ## C → C# source map
 Paths relative to `C:\Users\kjk\src\DjvuNet\DjvuNet\`.
@@ -142,7 +144,8 @@ Paths relative to `C:\Users\kjk\src\DjvuNet\DjvuNet\`.
 | C file (`src/`) | C# source(s) (`DjvuNet/`) |
 |---|---|
 | `document.c` | `Parser/DjvuParser.cs`, `DjvuDocument.cs`; chunks `DataChunks/DjvmChunk.cs`, `DirmChunk.cs`, `InfoChunk.cs`, `DjvuChunk.cs`, `DjviChunk.cs`, `InclChunk.cs` |
-| `djvu_internal.h` (byte readers) | `IO/DjvuReader.cs` |
+| `djvu_internal.h` (byte readers, `djvu_buf_reader`) | `IO/DjvuReader.cs` |
+| `bufread.c` | (shared `djvu_br_*` helpers for outline/text payloads) |
 | `zptable.c` | `Compression/ZPTable.cs` (+ default table block in `ZPCodec.cs`) |
 | `zpcodec.c` | `Compression/ZPCodec.cs` (decode path only) |
 | `bzz.c` | `Compression/BSInputStream.cs`, `BSBaseStream.cs`; decode side of `BzzReader.cs` |
@@ -153,8 +156,10 @@ Paths relative to `C:\Users\kjk\src\DjvuNet\DjvuNet\`.
 | `text.c` | `Text/PageText.cs`, `PageTextItem.cs`; chunks `DataChunks/TxtzChunk.cs`, `TxtaChunk.cs`; zone tree from `DataChunks/Text/TextChunk.cs`, `TextZone.cs` |
 | `outline.c` | `DataChunks/NavmChunk.cs`, `Navigation/Bookmark.cs` |
 | `annot.c` | annotation chunks (`DataChunks/AntaChunk.cs`, `AntzChunk.cs`); maparea S-expr parsing (DjVuLibre `ddjvu_anno_get_hyperlinks` equivalent) |
-| `compose.c` | `DjvuImage.cs` (composite/`GetPixmap`) + `Graphics/PixelMapScaler.cs` (`GPixmapScaler`); pixel ops from `Graphics/PixelMap.cs`, `Pixel.cs` |
+| `scaler.c` | `Graphics/PixelMapScaler.cs` (`GPixmapScaler`) |
+| `compose.c` | `DjvuImage.cs` (composite/`GetPixmap`); pixel ops from `Graphics/PixelMap.cs`, `Pixel.cs` |
 | `render.c` | `DjvuPage.cs` (page orchestration: mask + bg + fg layer selection) |
+| `debug.c` | (test-harness helpers only; no C# counterpart) |
 
 Notes:
 - `DataChunks/*Chunk.cs` are thin wrappers in C#; in the C port their logic is

@@ -104,6 +104,60 @@ static inline int djvu_y_bottomup_to_topdown(int y, int page_h, int h) {
 /* Copy bottom-up RGB (row 0 = bottom) into top-down dst (w*h*3 bytes). */
 void djvu_flip_rgb_bottomup(uint8_t *dst, const uint8_t *src, int w, int h);
 
+/* Bounded buffer reader for NAVM/outline and text-zone payloads. */
+typedef struct {
+    djvu_ctx *ctx;
+    const uint8_t *p;
+    size_t len, pos;
+    int failed;
+} djvu_buf_reader;
+
+static inline void djvu_br_init(djvu_buf_reader *br, djvu_ctx *ctx,
+                                const uint8_t *p, size_t len)
+{
+    br->ctx = ctx;
+    br->p = p;
+    br->len = len;
+    br->pos = 0;
+    br->failed = 0;
+}
+
+static inline int djvu_br_u8(djvu_buf_reader *br)
+{
+    if (br->pos >= br->len) { br->failed = 1; return 0; }
+    return br->p[br->pos++];
+}
+
+static inline int djvu_br_u16be(djvu_buf_reader *br)
+{
+    int v;
+    if (br->pos + 2 > br->len) { br->failed = 1; return 0; }
+    v = (int)djvu_rd_u16be(br->p + br->pos);
+    br->pos += 2;
+    return v;
+}
+
+static inline int djvu_br_u24be(djvu_buf_reader *br)
+{
+    int v;
+    if (br->pos + 3 > br->len) { br->failed = 1; return 0; }
+    v = (int)djvu_rd_u24be(br->p + br->pos);
+    br->pos += 3;
+    return v;
+}
+
+/* u16-BE biased by 0x8000 (text zone coordinates/offsets). */
+static inline int djvu_br_s16be_biased(djvu_buf_reader *br)
+{
+    int v;
+    if (br->pos + 2 > br->len) { br->failed = 1; return 0; }
+    v = (int)djvu_rd_u16be(br->p + br->pos) - 0x8000;
+    br->pos += 2;
+    return v;
+}
+
+char *djvu_br_strdup(djvu_buf_reader *br, int slen);
+
 /* ===================================================================== */
 /* zpcodec.c -- ZP-Coder binary adaptive arithmetic decoder (decode only) */
 /* Ported from DjvuNet Compression/ZPCodec.cs.                            */

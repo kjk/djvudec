@@ -6,21 +6,10 @@
  *
  * Used to verify against DjVuLibre's ddjvu / djvutxt. */
 #include "djvu.h"
+#include "djvu_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* test hook into the internal BZZ decoder */
-struct djvu_ctx;
-uint8_t *djvu_bzz_decode_all(struct djvu_ctx *ctx, const uint8_t *data,
-                             size_t len, size_t *out_len);
-void djvu_free(struct djvu_ctx *ctx, void *ptr);
-void djvu_debug_dump_comps(djvu_doc *doc);
-djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind);
-djvu_image *djvu_debug_render_iw_gray(djvu_doc *doc, int page_no, int kind);
-djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane);
-djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no);
-int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);
 
 /* timing helpers from bench_ddjvu.cpp (DjVuLibre decode, same clock) */
 double bench_now_ms(void);

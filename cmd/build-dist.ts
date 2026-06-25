@@ -33,6 +33,7 @@ const SRCS = [
   "scaler.c",
   "compose.c",
   "document.c",
+  "bufread.c",
   "render.c",
   "text.c",
   "outline.c",

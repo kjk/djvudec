@@ -66,32 +66,10 @@ void djvu_text_destroy(djvu_ctx *ctx, char *text)
 /* ---- structured text (zone tree) ---- */
 
 typedef struct {
-    djvu_ctx *ctx;
-    const uint8_t *p;     /* payload */
-    size_t len, pos;      /* cursor */
+    djvu_buf_reader br;
     const char *text;     /* full UTF-8 text */
     size_t textlen;
-    int failed;
 } zparse;
-
-static int zp_u8(zparse *z) {
-    if (z->pos >= z->len) { z->failed = 1; return 0; }
-    return z->p[z->pos++];
-}
-static int zp_s16(zparse *z) {   /* u16-BE biased by 0x8000 */
-    int v;
-    if (z->pos + 2 > z->len) { z->failed = 1; return 0; }
-    v = (int)djvu_rd_u16be(z->p + z->pos) - 0x8000;
-    z->pos += 2;
-    return v;
-}
-static int zp_u24(zparse *z) {
-    int v;
-    if (z->pos + 3 > z->len) { z->failed = 1; return 0; }
-    v = (int)djvu_rd_u24be(z->p + z->pos);
-    z->pos += 3;
-    return v;
-}
 
 /* Copy the covered text [off, off+len) as a fresh NUL-terminated string. */
 static char *zone_text(zparse *z, int off, int len)
@@ -103,7 +81,7 @@ static char *zone_text(zparse *z, int off, int len)
     avail = (int)z->textlen - off;
     if (len < 0) len = 0;
     if (len > avail) len = avail;
-    s = (char *)djvu_alloc(z->ctx, (size_t)len + 1);
+    s = (char *)djvu_alloc(z->br.ctx, (size_t)len + 1);
     if (!s) return NULL;
     memcpy(s, z->text + off, (size_t)len);
     s[len] = 0;
@@ -124,11 +102,14 @@ static int parse_zone(zparse *z, djvu_text_zone *out,
     djvu_text_zone *prev = NULL;
     int prev_toff = 0, prev_tlen = 0;
 
-    type = zp_u8(z);
-    x = zp_s16(z); y = zp_s16(z); w = zp_s16(z); h = zp_s16(z);
-    toff = zp_s16(z);
-    tlen = zp_u24(z);
-    if (z->failed) return -1;
+    type = djvu_br_u8(&z->br);
+    x = djvu_br_s16be_biased(&z->br);
+    y = djvu_br_s16be_biased(&z->br);
+    w = djvu_br_s16be_biased(&z->br);
+    h = djvu_br_s16be_biased(&z->br);
+    toff = djvu_br_s16be_biased(&z->br);
+    tlen = djvu_br_u24be(&z->br);
+    if (z->br.failed) return -1;
 
     /* ResolveOffsets (DjvuNet TextZone.ResolveOffsets), bottom-up coords */
     if (parent == NULL && sib == NULL) {
@@ -159,10 +140,10 @@ static int parse_zone(zparse *z, djvu_text_zone *out,
     if (out_toff) *out_toff = toff;
     if (out_tlen) *out_tlen = tlen;
 
-    nkids = zp_u24(z);
-    if (z->failed || nkids < 0) return -1;
+    nkids = djvu_br_u24be(&z->br);
+    if (z->br.failed || nkids < 0) return -1;
     if (nkids > 0) {
-        out->children = (djvu_text_zone *)djvu_alloc(z->ctx,
+        out->children = (djvu_text_zone *)djvu_alloc(z->br.ctx,
                             sizeof(djvu_text_zone) * (size_t)nkids);
         if (!out->children) return -1;
         memset(out->children, 0, sizeof(djvu_text_zone) * (size_t)nkids);
@@ -227,14 +208,12 @@ djvu_page_text_zones *djvu_page_text_get_zones(djvu_doc *doc, int page_no)
 
     /* after text: version byte, then the root (page) zone */
     memset(&z, 0, sizeof(z));
-    z.ctx = ctx;
-    z.p = payload;
-    z.len = plen;
-    z.pos = (size_t)3 + tlen + 1;   /* skip length, text, version byte */
+    djvu_br_init(&z.br, ctx, payload, plen);
+    z.br.pos = (size_t)3 + tlen + 1;   /* skip length, text, version byte */
     z.text = res->text;
     z.textlen = tlen;
 
-    if (z.pos < plen) {
+    if (z.br.pos < plen) {
         djvu_text_zone *root = (djvu_text_zone *)djvu_alloc(ctx, sizeof(*root));
         if (root) {
             memset(root, 0, sizeof(*root));

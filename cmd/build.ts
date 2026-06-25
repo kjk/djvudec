@@ -38,6 +38,7 @@ const SRCS = [
   "src/scaler.c",
   "src/compose.c",
   "src/document.c",
+  "src/bufread.c",
   "src/render.c",
   "src/text.c",
   "src/outline.c",

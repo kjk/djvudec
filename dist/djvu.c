@@ -313,6 +313,60 @@ static inline int djvu_y_bottomup_to_topdown(int y, int page_h, int h) {
 /* Copy bottom-up RGB (row 0 = bottom) into top-down dst (w*h*3 bytes). */
 void djvu_flip_rgb_bottomup(uint8_t *dst, const uint8_t *src, int w, int h);
 
+/* Bounded buffer reader for NAVM/outline and text-zone payloads. */
+typedef struct {
+    djvu_ctx *ctx;
+    const uint8_t *p;
+    size_t len, pos;
+    int failed;
+} djvu_buf_reader;
+
+static inline void djvu_br_init(djvu_buf_reader *br, djvu_ctx *ctx,
+                                const uint8_t *p, size_t len)
+{
+    br->ctx = ctx;
+    br->p = p;
+    br->len = len;
+    br->pos = 0;
+    br->failed = 0;
+}
+
+static inline int djvu_br_u8(djvu_buf_reader *br)
+{
+    if (br->pos >= br->len) { br->failed = 1; return 0; }
+    return br->p[br->pos++];
+}
+
+static inline int djvu_br_u16be(djvu_buf_reader *br)
+{
+    int v;
+    if (br->pos + 2 > br->len) { br->failed = 1; return 0; }
+    v = (int)djvu_rd_u16be(br->p + br->pos);
+    br->pos += 2;
+    return v;
+}
+
+static inline int djvu_br_u24be(djvu_buf_reader *br)
+{
+    int v;
+    if (br->pos + 3 > br->len) { br->failed = 1; return 0; }
+    v = (int)djvu_rd_u24be(br->p + br->pos);
+    br->pos += 3;
+    return v;
+}
+
+/* u16-BE biased by 0x8000 (text zone coordinates/offsets). */
+static inline int djvu_br_s16be_biased(djvu_buf_reader *br)
+{
+    int v;
+    if (br->pos + 2 > br->len) { br->failed = 1; return 0; }
+    v = (int)djvu_rd_u16be(br->p + br->pos) - 0x8000;
+    br->pos += 2;
+    return v;
+}
+
+char *djvu_br_strdup(djvu_buf_reader *br, int slen);
+
 /* ===================================================================== */
 /* zpcodec.c -- ZP-Coder binary adaptive arithmetic decoder (decode only) */
 /* Ported from DjvuNet Compression/ZPCodec.cs.                            */
@@ -3750,6 +3804,25 @@ djvu_page_type djvu_page_get_type(djvu_doc *doc, int page_no)
 }
 
 /* =====================================================================
+ * src/bufread.c
+ * ===================================================================== */
+
+/* bufread.c -- bounded-buffer string reads (NAVM outline strings, etc.). */
+#include <string.h>
+
+char *djvu_br_strdup(djvu_buf_reader *br, int slen)
+{
+    char *s;
+    if (slen < 0 || br->pos + (size_t)slen > br->len) { br->failed = 1; return NULL; }
+    s = (char *)djvu_alloc(br->ctx, (size_t)slen + 1);
+    if (!s) { br->failed = 1; return NULL; }
+    memcpy(s, br->p + br->pos, (size_t)slen);
+    s[slen] = 0;
+    br->pos += (size_t)slen;
+    return s;
+}
+
+/* =====================================================================
  * src/render.c
  * ===================================================================== */
 
@@ -4037,32 +4110,10 @@ void djvu_text_destroy(djvu_ctx *ctx, char *text)
 /* ---- structured text (zone tree) ---- */
 
 typedef struct {
-    djvu_ctx *ctx;
-    const uint8_t *p;     /* payload */
-    size_t len, pos;      /* cursor */
+    djvu_buf_reader br;
     const char *text;     /* full UTF-8 text */
     size_t textlen;
-    int failed;
 } zparse;
-
-static int zp_u8(zparse *z) {
-    if (z->pos >= z->len) { z->failed = 1; return 0; }
-    return z->p[z->pos++];
-}
-static int zp_s16(zparse *z) {   /* u16-BE biased by 0x8000 */
-    int v;
-    if (z->pos + 2 > z->len) { z->failed = 1; return 0; }
-    v = (int)djvu_rd_u16be(z->p + z->pos) - 0x8000;
-    z->pos += 2;
-    return v;
-}
-static int zp_u24(zparse *z) {
-    int v;
-    if (z->pos + 3 > z->len) { z->failed = 1; return 0; }
-    v = (int)djvu_rd_u24be(z->p + z->pos);
-    z->pos += 3;
-    return v;
-}
 
 /* Copy the covered text [off, off+len) as a fresh NUL-terminated string. */
 static char *zone_text(zparse *z, int off, int len)
@@ -4074,7 +4125,7 @@ static char *zone_text(zparse *z, int off, int len)
     avail = (int)z->textlen - off;
     if (len < 0) len = 0;
     if (len > avail) len = avail;
-    s = (char *)djvu_alloc(z->ctx, (size_t)len + 1);
+    s = (char *)djvu_alloc(z->br.ctx, (size_t)len + 1);
     if (!s) return NULL;
     memcpy(s, z->text + off, (size_t)len);
     s[len] = 0;
@@ -4095,11 +4146,14 @@ static int parse_zone(zparse *z, djvu_text_zone *out,
     djvu_text_zone *prev = NULL;
     int prev_toff = 0, prev_tlen = 0;
 
-    type = zp_u8(z);
-    x = zp_s16(z); y = zp_s16(z); w = zp_s16(z); h = zp_s16(z);
-    toff = zp_s16(z);
-    tlen = zp_u24(z);
-    if (z->failed) return -1;
+    type = djvu_br_u8(&z->br);
+    x = djvu_br_s16be_biased(&z->br);
+    y = djvu_br_s16be_biased(&z->br);
+    w = djvu_br_s16be_biased(&z->br);
+    h = djvu_br_s16be_biased(&z->br);
+    toff = djvu_br_s16be_biased(&z->br);
+    tlen = djvu_br_u24be(&z->br);
+    if (z->br.failed) return -1;
 
     /* ResolveOffsets (DjvuNet TextZone.ResolveOffsets), bottom-up coords */
     if (parent == NULL && sib == NULL) {
@@ -4130,10 +4184,10 @@ static int parse_zone(zparse *z, djvu_text_zone *out,
     if (out_toff) *out_toff = toff;
     if (out_tlen) *out_tlen = tlen;
 
-    nkids = zp_u24(z);
-    if (z->failed || nkids < 0) return -1;
+    nkids = djvu_br_u24be(&z->br);
+    if (z->br.failed || nkids < 0) return -1;
     if (nkids > 0) {
-        out->children = (djvu_text_zone *)djvu_alloc(z->ctx,
+        out->children = (djvu_text_zone *)djvu_alloc(z->br.ctx,
                             sizeof(djvu_text_zone) * (size_t)nkids);
         if (!out->children) return -1;
         memset(out->children, 0, sizeof(djvu_text_zone) * (size_t)nkids);
@@ -4198,14 +4252,12 @@ djvu_page_text_zones *djvu_page_text_get_zones(djvu_doc *doc, int page_no)
 
     /* after text: version byte, then the root (page) zone */
     memset(&z, 0, sizeof(z));
-    z.ctx = ctx;
-    z.p = payload;
-    z.len = plen;
-    z.pos = (size_t)3 + tlen + 1;   /* skip length, text, version byte */
+    djvu_br_init(&z.br, ctx, payload, plen);
+    z.br.pos = (size_t)3 + tlen + 1;   /* skip length, text, version byte */
     z.text = res->text;
     z.textlen = tlen;
 
-    if (z.pos < plen) {
+    if (z.br.pos < plen) {
         djvu_text_zone *root = (djvu_text_zone *)djvu_alloc(ctx, sizeof(*root));
         if (root) {
             memset(root, 0, sizeof(*root));
@@ -4250,36 +4302,9 @@ void djvu_text_zones_destroy(djvu_ctx *ctx, djvu_page_text_zones *z)
 
 typedef struct {
     djvu_ctx *ctx;
-    const uint8_t *p;
-    size_t len, pos;
-    int failed;
+    djvu_buf_reader br;
     int count;       /* total bookmark nodes parsed so far */
 } nparse;
-
-static int np_u8(nparse *n) {
-    if (n->pos >= n->len) { n->failed = 1; return 0; }
-    return n->p[n->pos++];
-}
-static int np_u16(nparse *n) {
-    int v;
-    if (n->pos + 2 > n->len) { n->failed = 1; return 0; }
-    v = (int)djvu_rd_u16be(n->p + n->pos); n->pos += 2; return v;
-}
-static int np_u24(nparse *n) {
-    int v;
-    if (n->pos + 3 > n->len) { n->failed = 1; return 0; }
-    v = (int)djvu_rd_u24be(n->p + n->pos); n->pos += 3; return v;
-}
-static char *np_str(nparse *n, int slen) {
-    char *s;
-    if (slen < 0 || n->pos + (size_t)slen > n->len) { n->failed = 1; return NULL; }
-    s = (char *)djvu_alloc(n->ctx, (size_t)slen + 1);
-    if (!s) { n->failed = 1; return NULL; }
-    memcpy(s, n->p + n->pos, (size_t)slen);
-    s[slen] = 0;
-    n->pos += (size_t)slen;
-    return s;
-}
 
 /* Resolve a bookmark url to a 0-based page number, or -1. */
 static int resolve_url(djvu_doc *doc, const char *url)
@@ -4306,15 +4331,15 @@ static int parse_item(nparse *np, djvu_doc *doc, djvu_outline_item *out)
     int nkids, namelen, urllen, i;
 
     np->count++;
-    nkids = np_u8(np);
-    namelen = np_u24(np);
-    out->title = np_str(np, namelen);
-    urllen = np_u24(np);
-    out->url = np_str(np, urllen);
+    nkids = djvu_br_u8(&np->br);
+    namelen = djvu_br_u24be(&np->br);
+    out->title = djvu_br_strdup(&np->br, namelen);
+    urllen = djvu_br_u24be(&np->br);
+    out->url = djvu_br_strdup(&np->br, urllen);
     out->page_no = out->url ? resolve_url(doc, out->url) : -1;
     out->children = NULL;
     out->nchildren = 0;
-    if (np->failed) return -1;
+    if (np->br.failed) return -1;
 
     if (nkids > 0) {
         out->children = (djvu_outline_item *)djvu_alloc(np->ctx,
@@ -4364,13 +4389,13 @@ djvu_outline_item *djvu_doc_outline(djvu_doc *doc)
     if (!dec) return NULL;
 
     memset(&np, 0, sizeof(np));
-    np.ctx = ctx; np.p = dec; np.len = dlen;
-    total = np_u16(&np);
-    if (np.failed || total <= 0) { djvu_free(ctx, dec); return NULL; }
+    np.ctx = ctx;
+    djvu_br_init(&np.br, ctx, dec, dlen);
+    total = djvu_br_u16be(&np.br);
+    if (np.br.failed || total <= 0) { djvu_free(ctx, dec); return NULL; }
 
-    /* read top-level bookmarks until we've consumed `total` bookmarks */
     cap = 0; n = 0;
-    while (!np.failed && np.pos < dlen && np.count < total) {
+    while (!np.br.failed && np.br.pos < dlen && np.count < total) {
         djvu_outline_item tmp;
         memset(&tmp, 0, sizeof(tmp));
         if (parse_item(&np, doc, &tmp) != 0) {
@@ -4378,7 +4403,6 @@ djvu_outline_item *djvu_doc_outline(djvu_doc *doc)
             djvu_free(ctx, tmp.title); djvu_free(ctx, tmp.url);
             break;
         }
-        /* grow array */
         if (n == cap) {
             int ncap = cap ? cap * 2 : 8;
             djvu_outline_item *na = (djvu_outline_item *)djvu_alloc(ctx,
@@ -4396,7 +4420,6 @@ djvu_outline_item *djvu_doc_outline(djvu_doc *doc)
 
     if (n == 0) { djvu_free(ctx, items); return NULL; }
 
-    /* synthetic root holding the top-level bookmarks */
     root = (djvu_outline_item *)djvu_alloc(ctx, sizeof(*root));
     if (!root) { free_items(ctx, items, n); return NULL; }
     memset(root, 0, sizeof(*root));
