@@ -48,10 +48,10 @@ file includes just that one header.
 | render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
 
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
-`bun cmd/verify.ts` (every .djvu under testfiles/, recursively):
+`bun cmd/tests.ts` (every .djvu under testfiles/, recursively):
   render (mask=pgm, bg/color=ppm): MATCH=398 MISMATCH=1; text: MATCH=353.
-`DJVU_SPECS=<dir> bun cmd/verify.ts` (point at any directory of .djvu) on
-real-world sets (verify.ts replaced the old Python verify_dir.py):
+`DJVU_SPECS=<dir> bun cmd/tests.ts` (point at any directory of .djvu) on
+real-world sets (tests.ts replaced the old Python verify_dir.py):
   - Z:\sumtest (36 files, up to 1177 pages): render 138/3 (the 3 = fg-stencil
     ddjvu quirk, GPU Gems ~2-9px), text 141/141.
   - Z:\backup\books (1396 files; two 30-file random samples): render 300/300,
@@ -80,7 +80,7 @@ whose INFO gamma != 2.2.
    - full DIRM parse: component ids/types resolved (INCL resolution ready)
 3. **ZP + JB2** → bitonal page bitmap. ✅ DONE
    All 122 pure-mask pages match `ddjvu -format=pgm` byte-for-byte.
-   (`bun cmd/verify.ts`)
+   (`bun cmd/tests.ts`)
 5. **Text extraction** (TXTz, BZZ); verify vs `djvutxt`. ✅ DONE
    All 144 text pages match djvutxt content (modulo trailing page separator).
 4. **IW44** decoder. ✅ DONE
@@ -108,7 +108,7 @@ whose INFO gamma != 2.2.
 ## Build / test
 `bun cmd/get-deps.ts` — clones DjvuNet + DjVuLibre siblings, assembles testfiles/djvu.
 `bun cmd/build.ts` — builds ref tools (once), the C library + test harness with clang.
-`bun cmd/verify.ts` — the test driver: ensures deps, builds, then verifies over
+`bun cmd/tests.ts` — the test driver: ensures deps, builds, then verifies over
 every .djvu under testfiles/ (recursively).
 
 ## Known unported chunks / decode gaps

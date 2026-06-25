@@ -4,7 +4,7 @@
 //
 // Clones the two upstream repos alongside this project (skipped if already
 // present), then copies every .djvu sample out of them into testfiles/djvu/.
-// Exported as getDeps() so build.ts and verify.ts can ensure deps are in place
+// Exported as getDeps() so build.ts and tests.ts can ensure deps are in place
 // before they build / verify. testfiles/ is gitignored.
 import { $ } from "bun";
 import { existsSync, mkdirSync, readdirSync, copyFileSync } from "fs";

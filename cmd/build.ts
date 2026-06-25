@@ -6,8 +6,8 @@
 //
 // The harness exe is suffixed by toolchain: djvu_test_msvc.exe (default on
 // Windows) or djvu_test_clang.exe (-clang). build() returns the exe path.
-// Verification lives in verify.ts, which imports buildRef()/build() from here
-// and drives them (build first, then verify) -- run `bun cmd/verify.ts`.
+// Verification lives in tests.ts, which imports buildRef()/build() from here
+// and drives them (build first, then verify) -- run `bun cmd/tests.ts`.
 import { $ } from "bun";
 import { existsSync, mkdirSync } from "fs";
 import { getDeps } from "./get-deps";

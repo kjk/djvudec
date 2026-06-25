@@ -30,7 +30,7 @@ either. Don't re-investigate this.
   if present) and assembles the test corpus into `testfiles/djvu/*.djvu` by
   copying every `.djvu` from `DjVuLibre/doc`, `DjvuNet/Specs`, and
   `DjvuNet/DjvuNetTest/TestFiles`. Exported as `getDeps()`; `build.ts` and
-  `verify.ts` both call it, so a fresh checkout self-provisions. `testfiles/`
+  `tests.ts` both call it, so a fresh checkout self-provisions. `testfiles/`
   is gitignored.
 - Spec: https://www.sndjvu.org/spec.html
   (the **code** — DjvuNet and especially DjVuLibre — is the more definitive
@@ -47,7 +47,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   by toolchain so both can coexist; clang objects are `*.o`, MSVC objects
   `*.obj`. `build(useClang)` returns the exe path; `bun cmd/build.ts ref`
   rebuilds just the ref tools. `buildRef()`/`build()`/`defaultUseClang` are
-  exported for `verify.ts`/`bench.ts`.
+  exported for `tests.ts`/`bench.ts`.
   djvu_test also links DjVuLibre's decoder (via the `test/bench_ddjvu.cpp` shim
   and a cached `ref_build/libdjvu.lib`, built once by `buildLibDjvu()` with
   clang++) so that `-bench` works. libdjvu.lib uses the **static** CRT (`/MT`),
@@ -59,7 +59,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   steady_clock both sides). With no file it picks a random `.djvu` from
   `testfiles/`. Each line: `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%`
   (`+` = we're slower).
-- `bun cmd/verify.ts [-clang]` — the **test driver**: ensures deps, calls
+- `bun cmd/tests.ts [-clang]` — the **test driver**: ensures deps, calls
   `buildRef()`+`build()` from `build.ts` (build first, then verify), and
   compares against the oracle over `testfiles/djvu/*.djvu`. Builds with MSVC by
   default; `-clang` selects the clang harness. (This inverts the old
@@ -75,12 +75,12 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   `set-ant` via `djvused in.djvu -f script.dsed`).
 
 ### Verification scripts
-- `bun cmd/verify.ts` — corpus verifier (builds first). mask→pgm, bg/color→ppm,
+- `bun cmd/tests.ts` — corpus verifier (builds first). mask→pgm, bg/color→ppm,
   plus text. Scans every `.djvu` under `testfiles/` **recursively**; set the
   `DJVU_SPECS` env var to point the scan at any other directory (e.g. a
   real-world set) instead.
 - The old Python verifiers (`test/verify.py`, `test/verify_dir.py`) have been
-  removed; `cmd/verify.ts` is their bun/TypeScript replacement.
+  removed; `cmd/tests.ts` is their bun/TypeScript replacement.
 
 The single render MISMATCH is `1998_compression.djvu` p19 — NOT a decode bug.
 It is a ddjvu three-layer-stencil quirk (ddjvu paints a few FG pixels ~1px off

@@ -16,7 +16,7 @@ Correctness is verified against [DjVuLibre](https://github.com/DjvuNet/DjVuLibre
 | Hidden text (TXTz/TXTa) | ✅ matches djvutxt (144/144 pages) |
 | Color / gray pages (IW44 + composite) | ✅ byte-exact vs ddjvu (188/189 pages) |
 
-Overall: `bun cmd/verify.ts` → render 188/189 == ddjvu, text 144/144 ==
+Overall: `bun cmd/tests.ts` → render 188/189 == ddjvu, text 144/144 ==
 djvutxt. The 1 render miss (1998_compression p19, 0.008% of pixels) is a ddjvu
 three-layer-stencil quirk, not a decode bug: our JB2 mask, background, and FG44
 each match DjVuLibre's internals byte-for-byte; ddjvu just paints the foreground
@@ -38,11 +38,11 @@ char *txt = djvu_page_text(doc, 0);
 ## Build & test
 Requires `clang`, `bun`, and `git`. `cmd/get-deps.ts` clones the DjvuNet and
 DjVuLibre repos as siblings of this project and assembles the test corpus into
-`testfiles/djvu/`; `build.ts` and `verify.ts` call it automatically.
+`testfiles/djvu/`; `build.ts` and `tests.ts` call it automatically.
 ```
 bun cmd/get-deps.ts     # clone deps + assemble testfiles/djvu (auto-run below)
 bun cmd/build.ts        # build reference tools + the C library and djvu_test.exe
-bun cmd/verify.ts       # build, then verify render + text against DjVuLibre
+bun cmd/tests.ts        # build, then verify render + text against DjVuLibre
 ```
 
 `djvu_test` CLI (jbig2dec-flavored):

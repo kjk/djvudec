@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// verify.ts -- verify djvu_test render output against DjVuLibre's ddjvu, page
-// by page (run with `bun cmd/verify.ts`; replaces the old Python verify.py).
+// tests.ts -- verify djvu_test render output against DjVuLibre's ddjvu, page
+// by page (run with `bun cmd/tests.ts`; replaces the old Python verify.py).
 //
 // This is the test entry point: it ensures deps (get-deps.ts), builds the ref
 // tools + harness (buildRef/build from build.ts), then verifies.
