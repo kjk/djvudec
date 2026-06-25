@@ -51,6 +51,17 @@ It is a ddjvu three-layer-stencil quirk (ddjvu paints a few FG pixels ~1px off
 from the JB2 mask). Verified our mask/bg/fg are byte-exact vs DjVuLibre
 internals. Our output is arguably more correct. Do not "fix" it.
 
+### Amalgamation (single-file distribution)
+- `bun cmd/build-dist.ts` — generates an SQLite-style amalgamation in `dist/`:
+  `dist/djvu.h` (verbatim public header) and `dist/djvu.c` (the public header +
+  `djvu_internal.h` + every `src/*.c` concatenated into one translation unit,
+  with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped). The
+  script verifies the result with `clang -c` before finishing. `dist/*.c/.h`
+  are committed (regenerate after touching `src/` or `include/`); the build
+  artifacts are gitignored. This works because no two `.c` files share a
+  file-local (`static`) symbol name — keep it that way or the single-unit build
+  breaks.
+
 ### Helper tests / scripts
 Write one-off helper tests, probes, and verification scripts in TypeScript and
 run them with **bun**, placed in the **`cmd/`** directory (e.g.
