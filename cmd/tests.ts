@@ -126,6 +126,20 @@ function walkDjvu(dir: string): string[] {
   return out;
 }
 
+// Human-readable duration, e.g. 5018.3 -> "5s 18.3ms", 65018 -> "1m 5s 18.0ms".
+function humanMs(ms: number): string {
+  const parts: string[] = [];
+  let rem = ms;
+  const h = Math.floor(rem / 3_600_000); rem -= h * 3_600_000;
+  const m = Math.floor(rem / 60_000); rem -= m * 60_000;
+  const s = Math.floor(rem / 1_000); rem -= s * 1_000;
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (s) parts.push(`${s}s`);
+  parts.push(`${rem.toFixed(1)}ms`);
+  return parts.join(" ");
+}
+
 async function main(): Promise<number> {
   // Ensure the corpus + reference checkouts exist, then build everything.
   await getDeps();
@@ -152,6 +166,7 @@ async function main(): Promise<number> {
   const mine = join(TMP, "djmine.pnm");
 
   files.forEach((f, fi) => {
+    const t0 = performance.now();
     const data = readFileSync(f);
     const offs = pageOffsets(data);
     const { anno, text } = docFeatures(data, offs);
@@ -159,6 +174,8 @@ async function main(): Promise<number> {
     if (anno) feats.push("annots");
     if (text) feats.push("text");
     console.log(`[${fi + 1}/${files.length}] ${basename(f)} (${feats.join(", ")})`);
+    const fRender: number[] = []; // pages where our render differed
+    const fText: number[] = []; // pages where our text differed
     offs.forEach((o, i) => {
       const page = i + 1;
       // render: pure-mask pages -> pgm (gray); bg/color pages -> ppm
@@ -175,6 +192,7 @@ async function main(): Promise<number> {
           m++;
         } else {
           mm++;
+          fRender.push(page);
           bad.push(`${basename(f)} p${page} ${kind} (ref=${a.length} mine=${b.length})`);
         }
       }
@@ -185,9 +203,15 @@ async function main(): Promise<number> {
       else if (rt === mt) tm++;
       else {
         tmm++;
+        fText.push(page);
         tbad.push(`${basename(f)} p${page}`);
       }
     });
+    const diffs: string[] = [];
+    if (fRender.length) diffs.push(`render diff p${fRender.join(",p")}`);
+    if (fText.length) diffs.push(`text diff p${fText.join(",p")}`);
+    const status = diffs.length ? diffs.join(", ") : "same";
+    console.log(`  tested in ${humanMs(performance.now() - t0)} — ${status}`);
   });
 
   console.log(`render (mask=pgm, bg/color=ppm): MATCH=${m} MISMATCH=${mm}; skipped=${skip}`);
