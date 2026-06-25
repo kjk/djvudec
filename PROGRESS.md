@@ -46,10 +46,16 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
 `python3 test/verify.py`:
   render (mask=pgm, bg/color=ppm): MATCH=188 MISMATCH=1; text: MATCH=144.
-- The 1 render mismatch is 1998_compression p19: a JB2 *mask* (Sjbz) decode
-  edge case (680 px / 0.008% shifted ~2px in a 40-row band; both p18 and p19
-  use heavy MatchedRefine, so it is a data-specific cross-coding/coordinate
-  edge case). Deterministic. TODO: trace the refined-shape size/bbox there.
+- The 1 render mismatch is 1998_compression p19 (680 px / 0.008%). Diagnosed:
+  NOT a decode bug. Verified byte-for-byte against DjVuLibre internals:
+    * our JB2 mask == JB2Image::get_bitmap (0 diff, whole image)
+    * our background == ddjvu -mode=background (0 diff)
+    * our FG44 == IW44Image (0 diff); all 845 blit positions/sizes match.
+  It is a ddjvu three-layer-stencil quirk: for a few shapes in one text line,
+  ddjvu paints the FG color ~1px offset from the actual JB2 mask (it inks a
+  mask-background pixel and skips a mask-ink one). Our compositor aligns FG
+  exactly with the mask. (debug hooks: DJVU_NOCOMPOSE, DJVU_JB2_BLITS,
+  DJVU_JB2_SHAPE=N; reference tools test/jb2ref.cpp, test/iw44ref.cpp.)
 - Color pages composite only at subsample==1 (full res); subsample>1 on a
   color page currently falls back to the gray mask. TODO: scale composite.
 

@@ -722,6 +722,41 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
                 hist[0],hist[1],hist[2],hist[3],hist[4],hist[5],hist[6],hist[7],
                 hist[8],hist[9],hist[10],hist[11], jim->nshapes, jim->nblits);
         }
+        {
+            const char *shs = getenv("DJVU_JB2_SHAPE");
+            if (shs) {
+                int sn = atoi(shs);
+                jb2_shape *sh = djvu_jb2_get_shape(jim, sn);
+                if (sh && sh->bm.data) {
+                    int rr, cc, w = sh->bm.width, h = sh->bm.height;
+                    fprintf(stderr, "SHAPE %d %dx%d:\n", sn, w, h);
+                    for (rr = h - 1; rr >= 0; rr--) {  /* top row first */
+                        int ro = djvu_bm_rowoffset(&sh->bm, rr);
+                        for (cc = 0; cc < w; cc++)
+                            fputc(sh->bm.data[ro + cc] ? '#' : '.', stderr);
+                        fputc('\n', stderr);
+                    }
+                }
+            }
+        }
+        if (getenv("DJVU_JB2_BLITS")) {
+            int bi;
+            for (bi = 0; bi < jim->nblits; bi++) {
+                jb2_blit *b = &jim->blits[bi];
+                jb2_shape *sh = djvu_jb2_get_shape(jim, b->shapeno);
+                unsigned sum = 0; int rr, cc, w = 0, h = 0;
+                if (sh && sh->bm.data) {
+                    w = sh->bm.width; h = sh->bm.height;
+                    for (rr = 0; rr < h; rr++) {
+                        int ro = djvu_bm_rowoffset(&sh->bm, rr);
+                        for (cc = 0; cc < w; cc++)
+                            sum = sum * 31 + (sh->bm.data[ro + cc] ? 1 : 0);
+                    }
+                }
+                fprintf(stderr, "BLIT %d left=%d bottom=%d shape=%d w=%d h=%d sum=%u\n",
+                        bi, b->left, b->bottom, b->shapeno, w, h, sum);
+            }
+        }
     }
 
     if (c.error || !c.got_start_record) {

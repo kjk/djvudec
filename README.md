@@ -17,8 +17,10 @@ Correctness is verified against [DjVuLibre](https://github.com/DjvuNet/DjVuLibre
 | Color / gray pages (IW44 + composite) | ✅ byte-exact vs ddjvu (188/189 pages) |
 
 Overall: `python3 test/verify.py` → render 188/189 == ddjvu, text 144/144 ==
-djvutxt. (The 1 render miss is a JB2 mask cross-coding edge case on one page;
-see PROGRESS.md.)
+djvutxt. The 1 render miss (1998_compression p19, 0.008% of pixels) is a ddjvu
+three-layer-stencil quirk, not a decode bug: our JB2 mask, background, and FG44
+each match DjVuLibre's internals byte-for-byte; ddjvu just paints the foreground
+~1px off the mask for a few shapes there. See PROGRESS.md.
 
 See [PROGRESS.md](PROGRESS.md) for the design, port map, and milestones.
 

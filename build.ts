@@ -50,6 +50,12 @@ async function buildRef() {
     console.log("building ref tool iw44ref...");
     await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${ROOT}/test/iw44ref.cpp -ladvapi32 -o ${REF}/iw44ref.exe`;
   }
+  // jb2ref: decodes a raw Sjbz with DjVuLibre's JB2Image (dumps blits / mask),
+  // used to verify the JB2 codec in isolation.
+  if (!existsSync(`${REF}/jb2ref.exe`)) {
+    console.log("building ref tool jb2ref...");
+    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${ROOT}/test/jb2ref.cpp -ladvapi32 -o ${REF}/jb2ref.exe`;
+  }
   console.log("ref tools ready");
 }
 
