@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // verify.ts -- verify djvu_test render output against DjVuLibre's ddjvu, page
-// by page (TypeScript port of verify.py; run with `bun test/verify.ts`).
+// by page (TypeScript port of verify.py; run with `bun cmd/verify.ts`).
 //
 // Pages that are pure JB2 masks (Sjbz, no BG44/FG44 background) must match
 // `ddjvu -format=pgm` byte-for-byte. Pages with an IW44 background or color are

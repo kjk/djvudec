@@ -25,11 +25,11 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
 `Z:\backup\books` (1396 files).
 
 ## Build & test
-- `bun build.ts` — builds the DjVuLibre reference tools **once** into
+- `bun cmd/build.ts` — builds the DjVuLibre reference tools **once** into
   `ref_build/`, then compiles the C library + test harness with clang
   (`-std=c11`) into `djvu_test.exe`.
-- `bun build.ts test` — runs `test/verify.ts` over `testfiles/djvunet/*.djvu`.
-- IMPORTANT: run `bun build.ts` from the `djvu` dir. The ref-tool build
+- `bun cmd/build.ts test` — runs `cmd/verify.ts` over `testfiles/djvunet/*.djvu`.
+- IMPORTANT: run `bun cmd/build.ts` from the `djvu` dir. The ref-tool build
   `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
 - Reference tools are built static from `libdjvu/*.cpp` with
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT -ladvapi32`.
@@ -40,7 +40,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   `set-ant` via `djvused in.djvu -f script.dsed`).
 
 ### Verification scripts
-- `bun test/verify.ts` — Specs verifier. mask→pgm, bg/color→ppm, plus text.
+- `bun cmd/verify.ts` — Specs verifier. mask→pgm, bg/color→ppm, plus text.
   Current: **render MATCH=188 MISMATCH=1, text MATCH=144**.
 - `python3 test/verify_dir.py <dir> [maxpages]` — sampled directory verifier,
   Unicode-path safe (copies each file to an ASCII temp path), auto format
@@ -50,6 +50,12 @@ The single render MISMATCH is `1998_compression.djvu` p19 — NOT a decode bug.
 It is a ddjvu three-layer-stencil quirk (ddjvu paints a few FG pixels ~1px off
 from the JB2 mask). Verified our mask/bg/fg are byte-exact vs DjVuLibre
 internals. Our output is arguably more correct. Do not "fix" it.
+
+### Helper tests / scripts
+Write one-off helper tests, probes, and verification scripts in TypeScript and
+run them with **bun**, placed in the **`cmd/`** directory (e.g.
+`bun cmd/<name>.ts`). Prefer this over throwaway Python or shell scripts —
+bun + TypeScript is the standard tooling for ad-hoc tooling here.
 
 ### Windows gotchas
 - `test/djvu_test.c` uses `fopen` → ASCII paths only. The **library** takes an

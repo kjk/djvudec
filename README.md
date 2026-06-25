@@ -16,7 +16,7 @@ Correctness is verified against [DjVuLibre](https://github.com/DjvuNet/DjVuLibre
 | Hidden text (TXTz/TXTa) | ✅ matches djvutxt (144/144 pages) |
 | Color / gray pages (IW44 + composite) | ✅ byte-exact vs ddjvu (188/189 pages) |
 
-Overall: `bun test/verify.ts` → render 188/189 == ddjvu, text 144/144 ==
+Overall: `bun cmd/verify.ts` → render 188/189 == ddjvu, text 144/144 ==
 djvutxt. The 1 render miss (1998_compression p19, 0.008% of pixels) is a ddjvu
 three-layer-stencil quirk, not a decode bug: our JB2 mask, background, and FG44
 each match DjVuLibre's internals byte-for-byte; ddjvu just paints the foreground
@@ -39,8 +39,8 @@ char *txt = djvu_page_text(doc, 0);
 Requires `clang`, `bun`, and (for the reference oracle) the DjVuLibre source
 checked out at `../../DjVuLibre`.
 ```
-bun build.ts        # build reference tools + the C library and djvu_test.exe
-bun build.ts test   # verify page info + render + text against DjVuLibre
+bun cmd/build.ts        # build reference tools + the C library and djvu_test.exe
+bun cmd/build.ts test   # verify page info + render + text against DjVuLibre
 ```
 
 `djvu_test` CLI (jbig2dec-flavored):

@@ -1,13 +1,13 @@
-// build.ts -- build & test driver for the djvu C port (run with `bun build.ts`).
+// build.ts -- build & test driver for the djvu C port (run with `bun cmd/build.ts`).
 //
-//   bun build.ts          build ref tools (if needed) + the C library/harness
-//   bun build.ts ref      (re)build the DjVuLibre reference tools
-//   bun build.ts test     build, then verify against ddjvu/djvutxt
+//   bun cmd/build.ts          build ref tools (if needed) + the C library/harness
+//   bun cmd/build.ts ref      (re)build the DjVuLibre reference tools
+//   bun cmd/build.ts test     build, then verify against ddjvu/djvutxt
 //
 import { $ } from "bun";
 import { existsSync, readdirSync, mkdirSync } from "fs";
 
-const ROOT = import.meta.dir;
+const ROOT = `${import.meta.dir}/..`;
 const DJVULIBRE = "C:/Users/kjk/src/DjVuLibre";
 const SPECS = `${ROOT}/testfiles/djvunet`;
 const REF = `${ROOT}/ref_build`;
@@ -92,7 +92,7 @@ async function test() {
 
   // render verification (pure JB2-mask pages must match ddjvu byte-for-byte)
   console.log("\nrender verification:");
-  await $`bun test/verify.ts`.cwd(ROOT).nothrow();
+  await $`bun cmd/verify.ts`.cwd(ROOT).nothrow();
 }
 
 const cmd = process.argv[2];

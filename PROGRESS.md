@@ -13,7 +13,7 @@ We are given the whole file up-front (no incremental fetch). Decode only — no 
 - Test files (11 .djvu):    `testfiles/djvunet/*.djvu` (copied from DjvuNet/Specs; gitignored)
 - Spec: https://www.sndjvu.org/spec.html  (code is the more definitive reference)
 
-## Reference tools (built from DjVuLibre, see build.ts `build_ref()`)
+## Reference tools (built from DjVuLibre, see cmd/build.ts `build_ref()`)
 Built into `ref_build/`:
 - `ddjvu.exe`    — `ddjvu -format=pgm -page=N in.djvu out.pgm`  (bitmap oracle)
 - `djvutxt.exe`  — `djvutxt --page=N in.djvu`                   (text oracle)
@@ -48,7 +48,7 @@ file includes just that one header.
 | render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
 
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
-`bun test/verify.ts` (testfiles/djvunet/*.djvu):
+`bun cmd/verify.ts` (testfiles/djvunet/*.djvu):
   render (mask=pgm, bg/color=ppm): MATCH=188 MISMATCH=1; text: MATCH=144.
 `python3 test/verify_dir.py <dir>` (sampled, Unicode-path safe) on real-world
 sets:
@@ -80,7 +80,7 @@ whose INFO gamma != 2.2.
    - full DIRM parse: component ids/types resolved (INCL resolution ready)
 3. **ZP + JB2** → bitonal page bitmap. ✅ DONE
    All 122 pure-mask pages match `ddjvu -format=pgm` byte-for-byte.
-   (`bun build.ts test` / `bun test/verify.ts`)
+   (`bun cmd/build.ts test` / `bun cmd/verify.ts`)
 5. **Text extraction** (TXTz, BZZ); verify vs `djvutxt`. ✅ DONE
    All 144 text pages match djvutxt content (modulo trailing page separator).
 4. **IW44** decoder. ✅ DONE
@@ -106,8 +106,8 @@ whose INFO gamma != 2.2.
 - DJVU_JB2_DEBUG=1 env prints a per-stream record-type histogram.
 
 ## Build / test
-`bun build.ts` — builds ref tools (once), the C library + test harness with clang.
-`bun build.ts test` — runs verification over testfiles/djvunet/*.djvu.
+`bun cmd/build.ts` — builds ref tools (once), the C library + test harness with clang.
+`bun cmd/build.ts test` — runs verification over testfiles/djvunet/*.djvu.
 
 ## Change log (most recent first)
 - richer public API (modeled on SumatraPDF's ddjvuapi usage): structured text
