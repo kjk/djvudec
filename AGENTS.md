@@ -206,8 +206,12 @@ Notes:
 ## Methodology
 Reference-oracle verification: every codec layer is checked byte-exact against
 DjVuLibre internals, isolating my-decode bugs from ddjvu rendering quirks. Work
-incrementally, keep `PROGRESS.md` current, commit frequently. See `PROGRESS.md`
-for the milestone history and change log.
+incrementally and keep `PROGRESS.md` current. See `PROGRESS.md` for the
+milestone history and change log.
+
+**Do not commit automatically.** Make and verify changes, but leave them staged
+in the working tree; only run `git commit` when the user explicitly asks. (The
+user reviews diffs and decides when to commit.)
 
 ## Status
 Feature-complete; verified byte-for-byte vs DjVuLibre. All remaining
