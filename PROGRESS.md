@@ -40,7 +40,7 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 | bitmap.c            | Graphics/Bitmap (GBitmap)               | DONE   |
 | iw44.c              | Wavelet/* (decode)                      | TODO   |
 | pixmap.c            | Graphics/PixelMap                       | TODO   |
-| text.c              | Text/PageText + Txta/Txtz chunks        | TODO   |
+| text.c              | Text/PageText + TXTa/TXTz chunks        | DONE   |
 | render/compose      | DjvuPage composite (mask+fg+bg)         | partial (mask only) |
 
 ## Milestones
@@ -51,9 +51,10 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 3. **ZP + JB2** → bitonal page bitmap. ✅ DONE
    All 122 pure-mask pages match `ddjvu -format=pgm` byte-for-byte.
    (`bun build.ts test` / `python3 test/verify.py`)
+5. **Text extraction** (TXTz, BZZ); verify vs `djvutxt`. ✅ DONE
+   All 144 text pages match djvutxt content (modulo trailing page separator).
 4. **IW44** → background/foreground color; full composite; verify vs `ddjvu`. ← NEXT
    67 remaining pages have a BG44 (IW44) background or are full color.
-5. **Text extraction** (Txtz, BZZ); verify vs `djvutxt`.
 6. Page scaling / subsample to requested dimensions (basic box subsample done).
 
 ## Notes for next session (IW44)
@@ -73,6 +74,7 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 `bun build.ts test` — runs verification over Specs/*.djvu.
 
 ## Change log (most recent first)
+- text extraction (TXTz/TXTa): 144/144 text pages == djvutxt content.
 - JB2 bitonal decoder + GBitmap + render: 122/122 pure-mask pages == ddjvu.
 - full DJVM/DIRM directory parse (BZZ component table); INCL resolution.
 - BZZ decompressor (round-trips vs `bzz -e`).

@@ -53,29 +53,55 @@ def render_mine(f, page, out):
     if os.path.exists(out): os.remove(out)
     subprocess.run([TEST, "-page", str(page), "-out", out, f], capture_output=True)
 
+def text_norm(b):
+    return b.replace(b'\r', b'').replace(b'\x0c', b'').rstrip()
+
+def get_text_ref(f, page):
+    return subprocess.run([os.path.join(RB, "djvutxt.exe"), f"--page={page}", f],
+                          capture_output=True).stdout
+
+def get_text_mine(f, page):
+    return subprocess.run([TEST, "-page", str(page), "-text", f],
+                          capture_output=True).stdout
+
 def main():
     m = mm = skip = 0
-    bad = []
+    tm = tmm = te = 0
+    bad = []; tbad = []
     for f in sorted(glob.glob(os.path.join(SPECS, "*.djvu"))):
         data = open(f, "rb").read()
         for i, o in enumerate(page_offsets(data)):
+            # render (pure-mask pages only)
             if page_kind(data, o) != 'mask':
                 skip += 1
-                continue
-            ref = os.path.join(TMP, "djref.pgm"); mine = os.path.join(TMP, "djmine.pgm")
-            render_ref(f, i+1, ref)
-            render_mine(f, i+1, mine)
-            a = open(ref, "rb").read() if os.path.exists(ref) else b""
-            b = open(mine, "rb").read() if os.path.exists(mine) else b""
-            if a and a == b:
-                m += 1
             else:
-                mm += 1
-                bad.append(f"{os.path.basename(f)} p{i+1} (ref={len(a)} mine={len(b)})")
-    print(f"pure-mask pages: MATCH={m} MISMATCH={mm}; skipped(bg/color)={skip}")
+                ref = os.path.join(TMP, "djref.pgm"); mine = os.path.join(TMP, "djmine.pgm")
+                render_ref(f, i+1, ref)
+                render_mine(f, i+1, mine)
+                a = open(ref, "rb").read() if os.path.exists(ref) else b""
+                b = open(mine, "rb").read() if os.path.exists(mine) else b""
+                if a and a == b:
+                    m += 1
+                else:
+                    mm += 1
+                    bad.append(f"{os.path.basename(f)} p{i+1} (ref={len(a)} mine={len(b)})")
+            # text (all pages; ignores trailing page separator)
+            rt = text_norm(get_text_ref(f, i+1))
+            mt = text_norm(get_text_mine(f, i+1))
+            if not rt and not mt:
+                te += 1
+            elif rt == mt:
+                tm += 1
+            else:
+                tmm += 1
+                tbad.append(f"{os.path.basename(f)} p{i+1}")
+    print(f"render (pure-mask): MATCH={m} MISMATCH={mm}; skipped(bg/color)={skip}")
     for x in bad[:50]:
-        print("  MISMATCH", x)
-    return 1 if mm else 0
+        print("  render MISMATCH", x)
+    print(f"text: MATCH={tm} MISMATCH={tmm}; both-empty={te}")
+    for x in tbad[:50]:
+        print("  text MISMATCH", x)
+    return 1 if (mm or tmm) else 0
 
 if __name__ == "__main__":
     sys.exit(main())
