@@ -191,8 +191,8 @@ static int load_djvm(djvu_doc *doc, uint32_t dirm_data, uint32_t dirm_size)
                 djvu_free(ctx, nm); sp += used;   /* name (file name) unused */
             }
             if (has_title && sp < dirlen) {
-                char *tt = dup_cstr(ctx, (char *)dir + sp, dirlen - sp, &used);
-                djvu_free(ctx, tt); sp += used;   /* title unused */
+                doc->comps[i].title = dup_cstr(ctx, (char *)dir + sp, dirlen - sp, &used);
+                sp += used;
             }
         }
         djvu_free(ctx, dir);
@@ -210,6 +210,8 @@ static int load_djvm(djvu_doc *doc, uint32_t dirm_data, uint32_t dirm_size)
         if (!is_page) continue;
         doc->pages[npages].form_off = o;
         doc->pages[npages].form_size = djvu_rd_u32be(data + o + 4);
+        doc->pages[npages].id = doc->comps[i].id;
+        doc->pages[npages].title = doc->comps[i].title;
         npages++;
     }
     doc->npages = npages;
@@ -301,6 +303,7 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
     doc->ctx = ctx;
     doc->data = data;
     doc->len = len;
+    doc->root_form_off = pos;
 
     if (djvu_tag_eq(form_type, "DJVU")) {
         /* single-page document: the top form IS the page */
@@ -350,8 +353,10 @@ void djvu_doc_close(djvu_doc *doc)
     int i;
     if (!doc) return;
     if (doc->comps) {
-        for (i = 0; i < doc->ncomp; i++)
+        for (i = 0; i < doc->ncomp; i++) {
             djvu_free(doc->ctx, doc->comps[i].id);
+            djvu_free(doc->ctx, doc->comps[i].title);
+        }
         djvu_free(doc->ctx, doc->comps);
     }
     djvu_free(doc->ctx, doc->pages);
@@ -371,4 +376,44 @@ int djvu_doc_page_info(djvu_doc *doc, int page_no, djvu_page_info *info)
     if (page_load_info(doc, pg) != 0) return -1;
     *info = pg->info;
     return 0;
+}
+
+const char *djvu_doc_page_id(djvu_doc *doc, int page_no)
+{
+    if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
+    return doc->pages[page_no].id;
+}
+
+const char *djvu_doc_page_title(djvu_doc *doc, int page_no)
+{
+    if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
+    return doc->pages[page_no].title;
+}
+
+int djvu_doc_page_by_name(djvu_doc *doc, const char *name)
+{
+    int i;
+    if (!doc || !name) return -1;
+    if (name[0] == '#') name++;
+    for (i = 0; i < doc->npages; i++) {
+        const char *id = doc->pages[i].id;
+        if (id && strcmp(id, name) == 0) return i;
+    }
+    return -1;
+}
+
+djvu_page_type djvu_page_get_type(djvu_doc *doc, int page_no)
+{
+    uint32_t form_off, sz;
+    int has_mask, has_bg, has_fg;
+    if (!doc || page_no < 0 || page_no >= doc->npages) return DJVU_PAGE_UNKNOWN;
+    form_off = doc->pages[page_no].form_off;
+    has_mask = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
+    has_bg   = djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL;
+    has_fg   = djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL) != NULL ||
+               djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL) != NULL;
+    if (has_mask && (has_bg || has_fg)) return DJVU_PAGE_COMPOUND;
+    if (has_mask) return DJVU_PAGE_BITONAL;
+    if (has_bg || has_fg) return DJVU_PAGE_PHOTO;
+    return DJVU_PAGE_UNKNOWN;
 }

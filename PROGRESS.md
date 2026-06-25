@@ -10,7 +10,7 @@ We are given the whole file up-front (no incremental fetch). Decode only — no 
 ## References (checked out locally)
 - C# source being ported:   `../../DjvuNet/DjvuNet`            (DjvuNet repo)
 - Verification oracle:      `../../DjVuLibre`                  (DjVuLibre repo)
-- Test files (11 .djvu):    `../../DjvuNet/Specs/*.djvu`
+- Test files (11 .djvu):    `testfiles/djvunet/*.djvu` (copied from DjvuNet/Specs; gitignored)
 - Spec: https://www.sndjvu.org/spec.html  (code is the more definitive reference)
 
 ## Reference tools (built from DjVuLibre, see build.ts `build_ref()`)
@@ -48,7 +48,7 @@ file includes just that one header.
 | render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
 
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
-`python3 test/verify.py` (Specs/*.djvu):
+`bun test/verify.ts` (testfiles/djvunet/*.djvu):
   render (mask=pgm, bg/color=ppm): MATCH=188 MISMATCH=1; text: MATCH=144.
 `python3 test/verify_dir.py <dir>` (sampled, Unicode-path safe) on real-world
 sets:
@@ -80,7 +80,7 @@ whose INFO gamma != 2.2.
    - full DIRM parse: component ids/types resolved (INCL resolution ready)
 3. **ZP + JB2** → bitonal page bitmap. ✅ DONE
    All 122 pure-mask pages match `ddjvu -format=pgm` byte-for-byte.
-   (`bun build.ts test` / `python3 test/verify.py`)
+   (`bun build.ts test` / `bun test/verify.ts`)
 5. **Text extraction** (TXTz, BZZ); verify vs `djvutxt`. ✅ DONE
    All 144 text pages match djvutxt content (modulo trailing page separator).
 4. **IW44** decoder. ✅ DONE
@@ -107,9 +107,15 @@ whose INFO gamma != 2.2.
 
 ## Build / test
 `bun build.ts` — builds ref tools (once), the C library + test harness with clang.
-`bun build.ts test` — runs verification over Specs/*.djvu.
+`bun build.ts test` — runs verification over testfiles/djvunet/*.djvu.
 
 ## Change log (most recent first)
+- richer public API (modeled on SumatraPDF's ddjvuapi usage): structured text
+  with bounding boxes (zone tree, src/text.c), document outline/bookmarks
+  (NAVM, src/outline.c), page hyperlinks/annotations (ANTa/ANTz maparea,
+  src/annot.c), page id/title + named-destination resolution, and page type
+  (bitonal/photo/compound). Verified vs djvutxt --detail / djvused
+  print-outline / djvused print-ant (coords byte-exact).
 - merged per-module headers (bitmap/bzz/iw44/jb2/zp) into one src/djvu_internal.h
   (no functional change; verification unchanged).
 - composite (mask+bg+fg) + GPixmapScaler: 188/189 pages == ddjvu (1 mask edge case).

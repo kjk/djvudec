@@ -64,10 +64,34 @@ static int write_pnm(const char *path, djvu_image *img)
     return 0;
 }
 
+static void print_zone(const djvu_text_zone *z, int depth)
+{
+    static const char *tn[8] = {"?","page","col","region","para","line","word","char"};
+    int i;
+    int t = (z->type >= 1 && z->type <= 7) ? z->type : 0;
+    for (i = 0; i < depth; i++) fputs("  ", stdout);
+    printf("%s [%d,%d %dx%d]", tn[t], z->x, z->y, z->w, z->h);
+    if (z->type == DJVU_ZONE_WORD && z->text) printf(" \"%s\"", z->text);
+    putchar('\n');
+    for (i = 0; i < z->nchildren; i++) print_zone(&z->children[i], depth + 1);
+}
+
+static void print_outline(const djvu_outline_item *it, int depth)
+{
+    int i;
+    if (it->title) {
+        for (i = 0; i < depth; i++) fputs("  ", stdout);
+        printf("%s -> %s (page %d)\n", it->title,
+               it->url ? it->url : "", it->page_no);
+    }
+    for (i = 0; i < it->nchildren; i++) print_outline(&it->children[i], depth + 1);
+}
+
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
+    int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0;
     int i, rc = 0;
     uint8_t *data; size_t len;
     djvu_ctx *ctx; djvu_doc *doc;
@@ -85,6 +109,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-iwfg")) do_iw = 2;       /* render FG44 (mine) */
         else if (!strcmp(argv[i], "-iwdumpbg")) do_iw = 3;   /* dump BG44 as PM44 */
         else if (!strcmp(argv[i], "-iwdumpfg")) do_iw = 4;   /* dump FG44 as PM44 */
+        else if (!strcmp(argv[i], "-zones")) do_zones = 1;   /* text zone tree */
+        else if (!strcmp(argv[i], "-outline")) do_outline = 1;
+        else if (!strcmp(argv[i], "-links")) do_links = 1;
+        else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
@@ -140,7 +168,7 @@ int main(int argc, char **argv)
 
     if (do_info == 2) djvu_debug_dump_comps(doc);
 
-    if (do_info || (!out && !do_text)) {
+    if (do_info || (!out && !do_text && !do_zones && !do_outline && !do_links && !do_type)) {
         int n = djvu_doc_page_count(doc);
         printf("pages: %d\n", n);
         for (i = 0; i < n; i++) {
@@ -156,6 +184,40 @@ int main(int argc, char **argv)
     if (do_text) {
         char *t = djvu_page_text(doc, page - 1);
         if (t) { fputs(t, stdout); djvu_text_destroy(ctx, t); }
+    }
+
+    if (do_type) {
+        static const char *tn[4] = {"unknown","bitonal","photo","compound"};
+        djvu_page_type t = djvu_page_get_type(doc, page - 1);
+        printf("page %d type: %s\n", page, tn[(t >= 0 && t < 4) ? t : 0]);
+    }
+
+    if (do_zones) {
+        djvu_page_text_zones *z = djvu_page_text_get_zones(doc, page - 1);
+        if (z && z->root) print_zone(z->root, 0);
+        else printf("(no text zones)\n");
+        djvu_text_zones_destroy(ctx, z);
+    }
+
+    if (do_outline) {
+        djvu_outline_item *root = djvu_doc_outline(doc);
+        if (root) print_outline(root, -1);
+        else printf("(no outline)\n");
+        djvu_outline_destroy(ctx, root);
+    }
+
+    if (do_links) {
+        djvu_page_links *L = djvu_page_get_links(doc, page - 1);
+        if (L) {
+            int k;
+            for (k = 0; k < L->nlinks; k++) {
+                djvu_link *e = &L->links[k];
+                printf("link %d: [%d,%d %dx%d] shape=%d -> %s%s%s\n", k,
+                       e->x, e->y, e->w, e->h, e->shape, e->url,
+                       e->comment ? " ; " : "", e->comment ? e->comment : "");
+            }
+            djvu_page_links_destroy(ctx, L);
+        } else printf("(no links)\n");
     }
 
     if (out) {

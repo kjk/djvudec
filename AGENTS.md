@@ -15,7 +15,8 @@ No encoders. No writing DjVu.
 ## Reference checkouts (local)
 - C# source being ported:  `C:\Users\kjk\src\DjvuNet\DjvuNet`  (DjvuNet repo)
 - Verification oracle:      `C:\Users\kjk\src\DjVuLibre`        (DjVuLibre repo)
-- Test files (11 .djvu):    `C:\Users\kjk\src\DjvuNet\Specs\*.djvu`
+- Test files (11 .djvu):    `testfiles/djvunet/*.djvu` (copied from
+  `C:\Users\kjk\src\DjvuNet\Specs`; `testfiles/` is gitignored)
 - Spec: https://www.sndjvu.org/spec.html
   (the **code** — DjvuNet and especially DjVuLibre — is the more definitive
   reference; the spec text is incomplete.)
@@ -27,16 +28,19 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
 - `bun build.ts` — builds the DjVuLibre reference tools **once** into
   `ref_build/`, then compiles the C library + test harness with clang
   (`-std=c11`) into `djvu_test.exe`.
-- `bun build.ts test` — runs `test/verify.py` over `Specs/*.djvu`.
+- `bun build.ts test` — runs `test/verify.ts` over `testfiles/djvunet/*.djvu`.
 - IMPORTANT: run `bun build.ts` from the `djvu` dir. The ref-tool build
   `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
 - Reference tools are built static from `libdjvu/*.cpp` with
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT -ladvapi32`.
   `djvudump` crashes in this clang build and is not used; `ddjvu`, `djvutxt`,
-  `bzz` are sufficient.
+  `bzz`, `djvused` are sufficient. Oracles for the structured APIs:
+  `djvutxt --detail=word` (text zones), `djvused -e 'print-outline'` (outline),
+  `djvused -e 'select N; print-ant'` (hyperlinks; inject test annotations with
+  `set-ant` via `djvused in.djvu -f script.dsed`).
 
 ### Verification scripts
-- `python3 test/verify.py` — Specs verifier. mask→pgm, bg/color→ppm, plus text.
+- `bun test/verify.ts` — Specs verifier. mask→pgm, bg/color→ppm, plus text.
   Current: **render MATCH=188 MISMATCH=1, text MATCH=144**.
 - `python3 test/verify_dir.py <dir> [maxpages]` — sampled directory verifier,
   Unicode-path safe (copies each file to an ASCII temp path), auto format
@@ -61,6 +65,15 @@ Opaque `djvu_ctx` / `djvu_doc`; caller-supplied `djvu_alloc_cb` / `free_cb` /
 → `djvu_image{width,height,format(GRAY8=1/RGB24=3),stride,data}`,
 `djvu_page_text`, plus destroy functions.
 
+Richer accessors (added to match SumatraPDF's ddjvuapi usage in
+src/EngineDjVu.cpp): `djvu_page_get_type` (bitonal/photo/compound);
+`djvu_doc_page_id` / `_title` / `_by_name` (DIRM labels + named-destination
+resolution); `djvu_page_text_get_zones` (hidden-text zone tree with top-down
+bounding boxes); `djvu_doc_outline` (NAVM bookmarks, synthetic root); 
+`djvu_page_get_links` (ANTa/ANTz maparea hyperlinks). All coordinates are
+full-resolution, top-down (origin top-left), matching render output at
+subsample=1. Test harness flags: `-type -zones -outline -links`.
+
 ## Internal headers
 All internal declarations live in a **single** `src/djvu_internal.h` (one
 labeled section per module: core, zpcodec, bitmap, bzz, jb2, iw44). Every `.c`
@@ -81,7 +94,9 @@ Paths relative to `C:\Users\kjk\src\DjvuNet\DjvuNet\`.
 | `jb2.c` | `JB2/JB2Decoder.cs`, `JB2Codec.cs`, `JB2Image.cs`, `JB2Dictionary.cs`, `JB2Shape.cs`, `JB2Blit.cs` |
 | `iw44.c` | `Wavelet/InterWavePixelMapDecoder.cs`, `InterWaveMapDecoder.cs`, `InterWaveCodec.cs`, `InterWaveMap.cs`, `InterWaveBlock.cs`, `InterWaveBucket.cs`, `InterWaveImage.cs`; transform from `Wavelet/InterWaveTransform.cs` |
 | `iw44_zigzag.c` | zigzag/quant tables from `Wavelet/InterWaveCodec.cs` / `InterWaveMap.cs` |
-| `text.c` | `Text/PageText.cs`, `PageTextItem.cs`; chunks `DataChunks/TxtzChunk.cs`, `TxtaChunk.cs` |
+| `text.c` | `Text/PageText.cs`, `PageTextItem.cs`; chunks `DataChunks/TxtzChunk.cs`, `TxtaChunk.cs`; zone tree from `DataChunks/Text/TextChunk.cs`, `TextZone.cs` |
+| `outline.c` | `DataChunks/NavmChunk.cs`, `Navigation/Bookmark.cs` |
+| `annot.c` | annotation chunks (`DataChunks/AntaChunk.cs`, `AntzChunk.cs`); maparea S-expr parsing (DjVuLibre `ddjvu_anno_get_hyperlinks` equivalent) |
 | `compose.c` | `DjvuImage.cs` (composite/`GetPixmap`) + `Graphics/PixelMapScaler.cs` (`GPixmapScaler`); pixel ops from `Graphics/PixelMap.cs`, `Pixel.cs` |
 | `render.c` | `DjvuPage.cs` (page orchestration: mask + bg + fg layer selection) |
 

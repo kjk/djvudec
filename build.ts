@@ -9,7 +9,7 @@ import { existsSync, readdirSync, mkdirSync } from "fs";
 
 const ROOT = import.meta.dir;
 const DJVULIBRE = "C:/Users/kjk/src/DjVuLibre";
-const SPECS = "C:/Users/kjk/src/DjvuNet/Specs";
+const SPECS = `${ROOT}/testfiles/djvunet`;
 const REF = `${ROOT}/ref_build`;
 
 const SRCS = [
@@ -24,6 +24,8 @@ const SRCS = [
   "src/document.c",
   "src/render.c",
   "src/text.c",
+  "src/outline.c",
+  "src/annot.c",
 ];
 
 function specFiles(): string[] {
@@ -38,7 +40,7 @@ async function buildRef() {
     `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
     `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
   const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
-  for (const tool of ["ddjvu", "djvutxt", "bzz"]) {
+  for (const tool of ["ddjvu", "djvutxt", "bzz", "djvused"]) {
     const exe = `${REF}/${tool}.exe`;
     if (existsSync(exe)) continue;
     console.log(`building ref tool ${tool}...`);
@@ -90,7 +92,7 @@ async function test() {
 
   // render verification (pure JB2-mask pages must match ddjvu byte-for-byte)
   console.log("\nrender verification:");
-  await $`python3 test/verify.py`.cwd(ROOT).nothrow();
+  await $`bun test/verify.ts`.cwd(ROOT).nothrow();
 }
 
 const cmd = process.argv[2];

@@ -7,6 +7,8 @@
 *.obj
 # reference tools are rebuilt from DjVuLibre by build.ts
 ref_build/
+# local test corpora (copied in, not part of the repo)
+testfiles/
 # scratch render/text outputs
 *.pnm
 *.pgm

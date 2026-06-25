@@ -30,6 +30,7 @@ typedef struct {
     uint32_t offset;     /* file offset of the component's "FORM" tag */
     uint32_t size;       /* component size from DIRM (0 if unknown) */
     char    *id;         /* component id used by INCL refs (NUL-term, owned) */
+    char    *title;      /* component title from DIRM, or NULL (owned) */
     int      type;       /* 0=include(DJVI) 1=page 2=thumb 3=shared-anno */
 } djvu_component;
 
@@ -39,12 +40,15 @@ typedef struct {
     uint32_t form_size;  /* size field of that FORM chunk */
     int has_info;
     djvu_page_info info;
+    const char *id;      /* directory component id (borrowed from comps) */
+    const char *title;   /* directory component title (borrowed), or NULL */
 } djvu_page_int;
 
 struct djvu_doc {
     djvu_ctx *ctx;
     const uint8_t *data;
     size_t len;
+    uint32_t root_form_off;  /* offset of the outer FORM (DJVU/DJVM) tag */
     int npages;
     djvu_page_int *pages;
     int ncomp;
