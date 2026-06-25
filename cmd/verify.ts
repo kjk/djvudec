@@ -65,6 +65,25 @@ function pageKind(data: Buffer, off: number): "mask" | "bg" | "other" {
   return "other";
 }
 
+// Whether any page FORM carries annotation (ANTa/ANTz) or text (TXTa/TXTz)
+// chunks -- a quick hint for the progress line.
+function docFeatures(data: Buffer, offs: number[]): { anno: boolean; text: boolean } {
+  let anno = false,
+    text = false;
+  for (const off of offs) {
+    const end = off + 8 + data.readUInt32BE(off + 4);
+    let p = off + 12;
+    while (p + 8 <= end) {
+      const cid = tag(data, p);
+      const csz = data.readUInt32BE(p + 4);
+      if (cid === "ANTa" || cid === "ANTz") anno = true;
+      if (cid === "TXTa" || cid === "TXTz") text = true;
+      p += 8 + csz + (csz & 1);
+    }
+  }
+  return { anno, text };
+}
+
 function run(cmd: string[]): Buffer {
   const r = Bun.spawnSync({ cmd, stdout: "pipe", stderr: "pipe" });
   return Buffer.from(r.stdout);
@@ -130,9 +149,15 @@ async function main(): Promise<number> {
   const ref = join(TMP, "djref.pnm");
   const mine = join(TMP, "djmine.pnm");
 
-  for (const f of files) {
+  files.forEach((f, fi) => {
     const data = readFileSync(f);
-    pageOffsets(data).forEach((o, i) => {
+    const offs = pageOffsets(data);
+    const { anno, text } = docFeatures(data, offs);
+    const feats = [`${offs.length} pages`];
+    if (anno) feats.push("annots");
+    if (text) feats.push("text");
+    console.log(`[${fi + 1}/${files.length}] ${basename(f)} (${feats.join(", ")})`);
+    offs.forEach((o, i) => {
       const page = i + 1;
       // render: pure-mask pages -> pgm (gray); bg/color pages -> ppm
       const kind = pageKind(data, o);
@@ -161,7 +186,7 @@ async function main(): Promise<number> {
         tbad.push(`${basename(f)} p${page}`);
       }
     });
-  }
+  });
 
   console.log(`render (mask=pgm, bg/color=ppm): MATCH=${m} MISMATCH=${mm}; skipped=${skip}`);
   for (const x of bad.slice(0, 50)) console.log("  render MISMATCH", x);
