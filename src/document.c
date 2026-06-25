@@ -1,7 +1,6 @@
 /* document.c -- context, document open/close, IFF/DJVM/DIRM/INFO parsing.
  * Ported from DjvuNet Parser/DjvuParser.cs + DataChunks/{DirmChunk,InfoChunk}.cs */
 #include "djvu_internal.h"
-#include "djvu_bzz.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

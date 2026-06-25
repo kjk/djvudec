@@ -1,6 +1,6 @@
 /* zpcodec.c -- ZP-Coder decoder. Ported from DjvuNet Compression/ZPCodec.cs.
  * Non-ZCODER ("Z-Coder") variant, decode path only. */
-#include "djvu_zp.h"
+#include "djvu_internal.h"
 
 static int zp_read_byte(djvu_zp *zp)
 {

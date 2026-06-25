@@ -4,10 +4,6 @@
  * DjVuImage.cpp. Pixmaps here are RGB (3 bytes), bottom-up (DjVu convention);
  * the page is flipped to top-down at the very end. */
 #include "djvu_internal.h"
-#include "djvu_iw44.h"
-#include "djvu_jb2.h"
-#include "djvu_bitmap.h"
-#include "djvu_bzz.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>

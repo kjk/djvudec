@@ -1,5 +1,5 @@
 /* bitmap.c -- GBitmap port (DjvuNet Graphics/Bitmap.cs). */
-#include "djvu_bitmap.h"
+#include "djvu_internal.h"
 #include <string.h>
 
 int djvu_bm_init(djvu_ctx *ctx, djvu_bitmap *bm, int height, int width, int border)

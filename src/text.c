@@ -2,7 +2,6 @@
  * TXTz = BZZ-compressed, TXTa = raw; payload is u24-BE length + UTF-8 text
  * (followed by a text-zone tree which we skip). */
 #include "djvu_internal.h"
-#include "djvu_bzz.h"
 #include <string.h>
 
 char *djvu_page_text(djvu_doc *doc, int page_no)

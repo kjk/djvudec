@@ -1,9 +1,6 @@
 /* render.c -- page rendering. Milestone 3: JB2 bitonal composite.
  * (color IW44 = milestone 5). */
 #include "djvu_internal.h"
-#include "djvu_jb2.h"
-#include "djvu_bitmap.h"
-#include "djvu_iw44.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

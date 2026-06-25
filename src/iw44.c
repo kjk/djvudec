@@ -1,8 +1,7 @@
 /* iw44.c -- IW44 wavelet decoder. Ported from DjvuNet Wavelet/
  * {InterWaveCodec,InterWaveDecoder,InterWaveMap,InterWaveBlock,
  *  InterWavePixelMap,InterWavePixelMapDecoder,InterWaveTransform}.cs */
-#include "djvu_iw44.h"
-#include "djvu_zp.h"
+#include "djvu_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

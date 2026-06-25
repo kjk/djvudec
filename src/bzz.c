@@ -1,7 +1,6 @@
 /* bzz.c -- BZZ decompression. Ported from DjvuNet Compression/BSInputStream.cs
  * (Decode/DecodeRaw/DecodeBinary) and BSBaseStream.cs constants. */
-#include "djvu_bzz.h"
-#include "djvu_zp.h"
+#include "djvu_internal.h"
 #include <stdlib.h>
 #include <string.h>
 

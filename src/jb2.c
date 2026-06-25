@@ -1,7 +1,6 @@
 /* jb2.c -- JB2 bitonal decoder. Ported from DjvuNet JB2/{JB2Codec,JB2Decoder,
  * JB2Dictionary,JB2Image}.cs (decode path only). */
-#include "djvu_jb2.h"
-#include "djvu_zp.h"
+#include "djvu_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

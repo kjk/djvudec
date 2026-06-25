@@ -1,5 +1,5 @@
 /* Auto-generated from DjvuNet ZPCodec.cs (#if !ZCODER default table). Do not edit. */
-#include "djvu_zp.h"
+#include "djvu_internal.h"
 const djvu_zp_table djvu_zp_default_table[256] = {
   { 0x8000, 0x0000, 84, 145 },
   { 0x8000, 0x0000, 3, 4 },
