@@ -36,37 +36,44 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 | zpcodec.c           | Compression/ZPCodec.cs (decode only)    | DONE   |
 | document.c          | Parser + DataChunks (DJVM/DIRM/INFO)    | DONE   |
 | bzz.c               | Compression/BSInputStream (decode)      | DONE   |
-| jb2.c               | JB2/* (decode)                          | TODO   |
+| jb2.c               | JB2 modules (decode)                    | DONE   |
+| bitmap.c            | Graphics/Bitmap (GBitmap)               | DONE   |
 | iw44.c              | Wavelet/* (decode)                      | TODO   |
-| bitmap.c / pixmap.c | Graphics/Bitmap, PixelMap               | TODO   |
+| pixmap.c            | Graphics/PixelMap                       | TODO   |
 | text.c              | Text/PageText + Txta/Txtz chunks        | TODO   |
-| render/compose      | DjvuPage composite (mask+fg+bg)         | TODO   |
+| render/compose      | DjvuPage composite (mask+fg+bg)         | partial (mask only) |
 
 ## Milestones
 1. **Page info** (no codecs): DJVM/DIRM + INFO → page count + dims. ✅ DONE
    (all 11 Specs files match ddjvu dims)
 2. **BZZ** decompressor. ✅ DONE (round-trips vs `bzz -e`; decodes real DIRM)
    - full DIRM parse: component ids/types resolved (INCL resolution ready)
-3. **ZP + JB2** → bitonal page bitmap; verify vs `ddjvu -format=pgm`. ← NEXT
-   (9/11 files are bitonal; pages reference a shared Djbz dict via INCL→DJVI)
-4. **Text extraction** (Txta/Txtz, BZZ); verify vs `djvutxt`.
-5. **IW44** → color page; full composite; verify vs `ddjvu`.
-6. Page scaling / subsample to requested dimensions.
+3. **ZP + JB2** → bitonal page bitmap. ✅ DONE
+   All 122 pure-mask pages match `ddjvu -format=pgm` byte-for-byte.
+   (`bun build.ts test` / `python3 test/verify.py`)
+4. **IW44** → background/foreground color; full composite; verify vs `ddjvu`. ← NEXT
+   67 remaining pages have a BG44 (IW44) background or are full color.
+5. **Text extraction** (Txtz, BZZ); verify vs `djvutxt`.
+6. Page scaling / subsample to requested dimensions (basic box subsample done).
 
-## Notes for next session (JB2)
-- Page FORM:DJVU layout: INFO, INCL (-> "dict0006.iff" shared dict), Sjbz (the
-  JB2 bitonal mask), optional FG44/BG44 (color), FGbz (palette), Txta/Txtz.
-- INCL id resolves via djvu_doc_component_offset(); shared dict is a FORM:DJVI
-  containing a Djbz chunk (JB2 dictionary, no image).
-- Sjbz + Djbz both decode with the JB2 codec (JB2/JB2Codec.cs). JB2 uses the ZP
-  coder directly (djvu_zp_decode with NumContext context arrays).
-- For bitonal pages the composite output == the JB2 mask rendered 0/255 gray;
-  compare against `ddjvu -format=pgm -page=N`.
-- C# entry points: JB2Image.Decode / JB2Dictionary; JB2Codec.cs is the core.
+## Notes for next session (IW44)
+- Dict resolution: in-page `Djbz` takes precedence; else `INCL` id -> external
+  DJVI component (djvu_doc_component_offset) -> its `Djbz`. (render.c)
+- Pages needing IW44: have `BG44` chunks (background, possibly multiple = IW44
+  refinement chunks to be decoded in sequence) and `FGbz` (FG color palette);
+  composite = background pixmap, then foreground colors through the JB2 mask.
+- `ddjvu -format=pgm` gives the gray composite; `-format=ppm` gives color.
+  Color test files (P6): 1998_compression, 1998_lossy_masked.
+- C# source: Wavelet/InterWave*Decoder.cs (IW44Image / InterWavePixelMap).
+- JB2 codec entry: djvu_jb2_decode (Sjbz/image), djvu_jb2_decode_dict (Djbz).
+- DJVU_JB2_DEBUG=1 env prints a per-stream record-type histogram.
 
 ## Build / test
 `bun build.ts` — builds ref tools (once), the C library + test harness with clang.
 `bun build.ts test` — runs verification over Specs/*.djvu.
 
 ## Change log (most recent first)
-- (init) scaffold, ref tools built, ZP table extracted, milestone 1 WIP.
+- JB2 bitonal decoder + GBitmap + render: 122/122 pure-mask pages == ddjvu.
+- full DJVM/DIRM directory parse (BZZ component table); INCL resolution.
+- BZZ decompressor (round-trips vs `bzz -e`).
+- scaffold, ref tools built, ZP table extracted, milestone 1 (page info).

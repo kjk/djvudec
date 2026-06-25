@@ -16,6 +16,8 @@ const SRCS = [
   "src/zptable.c",
   "src/zpcodec.c",
   "src/bzz.c",
+  "src/bitmap.c",
+  "src/jb2.c",
   "src/document.c",
   "src/render.c",
   "src/text.c",
@@ -69,7 +71,11 @@ async function test() {
     console.log(`${ok ? "PASS" : "FAIL"} ${f}: pages=${myPages} p1=${myP1} ref=${dims}`);
     ok ? pass++ : fail++;
   }
-  console.log(`\n${pass} pass, ${fail} fail`);
+  console.log(`\npage-info: ${pass} pass, ${fail} fail`);
+
+  // render verification (pure JB2-mask pages must match ddjvu byte-for-byte)
+  console.log("\nrender verification:");
+  await $`python3 test/verify.py`.cwd(ROOT).nothrow();
 }
 
 const cmd = process.argv[2];

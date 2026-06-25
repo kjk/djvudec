@@ -242,6 +242,38 @@ uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id)
     return 0;
 }
 
+const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
+                                    const char *id, uint32_t *out_size,
+                                    uint32_t *start)
+{
+    const uint8_t *data = doc->data;
+    size_t len = doc->len;
+    uint32_t form_size, form_end, pos;
+
+    if ((size_t)form_off + 12 > len || !djvu_tag_eq(data + form_off, "FORM"))
+        return NULL;
+    form_size = djvu_rd_u32be(data + form_off + 4);
+    form_end = form_off + 8 + form_size;
+    if (form_end > len) form_end = (uint32_t)len;
+
+    pos = start && *start ? *start : form_off + 12;
+    while (pos + 8 <= form_end) {
+        const uint8_t *cid = data + pos;
+        uint32_t csize = djvu_rd_u32be(data + pos + 4);
+        uint32_t cdata = pos + 8;
+        uint32_t next;
+        if (cdata + csize > form_end) csize = form_end - cdata;
+        next = cdata + csize + (csize & 1);
+        if (djvu_tag_eq(cid, id)) {
+            if (out_size) *out_size = csize;
+            if (start) *start = next;
+            return data + cdata;
+        }
+        pos = next;
+    }
+    return NULL;
+}
+
 djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
 {
     djvu_doc *doc;

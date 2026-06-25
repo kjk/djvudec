@@ -45,6 +45,14 @@ struct djvu_doc {
 /* Resolve an INCL component id to its FORM file offset; 0 if not found. */
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id);
 
+/* Find the first sub-chunk with id `id` inside the FORM at form_off.
+   Returns a pointer to the chunk data and sets *out_size, or NULL.
+   If `start` != NULL, *start is used as the byte offset to begin scanning and
+   is advanced past the found chunk (to iterate repeated chunks like INCL). */
+const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
+                                    const char *id, uint32_t *out_size,
+                                    uint32_t *start);
+
 /* big-endian / little-endian readers over the file buffer (bounds-checked
    by callers; return 0 past end) */
 static inline uint32_t djvu_rd_u32be(const uint8_t *p) {
