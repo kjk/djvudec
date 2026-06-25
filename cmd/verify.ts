@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // verify.ts -- verify djvu_test render output against DjVuLibre's ddjvu, page
-// by page (TypeScript port of verify.py; run with `bun cmd/verify.ts`).
+// by page (run with `bun cmd/verify.ts`; replaces the old Python verify.py).
 //
 // This is the test entry point: it ensures deps (get-deps.ts), builds the ref
 // tools + harness (buildRef/build from build.ts), then verifies.
@@ -8,8 +8,9 @@
 // Pages that are pure JB2 masks (Sjbz, no BG44/FG44 background) must match
 // `ddjvu -format=pgm` byte-for-byte. Pages with an IW44 background or color are
 // compared as ppm. Text is compared against djvutxt (trailing separators
-// ignored). Override the corpus dir with the DJVU_SPECS env var.
-import { existsSync, readFileSync, readdirSync, rmSync } from "fs";
+// ignored). Runs over every .djvu under testfiles/ recursively; set the
+// DJVU_SPECS env var to point the scan at a different directory.
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
@@ -77,7 +78,7 @@ function renderMine(f: string, page: number, out: string) {
   run([TEST, "-page", String(page), "-out", out, f]);
 }
 
-// strip CR / form-feed and trailing whitespace, like verify.py's text_norm
+// strip CR / form-feed and trailing whitespace (text normalization)
 function textNorm(b: Buffer): string {
   return b
     .toString("latin1")
@@ -94,10 +95,24 @@ function readBytes(p: string): Buffer {
   return existsSync(p) ? readFileSync(p) : Buffer.alloc(0);
 }
 
+// Every .djvu under dir, recursively (sorted by path).
+function walkDjvu(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) out.push(...walkDjvu(p));
+    else if (name.toLowerCase().endsWith(".djvu")) out.push(p);
+  }
+  return out;
+}
+
 async function main(): Promise<number> {
   // Ensure the corpus + reference checkouts exist, then build everything.
-  const corpus = await getDeps();
-  const SPECS = process.env.DJVU_SPECS ?? corpus;
+  await getDeps();
+  // Verify against every .djvu under testfiles/ (recursively); DJVU_SPECS
+  // overrides the root to point at any other directory of samples.
+  const SPECS = process.env.DJVU_SPECS ?? join(ROOT, "testfiles");
   await buildRef();
   await build();
 
@@ -110,10 +125,7 @@ async function main(): Promise<number> {
   const bad: string[] = [];
   const tbad: string[] = [];
 
-  const files = readdirSync(SPECS)
-    .filter((f) => f.toLowerCase().endsWith(".djvu"))
-    .sort()
-    .map((f) => join(SPECS, f));
+  const files = walkDjvu(SPECS).sort();
 
   const ref = join(TMP, "djref.pnm");
   const mine = join(TMP, "djmine.pnm");

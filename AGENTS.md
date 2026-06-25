@@ -49,10 +49,11 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
 
 ### Verification scripts
 - `bun cmd/verify.ts` — corpus verifier (builds first). mask→pgm, bg/color→ppm,
-  plus text. Override the corpus dir with the `DJVU_SPECS` env var.
-- `python3 test/verify_dir.py <dir> [maxpages]` — sampled directory verifier,
-  Unicode-path safe (copies each file to an ASCII temp path), auto format
-  detection (P5→pgm, P6→ppm), skips pages ddjvu itself fails on.
+  plus text. Scans every `.djvu` under `testfiles/` **recursively**; set the
+  `DJVU_SPECS` env var to point the scan at any other directory (e.g. a
+  real-world set) instead.
+- The old Python verifiers (`test/verify.py`, `test/verify_dir.py`) have been
+  removed; `cmd/verify.ts` is their bun/TypeScript replacement.
 
 The single render MISMATCH is `1998_compression.djvu` p19 — NOT a decode bug.
 It is a ddjvu three-layer-stencil quirk (ddjvu paints a few FG pixels ~1px off

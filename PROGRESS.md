@@ -48,10 +48,10 @@ file includes just that one header.
 | render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
 
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
-`bun cmd/verify.ts` (testfiles/djvu/*.djvu):
-  render (mask=pgm, bg/color=ppm): MATCH=188 MISMATCH=1; text: MATCH=144.
-`python3 test/verify_dir.py <dir>` (sampled, Unicode-path safe) on real-world
-sets:
+`bun cmd/verify.ts` (every .djvu under testfiles/, recursively):
+  render (mask=pgm, bg/color=ppm): MATCH=398 MISMATCH=1; text: MATCH=353.
+`DJVU_SPECS=<dir> bun cmd/verify.ts` (point at any directory of .djvu) on
+real-world sets (verify.ts replaced the old Python verify_dir.py):
   - Z:\sumtest (36 files, up to 1177 pages): render 138/3 (the 3 = fg-stencil
     ddjvu quirk, GPU Gems ~2-9px), text 141/141.
   - Z:\backup\books (1396 files; two 30-file random samples): render 300/300,
@@ -109,7 +109,7 @@ whose INFO gamma != 2.2.
 `bun cmd/get-deps.ts` — clones DjvuNet + DjVuLibre siblings, assembles testfiles/djvu.
 `bun cmd/build.ts` — builds ref tools (once), the C library + test harness with clang.
 `bun cmd/verify.ts` — the test driver: ensures deps, builds, then verifies over
-testfiles/djvu/*.djvu.
+every .djvu under testfiles/ (recursively).
 
 ## Change log (most recent first)
 - richer public API (modeled on SumatraPDF's ddjvuapi usage): structured text
