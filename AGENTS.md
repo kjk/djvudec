@@ -12,6 +12,17 @@ in-memory buffer (no incremental fetch). We provide exactly three things:
 
 No encoders. No writing DjVu.
 
+**XML is intentionally not ported.** DjVuLibre's XML code (`xmltools/`,
+`libdjvu/XMLParser.*`, `XMLTags.*`; the `djvutoxml`/`djvuxmlparser` tools) is a
+round-trip *serialize/edit* format, not part of the decode path — reading a
+`.djvu` produces internal structs that DjVuLibre exposes as s-expressions
+(miniexp), with XML a separate optional export plus an *encode-back* importer.
+It's out of scope on two counts: it's an encoder, and the structured data it
+would carry (outline, hidden-text zones, hyperlinks) we already expose as typed
+C structs (`djvu_doc_outline`, `djvu_page_text_get_zones`, `djvu_page_get_links`)
+that a caller can serialize themselves. The C# port (DjvuNet) has no XML code
+either. Don't re-investigate this.
+
 ## Reference checkouts (local)
 - C# source being ported:  `C:\Users\kjk\src\DjvuNet\DjvuNet`  (DjvuNet repo)
 - Verification oracle:      `C:\Users\kjk\src\DjVuLibre`        (DjVuLibre repo)
