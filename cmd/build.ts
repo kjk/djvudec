@@ -64,7 +64,7 @@ async function buildRef() {
 // Build the C library + test harness.
 async function build() {
   console.log("building djvu_test...");
-  await $`clang -std=c11 -g -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Iinclude -Isrc ${{ raw: SRCS.join(" ") }} test/djvu_test.c -o djvu_test.exe`.cwd(ROOT);
+  await $`clang -std=c11 -g -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Isrc ${{ raw: SRCS.join(" ") }} test/djvu_test.c -o djvu_test.exe`.cwd(ROOT);
   console.log("built djvu_test.exe");
 }
 

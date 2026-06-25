@@ -25,7 +25,7 @@ each match DjVuLibre's internals byte-for-byte; ddjvu just paints the foreground
 See [PROGRESS.md](PROGRESS.md) for the design, port map, and milestones.
 
 ## API
-See [`include/djvu.h`](include/djvu.h). Sketch:
+See [`src/djvu.h`](src/djvu.h). Sketch:
 ```c
 djvu_ctx *ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
 djvu_doc *doc = djvu_doc_open(ctx, data, len);     /* data must outlive doc */

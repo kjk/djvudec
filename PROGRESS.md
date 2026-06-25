@@ -25,7 +25,7 @@ All 11 files are DJVM (multi-page bundled, BZZ-compressed DIRM directory).
 - color   (P6 / IW44): 1998_compression.djvu, 1998_lossy_masked.djvu
 - 7 files have hidden text (BZZ + Txta/Txtz)
 
-## C API (include/djvu.h) — jbig2dec flavor
+## C API (src/djvu.h) — jbig2dec flavor
 Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 
 Internal headers are consolidated into a single `src/djvu_internal.h` (one

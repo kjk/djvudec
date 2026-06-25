@@ -57,7 +57,7 @@ internals. Our output is arguably more correct. Do not "fix" it.
   `djvu_internal.h` + every `src/*.c` concatenated into one translation unit,
   with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped). The
   script verifies the result with `clang -c` before finishing. `dist/*.c/.h`
-  are committed (regenerate after touching `src/` or `include/`); the build
+  are committed (regenerate after touching `src/`); the build
   artifacts are gitignored. This works because no two `.c` files share a
   file-local (`static`) symbol name — keep it that way or the single-unit build
   breaks.
@@ -75,7 +75,7 @@ bun + TypeScript is the standard tooling for ad-hoc tooling here.
 - Python on Windows can't read git-bash `/tmp` paths; write test outputs to the
   session scratchpad dir instead.
 
-## C API (`include/djvu.h`) — jbig2dec flavor
+## C API (`src/djvu.h`) — jbig2dec flavor
 Opaque `djvu_ctx` / `djvu_doc`; caller-supplied `djvu_alloc_cb` / `free_cb` /
 `error_cb`. Key calls: `djvu_doc_open(ctx,data,len)`, `djvu_doc_page_count`,
 `djvu_doc_page_info(doc,page,&info)`, `djvu_page_render(doc,page,subsample)`
