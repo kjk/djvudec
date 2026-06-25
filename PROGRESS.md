@@ -40,7 +40,18 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 | bitmap.c            | Graphics/Bitmap (GBitmap)               | DONE   |
 | iw44.c              | Wavelet/* (decode)                      | DONE   |
 | text.c              | Text/PageText + TXTa/TXTz chunks        | DONE   |
-| render/compose      | DjvuPage composite (mask+fg+bg)         | partial (mask only) |
+| compose.c           | DjvuImage composite + GPixmapScaler     | DONE   |
+| render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
+
+## Status: feature-complete; verified byte-for-byte vs DjVuLibre
+`python3 test/verify.py`:
+  render (mask=pgm, bg/color=ppm): MATCH=188 MISMATCH=1; text: MATCH=144.
+- The 1 render mismatch is 1998_compression p19: a JB2 *mask* (Sjbz) decode
+  edge case (680 px / 0.008% shifted ~2px in a 40-row band; both p18 and p19
+  use heavy MatchedRefine, so it is a data-specific cross-coding/coordinate
+  edge case). Deterministic. TODO: trace the refined-shape size/bbox there.
+- Color pages composite only at subsample==1 (full res); subsample>1 on a
+  color page currently falls back to the gray mask. TODO: scale composite.
 
 ## Milestones
 1. **Page info** (no codecs): DJVM/DIRM + INFO → page count + dims. ✅ DONE
@@ -56,7 +67,10 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
    BG44 + FG44 decode byte-for-byte vs DjVuLibre IW44Image (26/26 BG/FG images,
    color, via test/iw44ref). NOTE: IW44/GBitmap are stored bottom-up; output is
    flipped to top-down (save_ppm in DjVuLibre writes bottom-up).
-   NEXT: composite mask + bg + fg into the page; verify vs `ddjvu` (full page).
+7. **Composite** (compose.c): background (GPixmapScaler-upsampled) + foreground
+   (FGbz palette two-layer, or FG44 three-layer nearest-upsample) stenciled
+   through the JB2 mask. ✅ DONE — full color pages match `ddjvu -format=ppm`
+   byte-for-byte (background alone matches `ddjvu -mode=background`).
 6. Page scaling / subsample to requested dimensions (basic box subsample done).
 
 ## Notes for next session (IW44)
@@ -76,6 +90,7 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 `bun build.ts test` — runs verification over Specs/*.djvu.
 
 ## Change log (most recent first)
+- composite (mask+bg+fg) + GPixmapScaler: 188/189 pages == ddjvu (1 mask edge case).
 - IW44 wavelet decoder (BG44/FG44): 26/26 color images == DjVuLibre IW44Image.
 - text extraction (TXTz/TXTa): 144/144 text pages == djvutxt content.
 - JB2 bitonal decoder + GBitmap + render: 122/122 pure-mask pages == ddjvu.

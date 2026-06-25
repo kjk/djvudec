@@ -22,6 +22,10 @@ int djvu_iw44_is_color(iw_pixmap *pm);
    Gray images are expanded to gray RGB. Returns 0 on success. */
 int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb);
 
+/* Like render_rgb but bottom-up (row 0 = bottom), matching DjVuLibre's internal
+   GPixmap orientation; used by the compositor. */
+int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb);
+
 /* Render full-resolution gray (1 byte/pixel, 0..255). Returns 0 on success. */
 int djvu_iw44_render_gray(iw_pixmap *pm, uint8_t *gray);
 

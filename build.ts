@@ -20,6 +20,7 @@ const SRCS = [
   "src/jb2.c",
   "src/iw44_zigzag.c",
   "src/iw44.c",
+  "src/compose.c",
   "src/document.c",
   "src/render.c",
   "src/text.c",

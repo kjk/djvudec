@@ -45,8 +45,8 @@ def page_kind(data, off):
     if sj: return 'mask'
     return 'other'
 
-def render_ref(f, page, out):
-    subprocess.run([os.path.join(RB, "ddjvu.exe"), "-format=pgm",
+def render_ref(f, page, out, fmt="pgm"):
+    subprocess.run([os.path.join(RB, "ddjvu.exe"), f"-format={fmt}",
                     f"-page={page}", f, out], capture_output=True)
 
 def render_mine(f, page, out):
@@ -71,12 +71,14 @@ def main():
     for f in sorted(glob.glob(os.path.join(SPECS, "*.djvu"))):
         data = open(f, "rb").read()
         for i, o in enumerate(page_offsets(data)):
-            # render (pure-mask pages only)
-            if page_kind(data, o) != 'mask':
+            # render: pure-mask pages -> pgm (gray); bg/color pages -> ppm
+            kind = page_kind(data, o)
+            if kind == 'other':
                 skip += 1
             else:
-                ref = os.path.join(TMP, "djref.pgm"); mine = os.path.join(TMP, "djmine.pgm")
-                render_ref(f, i+1, ref)
+                fmt = "pgm" if kind == 'mask' else "ppm"
+                ref = os.path.join(TMP, "djref.pnm"); mine = os.path.join(TMP, "djmine.pnm")
+                render_ref(f, i+1, ref, fmt)
                 render_mine(f, i+1, mine)
                 a = open(ref, "rb").read() if os.path.exists(ref) else b""
                 b = open(mine, "rb").read() if os.path.exists(mine) else b""
@@ -84,7 +86,7 @@ def main():
                     m += 1
                 else:
                     mm += 1
-                    bad.append(f"{os.path.basename(f)} p{i+1} (ref={len(a)} mine={len(b)})")
+                    bad.append(f"{os.path.basename(f)} p{i+1} {kind} (ref={len(a)} mine={len(b)})")
             # text (all pages; ignores trailing page separator)
             rt = text_norm(get_text_ref(f, i+1))
             mt = text_norm(get_text_mine(f, i+1))
@@ -95,7 +97,7 @@ def main():
             else:
                 tmm += 1
                 tbad.append(f"{os.path.basename(f)} p{i+1}")
-    print(f"render (pure-mask): MATCH={m} MISMATCH={mm}; skipped(bg/color)={skip}")
+    print(f"render (mask=pgm, bg/color=ppm): MATCH={m} MISMATCH={mm}; skipped={skip}")
     for x in bad[:50]:
         print("  render MISMATCH", x)
     print(f"text: MATCH={tm} MISMATCH={tmm}; both-empty={te}")

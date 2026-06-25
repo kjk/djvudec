@@ -8,6 +8,9 @@
 #include <string.h>
 #include <stdio.h>
 
+djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
+                             int width, int height);
+
 /* trim trailing whitespace/control from an INCL id copied into buf */
 static void trim_id(char *s)
 {
@@ -76,6 +79,20 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
     dict = load_page_dict(doc, form_off);
     img = djvu_jb2_decode(ctx, sjbz, sz, dict);
     if (!img) goto done;
+
+    /* color/gray-background page: composite mask + BG44 + foreground */
+    {
+        uint32_t cs;
+        int has_bg = djvu_form_find_chunk(doc, form_off, "BG44", &cs, NULL) != NULL;
+        int has_fg = djvu_form_find_chunk(doc, form_off, "FG44", &cs, NULL) != NULL;
+        if ((has_bg || has_fg) && subsample == 1 && !getenv("DJVU_NOCOMPOSE")) {
+            djvu_page_info pi;
+            if (djvu_doc_page_info(doc, page_no, &pi) == 0) {
+                out = djvu_compose_page(doc, page_no, img, pi.width, pi.height);
+                goto done;
+            }
+        }
+    }
 
     /* compose mask into a full-res bottom-up bitmap (Grays=2 -> clamp 1) */
     memset(&page, 0, sizeof(page));

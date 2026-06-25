@@ -616,7 +616,7 @@ int djvu_iw44_is_color(iw_pixmap *pm)
 
 static int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 
-int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
+static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
 {
     djvu_ctx *ctx;
     int w, h, i, color;
@@ -644,7 +644,7 @@ int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
             int tr = yv + 128 + t2;
             int tg = t3 - (t2 >> 1);
             int tb = t3 + (bv << 1);
-            size_t o = (size_t)((h - 1 - i / w) * w + (i % w)) * 3;
+            size_t o = (size_t)(flip ? (h - 1 - i / w) * w + (i % w) : i) * 3;
             rgb[o + 0] = (uint8_t)clamp255(tr);
             rgb[o + 1] = (uint8_t)clamp255(tg);
             rgb[o + 2] = (uint8_t)clamp255(tb);
@@ -652,12 +652,21 @@ int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
     } else {
         for (i = 0; i < w * h; i++) {
             int g = clamp255(127 - bytes[(size_t)i * 3]);  /* gray = 127 - Y */
-            size_t o = (size_t)((h - 1 - i / w) * w + (i % w)) * 3;
+            size_t o = (size_t)(flip ? (h - 1 - i / w) * w + (i % w) : i) * 3;
             rgb[o + 0] = rgb[o + 1] = rgb[o + 2] = (uint8_t)g;
         }
     }
     djvu_free(ctx, bytes);
     return 0;
+}
+
+int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
+{
+    return iw44_render_rgb_impl(pm, rgb, 1);
+}
+int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb)
+{
+    return iw44_render_rgb_impl(pm, rgb, 0);
 }
 
 /* debug: render a single plane (0=Y,1=Cb,2=Cr) as gray (value+128), using the

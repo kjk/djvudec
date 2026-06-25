@@ -14,7 +14,11 @@ Correctness is verified against [DjVuLibre](https://github.com/DjvuNet/DjVuLibre
 | Page count / dimensions / dpi / rotation | ✅ matches ddjvu (11/11 files) |
 | Bitonal page bitmap (JB2) | ✅ byte-exact vs ddjvu (122/122 mask pages) |
 | Hidden text (TXTz/TXTa) | ✅ matches djvutxt (144/144 pages) |
-| Color / gray background (IW44) | ⬜ not yet (67 pages need it) |
+| Color / gray pages (IW44 + composite) | ✅ byte-exact vs ddjvu (188/189 pages) |
+
+Overall: `python3 test/verify.py` → render 188/189 == ddjvu, text 144/144 ==
+djvutxt. (The 1 render miss is a JB2 mask cross-coding edge case on one page;
+see PROGRESS.md.)
 
 See [PROGRESS.md](PROGRESS.md) for the design, port map, and milestones.
 
