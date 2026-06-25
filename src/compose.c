@@ -208,15 +208,12 @@ static int compute_red(int w, int h, int rw, int rh)
 /* Decode the page background (BG44) into `bg` (bottom-up RGB, native res). */
 static iw_pixmap *decode_bg(djvu_doc *doc, uint32_t form_off)
 {
-    uint32_t start = 0, sz; const uint8_t *chunk;
     iw_pixmap *pm = djvu_iw44_new(doc->ctx);
-    int n = 0;
     if (!pm) return NULL;
-    while ((chunk = djvu_form_find_chunk(doc, form_off, "BG44", &sz, &start)) != NULL) {
-        if (djvu_iw44_decode_chunk(pm, chunk, sz) != 0) { djvu_iw44_free(pm); return NULL; }
-        n++;
+    if (djvu_iw44_decode_form(doc, form_off, "BG44", pm, 0) != 0) {
+        djvu_iw44_free(pm);
+        return NULL;
     }
-    if (!n) { djvu_iw44_free(pm); return NULL; }
     return pm;
 }
 
@@ -329,23 +326,21 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
 
     /* ----- foreground: FG44 pixmap (three-layer) ----- */
     if (!pal) {
-        uint32_t start = 0; const uint8_t *fc; int n = 0;
-        fg44chunk = djvu_form_find_chunk(doc, form_off, "FG44", &sz, &start);
+        fg44chunk = djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL);
         if (fg44chunk) {
+            int fw, fh;
             fgpm = djvu_iw44_new(ctx);
-            start = 0;
-            while ((fc = djvu_form_find_chunk(doc, form_off, "FG44", &sz, &start)) != NULL) {
-                if (djvu_iw44_decode_chunk(fgpm, fc, sz) != 0) { djvu_iw44_free(fgpm); fgpm = NULL; break; }
-                n++;
-            }
-            if (fgpm && n) {
-                int fw = djvu_iw44_width(fgpm), fh = djvu_iw44_height(fgpm);
+            if (fgpm && djvu_iw44_decode_form(doc, form_off, "FG44", fgpm, 0) == 0) {
+                fw = djvu_iw44_width(fgpm);
+                fh = djvu_iw44_height(fgpm);
                 fgred = compute_red(width, height, fw, fh);
                 if (fgred < 1) fgred = 1;
                 if (cpix_init(ctx, &fgnat, fw, fh) != 0 ||
                     djvu_iw44_render_rgb_raw(fgpm, fgnat.d) != 0) {
                     djvu_iw44_free(fgpm); fgpm = NULL;
                 }
+            } else {
+                djvu_iw44_free(fgpm); fgpm = NULL;
             }
         }
     }

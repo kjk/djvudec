@@ -243,6 +243,40 @@ uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id)
     return 0;
 }
 
+void djvu_trim_incl_id(char *s)
+{
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' ||
+                     s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == 0x1a))
+        s[--n] = 0;
+}
+
+const uint8_t *djvu_form_find_incl_chunk(djvu_doc *doc, uint32_t form_off,
+                                         const char *chunk_id, uint32_t *out_size)
+{
+    uint32_t start = 0, incl_sz, chunk_sz;
+    const uint8_t *incl;
+
+    while ((incl = djvu_form_find_chunk(doc, form_off, "INCL", &incl_sz, &start)) != NULL) {
+        char id[64];
+        uint32_t coff;
+        const uint8_t *chunk;
+        size_t n = incl_sz < sizeof(id) - 1 ? incl_sz : sizeof(id) - 1;
+
+        memcpy(id, incl, n);
+        id[n] = 0;
+        djvu_trim_incl_id(id);
+        coff = djvu_doc_component_offset(doc, id);
+        if (!coff) continue;
+        chunk = djvu_form_find_chunk(doc, coff, chunk_id, &chunk_sz, NULL);
+        if (chunk) {
+            if (out_size) *out_size = chunk_sz;
+            return chunk;
+        }
+    }
+    return NULL;
+}
+
 const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
                                     const char *id, uint32_t *out_size,
                                     uint32_t *start)

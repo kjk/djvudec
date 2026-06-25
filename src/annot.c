@@ -263,7 +263,7 @@ static void walk(lcollect *lc, const snode *n)
 static char *load_anno(djvu_doc *doc, uint32_t form_off, size_t *out_len)
 {
     djvu_ctx *ctx = doc->ctx;
-    uint32_t sz, start;
+    uint32_t sz;
     const uint8_t *chunk;
 
     chunk = djvu_form_find_chunk(doc, form_off, "ANTz", &sz, NULL);
@@ -279,30 +279,16 @@ static char *load_anno(djvu_doc *doc, uint32_t form_off, size_t *out_len)
         *out_len = sz;
         return buf;
     }
-    /* shared annotation via INCL -> DJVI */
-    start = 0;
-    while ((chunk = djvu_form_find_chunk(doc, form_off, "INCL", &sz, &start)) != NULL) {
-        char id[64];
-        uint32_t coff;
-        size_t n = sz < sizeof(id) - 1 ? sz : sizeof(id) - 1;
-        size_t k = n;
-        memcpy(id, chunk, n); id[n] = 0;
-        while (k > 0 && (id[k-1] == '\n' || id[k-1] == '\r' || id[k-1] == ' ' ||
-                         id[k-1] == '\t' || id[k-1] == 0x1a)) id[--k] = 0;
-        coff = djvu_doc_component_offset(doc, id);
-        if (!coff) continue;
-        {
-            const uint8_t *c2 = djvu_form_find_chunk(doc, coff, "ANTz", &sz, NULL);
-            if (c2) return (char *)djvu_bzz_decode_all(ctx, c2, sz, out_len);
-            c2 = djvu_form_find_chunk(doc, coff, "ANTa", &sz, NULL);
-            if (c2) {
-                char *buf = (char *)djvu_alloc(ctx, sz + 1);
-                if (!buf) return NULL;
-                memcpy(buf, c2, sz); buf[sz] = 0;
-                *out_len = sz;
-                return buf;
-            }
-        }
+    chunk = djvu_form_find_incl_chunk(doc, form_off, "ANTz", &sz);
+    if (chunk)
+        return (char *)djvu_bzz_decode_all(ctx, chunk, sz, out_len);
+    chunk = djvu_form_find_incl_chunk(doc, form_off, "ANTa", &sz);
+    if (chunk) {
+        char *buf = (char *)djvu_alloc(ctx, sz + 1);
+        if (!buf) return NULL;
+        memcpy(buf, chunk, sz); buf[sz] = 0;
+        *out_len = sz;
+        return buf;
     }
     return NULL;
 }

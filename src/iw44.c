@@ -606,6 +606,21 @@ int djvu_iw44_decode_chunk(iw_pixmap *pm, const uint8_t *data, size_t len)
     return 0;
 }
 
+int djvu_iw44_decode_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id,
+                          iw_pixmap *pm, int max_chunks)
+{
+    uint32_t start = 0, sz;
+    const uint8_t *chunk;
+    int n = 0;
+
+    while ((chunk = djvu_form_find_chunk(doc, form_off, chunk_id, &sz, &start)) != NULL) {
+        if (max_chunks > 0 && n >= max_chunks) break;
+        if (djvu_iw44_decode_chunk(pm, chunk, sz) != 0) return -1;
+        n++;
+    }
+    return n > 0 ? 0 : -1;
+}
+
 int djvu_iw44_width(iw_pixmap *pm) { return pm ? pm->w : 0; }
 int djvu_iw44_height(iw_pixmap *pm) { return pm ? pm->h : 0; }
 int djvu_iw44_is_color(iw_pixmap *pm)

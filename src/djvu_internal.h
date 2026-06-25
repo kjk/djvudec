@@ -66,6 +66,14 @@ const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
                                     const char *id, uint32_t *out_size,
                                     uint32_t *start);
 
+/* Trim trailing whitespace/control from an INCL component id (in-place). */
+void djvu_trim_incl_id(char *s);
+
+/* Find chunk_id in a component referenced by an INCL chunk in form_off.
+   Checks every INCL in order; returns NULL if none reference the chunk. */
+const uint8_t *djvu_form_find_incl_chunk(djvu_doc *doc, uint32_t form_off,
+                                         const char *chunk_id, uint32_t *out_size);
+
 /* big-endian / little-endian readers over the file buffer (bounds-checked
    by callers; return 0 past end) */
 static inline uint32_t djvu_rd_u32be(const uint8_t *p) {
@@ -234,6 +242,11 @@ void djvu_iw44_free(iw_pixmap *pm);
 /* Feed one IW44 chunk (e.g. one BG44). Chunks must arrive in serial order.
    Returns 0 on success, -1 on error. */
 int djvu_iw44_decode_chunk(iw_pixmap *pm, const uint8_t *data, size_t len);
+
+/* Decode chunk_id chunks (e.g. "BG44") from a page form into pm.
+   max_chunks <= 0 means no limit. Returns 0 on success, -1 on error/none. */
+int djvu_iw44_decode_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id,
+                          iw_pixmap *pm, int max_chunks);
 
 int djvu_iw44_width(iw_pixmap *pm);
 int djvu_iw44_height(iw_pixmap *pm);
