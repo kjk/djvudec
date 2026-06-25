@@ -2,6 +2,9 @@
 // verify.ts -- verify djvu_test render output against DjVuLibre's ddjvu, page
 // by page (TypeScript port of verify.py; run with `bun cmd/verify.ts`).
 //
+// This is the test entry point: it ensures deps (get-deps.ts), builds the ref
+// tools + harness (buildRef/build from build.ts), then verifies.
+//
 // Pages that are pure JB2 masks (Sjbz, no BG44/FG44 background) must match
 // `ddjvu -format=pgm` byte-for-byte. Pages with an IW44 background or color are
 // compared as ppm. Text is compared against djvutxt (trailing separators
@@ -9,9 +12,10 @@
 import { existsSync, readFileSync, readdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname, basename } from "path";
+import { getDeps } from "./get-deps";
+import { buildRef, build } from "./build";
 
 const ROOT = dirname(import.meta.dir);
-const SPECS = process.env.DJVU_SPECS ?? join(ROOT, "testfiles", "djvunet");
 const RB = join(ROOT, "ref_build");
 const TEST = join(ROOT, "djvu_test.exe");
 const TMP = tmpdir();
@@ -90,7 +94,13 @@ function readBytes(p: string): Buffer {
   return existsSync(p) ? readFileSync(p) : Buffer.alloc(0);
 }
 
-function main(): number {
+async function main(): Promise<number> {
+  // Ensure the corpus + reference checkouts exist, then build everything.
+  const corpus = await getDeps();
+  const SPECS = process.env.DJVU_SPECS ?? corpus;
+  await buildRef();
+  await build();
+
   let m = 0,
     mm = 0,
     skip = 0;
@@ -148,4 +158,4 @@ function main(): number {
   return mm || tmm ? 1 : 0;
 }
 
-process.exit(main());
+process.exit(await main());

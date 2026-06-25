@@ -1,15 +1,16 @@
-// build.ts -- build & test driver for the djvu C port (run with `bun cmd/build.ts`).
+// build.ts -- build driver for the djvu C port (run with `bun cmd/build.ts`).
 //
-//   bun cmd/build.ts          build ref tools (if needed) + the C library/harness
+//   bun cmd/build.ts          fetch deps + build ref tools + the C library/harness
 //   bun cmd/build.ts ref      (re)build the DjVuLibre reference tools
-//   bun cmd/build.ts test     build, then verify against ddjvu/djvutxt
 //
+// Verification lives in verify.ts, which imports buildRef()/build() from here
+// and drives them (build first, then verify) -- run `bun cmd/verify.ts`.
 import { $ } from "bun";
-import { existsSync, readdirSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
+import { getDeps } from "./get-deps";
 
 const ROOT = `${import.meta.dir}/..`;
-const DJVULIBRE = "C:/Users/kjk/src/DjVuLibre";
-const SPECS = `${ROOT}/testfiles/djvunet`;
+const DJVULIBRE = `${ROOT}/../DjVuLibre`; // sibling checkout (see get-deps.ts)
 const REF = `${ROOT}/ref_build`;
 
 const SRCS = [
@@ -28,12 +29,8 @@ const SRCS = [
   "src/annot.c",
 ];
 
-function specFiles(): string[] {
-  return readdirSync(SPECS).filter((f) => f.toLowerCase().endsWith(".djvu"));
-}
-
 // Build ddjvu.exe / djvutxt.exe from DjVuLibre (static, decode oracle).
-async function buildRef() {
+export async function buildRef() {
   mkdirSync(REF, { recursive: true });
   const common =
     `-std=c++14 -w -O1 -DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
@@ -62,40 +59,18 @@ async function buildRef() {
 }
 
 // Build the C library + test harness.
-async function build() {
+export async function build() {
   console.log("building djvu_test...");
   await $`clang -std=c11 -g -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Isrc ${{ raw: SRCS.join(" ") }} test/djvu_test.c -o djvu_test.exe`.cwd(ROOT);
   console.log("built djvu_test.exe");
 }
 
-// Verify page info (count + dimensions) against ddjvu, and text against djvutxt.
-async function test() {
-  await buildRef();
-  await build();
-  let pass = 0, fail = 0;
-  for (const f of specFiles()) {
-    const path = `${SPECS}/${f}`;
-    // our page info
-    const mine = await $`./djvu_test.exe -info ${path}`.cwd(ROOT).quiet().text();
-    const myPages = parseInt((mine.match(/pages: (\d+)/) || [])[1] || "-1");
-    // reference: render page 1 to pgm and read its dimensions
-    const tmp = `${REF}/_ref.pgm`;
-    await $`${REF}/ddjvu.exe -format=pgm -page=1 ${path} ${tmp}`.quiet().nothrow();
-    const head = await $`head -c 32 ${tmp}`.quiet().text().catch(() => "");
-    const dims = head.split(/\s+/).slice(1, 3).join("x");
-    const myP1 = (mine.match(/page 1: (\d+x\d+)/) || [])[1] || "?";
-    const ok = myP1 === dims;
-    console.log(`${ok ? "PASS" : "FAIL"} ${f}: pages=${myPages} p1=${myP1} ref=${dims}`);
-    ok ? pass++ : fail++;
+if (import.meta.main) {
+  await getDeps();
+  const cmd = process.argv[2];
+  if (cmd === "ref") await buildRef();
+  else {
+    await buildRef();
+    await build();
   }
-  console.log(`\npage-info: ${pass} pass, ${fail} fail`);
-
-  // render verification (pure JB2-mask pages must match ddjvu byte-for-byte)
-  console.log("\nrender verification:");
-  await $`bun cmd/verify.ts`.cwd(ROOT).nothrow();
 }
-
-const cmd = process.argv[2];
-if (cmd === "ref") await buildRef();
-else if (cmd === "test") await test();
-else { await buildRef(); await build(); }

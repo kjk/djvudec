@@ -15,8 +15,12 @@ No encoders. No writing DjVu.
 ## Reference checkouts (local)
 - C# source being ported:  `C:\Users\kjk\src\DjvuNet\DjvuNet`  (DjvuNet repo)
 - Verification oracle:      `C:\Users\kjk\src\DjVuLibre`        (DjVuLibre repo)
-- Test files (11 .djvu):    `testfiles/djvunet/*.djvu` (copied from
-  `C:\Users\kjk\src\DjvuNet\Specs`; `testfiles/` is gitignored)
+- `bun cmd/get-deps.ts` clones both repos as siblings of this project (skipped
+  if present) and assembles the test corpus into `testfiles/djvu/*.djvu` by
+  copying every `.djvu` from `DjVuLibre/doc`, `DjvuNet/Specs`, and
+  `DjvuNet/DjvuNetTest/TestFiles`. Exported as `getDeps()`; `build.ts` and
+  `verify.ts` both call it, so a fresh checkout self-provisions. `testfiles/`
+  is gitignored.
 - Spec: https://www.sndjvu.org/spec.html
   (the **code** — DjvuNet and especially DjVuLibre — is the more definitive
   reference; the spec text is incomplete.)
@@ -25,11 +29,15 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
 `Z:\backup\books` (1396 files).
 
 ## Build & test
-- `bun cmd/build.ts` — builds the DjVuLibre reference tools **once** into
-  `ref_build/`, then compiles the C library + test harness with clang
-  (`-std=c11`) into `djvu_test.exe`.
-- `bun cmd/build.ts test` — runs `cmd/verify.ts` over `testfiles/djvunet/*.djvu`.
-- IMPORTANT: run `bun cmd/build.ts` from the `djvu` dir. The ref-tool build
+- `bun cmd/build.ts` — fetches deps (`getDeps`), builds the DjVuLibre reference
+  tools **once** into `ref_build/`, then compiles the C library + test harness
+  with clang (`-std=c11`) into `djvu_test.exe`. `bun cmd/build.ts ref` rebuilds
+  just the ref tools. `buildRef()`/`build()` are exported for `verify.ts`.
+- `bun cmd/verify.ts` — the **test driver**: ensures deps, calls
+  `buildRef()`+`build()` from `build.ts` (build first, then verify), and
+  compares against the oracle over `testfiles/djvu/*.djvu`. (This inverts the
+  old relationship where build.ts invoked verify.)
+- IMPORTANT: run these from the `djvu` dir. The ref-tool build
   `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
 - Reference tools are built static from `libdjvu/*.cpp` with
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT -ladvapi32`.
@@ -40,8 +48,8 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   `set-ant` via `djvused in.djvu -f script.dsed`).
 
 ### Verification scripts
-- `bun cmd/verify.ts` — Specs verifier. mask→pgm, bg/color→ppm, plus text.
-  Current: **render MATCH=188 MISMATCH=1, text MATCH=144**.
+- `bun cmd/verify.ts` — corpus verifier (builds first). mask→pgm, bg/color→ppm,
+  plus text. Override the corpus dir with the `DJVU_SPECS` env var.
 - `python3 test/verify_dir.py <dir> [maxpages]` — sampled directory verifier,
   Unicode-path safe (copies each file to an ASCII temp path), auto format
   detection (P5→pgm, P6→ppm), skips pages ddjvu itself fails on.

@@ -36,11 +36,13 @@ char *txt = djvu_page_text(doc, 0);
 ```
 
 ## Build & test
-Requires `clang`, `bun`, and (for the reference oracle) the DjVuLibre source
-checked out at `../../DjVuLibre`.
+Requires `clang`, `bun`, and `git`. `cmd/get-deps.ts` clones the DjvuNet and
+DjVuLibre repos as siblings of this project and assembles the test corpus into
+`testfiles/djvu/`; `build.ts` and `verify.ts` call it automatically.
 ```
+bun cmd/get-deps.ts     # clone deps + assemble testfiles/djvu (auto-run below)
 bun cmd/build.ts        # build reference tools + the C library and djvu_test.exe
-bun cmd/build.ts test   # verify page info + render + text against DjVuLibre
+bun cmd/verify.ts       # build, then verify render + text against DjVuLibre
 ```
 
 `djvu_test` CLI (jbig2dec-flavored):
