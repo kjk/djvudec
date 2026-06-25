@@ -18,6 +18,8 @@ const SRCS = [
   "src/bzz.c",
   "src/bitmap.c",
   "src/jb2.c",
+  "src/iw44_zigzag.c",
+  "src/iw44.c",
   "src/document.c",
   "src/render.c",
   "src/text.c",
@@ -40,6 +42,12 @@ async function buildRef() {
     if (existsSync(exe)) continue;
     console.log(`building ref tool ${tool}...`);
     await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${DJVULIBRE}/tools/${tool}.cpp -ladvapi32 -o ${exe}`;
+  }
+  // iw44ref: decodes a FORM:PM44 directly via IW44Image (no gamma pipeline),
+  // used to verify the IW44 codec in isolation. Source lives in test/.
+  if (!existsSync(`${REF}/iw44ref.exe`)) {
+    console.log("building ref tool iw44ref...");
+    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${ROOT}/test/iw44ref.cpp -ladvapi32 -o ${REF}/iw44ref.exe`;
   }
   console.log("ref tools ready");
 }

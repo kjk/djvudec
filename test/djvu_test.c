@@ -16,6 +16,10 @@ uint8_t *djvu_bzz_decode_all(struct djvu_ctx *ctx, const uint8_t *data,
                              size_t len, size_t *out_len);
 void djvu_free(struct djvu_ctx *ctx, void *ptr);
 void djvu_debug_dump_comps(djvu_doc *doc);
+djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind);
+djvu_image *djvu_debug_render_iw_gray(djvu_doc *doc, int page_no, int kind);
+djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane);
+int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);
 
 static void on_error(void *user, djvu_severity sev, const char *msg)
 {
@@ -62,7 +66,7 @@ static int write_pnm(const char *path, djvu_image *img)
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
-    int do_info = 0, do_text = 0, do_bzz = 0, page = 1;
+    int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
     int i, rc = 0;
     uint8_t *data; size_t len;
     djvu_ctx *ctx; djvu_doc *doc;
@@ -72,6 +76,13 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-text")) do_text = 1;
         else if (!strcmp(argv[i], "-bzzdec")) do_bzz = 1;
         else if (!strcmp(argv[i], "-comps")) do_info = 2;
+        else if (!strcmp(argv[i], "-iwbggray")) do_iw = 5;   /* BG44 Y plane */
+        else if (!strcmp(argv[i], "-iwbgcb")) do_iw = 6;     /* BG44 Cb plane */
+        else if (!strcmp(argv[i], "-iwbgcr")) do_iw = 7;     /* BG44 Cr plane */
+        else if (!strcmp(argv[i], "-iwbg")) do_iw = 1;       /* render BG44 (mine) */
+        else if (!strcmp(argv[i], "-iwfg")) do_iw = 2;       /* render FG44 (mine) */
+        else if (!strcmp(argv[i], "-iwdumpbg")) do_iw = 3;   /* dump BG44 as PM44 */
+        else if (!strcmp(argv[i], "-iwdumpfg")) do_iw = 4;   /* dump FG44 as PM44 */
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
@@ -102,6 +113,24 @@ int main(int argc, char **argv)
     }
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) { fprintf(stderr, "cannot open document\n"); free(data); djvu_ctx_free(ctx); return 1; }
+
+    if (do_iw) {
+        if (do_iw == 3 || do_iw == 4) {
+            rc = djvu_debug_dump_iw(doc, page - 1, do_iw == 4, out ? out : "iw.djvu");
+        } else if (do_iw == 5 || do_iw == 6 || do_iw == 7) {
+            djvu_image *img = djvu_debug_render_iw_plane(doc, page - 1, 0, do_iw - 5);
+            if (img) { if (out) write_pnm(out, img); djvu_image_destroy(ctx, img); }
+            else rc = 1;
+        } else {
+            djvu_image *img = djvu_debug_render_iw(doc, page - 1, do_iw == 2);
+            if (img) {
+                if (out) write_pnm(out, img);
+                djvu_image_destroy(ctx, img);
+            } else rc = 1;
+        }
+        djvu_doc_close(doc); djvu_ctx_free(ctx); free(data);
+        return rc;
+    }
 
     if (do_info == 2) djvu_debug_dump_comps(doc);
 

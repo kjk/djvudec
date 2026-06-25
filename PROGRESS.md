@@ -38,8 +38,7 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 | bzz.c               | Compression/BSInputStream (decode)      | DONE   |
 | jb2.c               | JB2 modules (decode)                    | DONE   |
 | bitmap.c            | Graphics/Bitmap (GBitmap)               | DONE   |
-| iw44.c              | Wavelet/* (decode)                      | TODO   |
-| pixmap.c            | Graphics/PixelMap                       | TODO   |
+| iw44.c              | Wavelet/* (decode)                      | DONE   |
 | text.c              | Text/PageText + TXTa/TXTz chunks        | DONE   |
 | render/compose      | DjvuPage composite (mask+fg+bg)         | partial (mask only) |
 
@@ -53,8 +52,11 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
    (`bun build.ts test` / `python3 test/verify.py`)
 5. **Text extraction** (TXTz, BZZ); verify vs `djvutxt`. ✅ DONE
    All 144 text pages match djvutxt content (modulo trailing page separator).
-4. **IW44** → background/foreground color; full composite; verify vs `ddjvu`. ← NEXT
-   67 remaining pages have a BG44 (IW44) background or are full color.
+4. **IW44** decoder. ✅ DONE
+   BG44 + FG44 decode byte-for-byte vs DjVuLibre IW44Image (26/26 BG/FG images,
+   color, via test/iw44ref). NOTE: IW44/GBitmap are stored bottom-up; output is
+   flipped to top-down (save_ppm in DjVuLibre writes bottom-up).
+   NEXT: composite mask + bg + fg into the page; verify vs `ddjvu` (full page).
 6. Page scaling / subsample to requested dimensions (basic box subsample done).
 
 ## Notes for next session (IW44)
@@ -74,6 +76,7 @@ Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
 `bun build.ts test` — runs verification over Specs/*.djvu.
 
 ## Change log (most recent first)
+- IW44 wavelet decoder (BG44/FG44): 26/26 color images == DjVuLibre IW44Image.
 - text extraction (TXTz/TXTa): 144/144 text pages == djvutxt content.
 - JB2 bitonal decoder + GBitmap + render: 122/122 pure-mask pages == ddjvu.
 - full DJVM/DIRM directory parse (BZZ component table); INCL resolution.
