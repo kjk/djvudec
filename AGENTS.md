@@ -44,6 +44,15 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   tools **once** into `ref_build/`, then compiles the C library + test harness
   with clang (`-std=c11`) into `djvu_test.exe`. `bun cmd/build.ts ref` rebuilds
   just the ref tools. `buildRef()`/`build()` are exported for `verify.ts`.
+  djvu_test also links DjVuLibre's decoder (via the `test/bench_ddjvu.cpp` shim
+  and a cached `ref_build/libdjvu.lib`, built once by `buildLibDjvu()`) so that
+  `-bench` works. NB: Bun's shell eats `\` in glob args, so `ROOT` is normalized
+  to forward slashes — keep paths fed to `*.cpp`/`*.o` globs forward-slashed.
+- `bun cmd/bench.ts [file.djvu]` — builds, then runs `djvu_test -bench` to
+  compare our per-page decode speed against DjVuLibre's (decode+composite, same
+  steady_clock both sides). With no file it picks a random `.djvu` from
+  `testfiles/`. Each line: `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%`
+  (`+` = we're slower).
 - `bun cmd/verify.ts` — the **test driver**: ensures deps, calls
   `buildRef()`+`build()` from `build.ts` (build first, then verify), and
   compares against the oracle over `testfiles/djvu/*.djvu`. (This inverts the
@@ -200,8 +209,9 @@ Notes:
 ## Per-layer reference tools (distinguish my-bug vs ddjvu-quirk)
 - `test/iw44ref.cpp` — decode raw IW44 (PM44) via DjVuLibre IW44Image internals.
 - `test/jb2ref.cpp` — decode raw Sjbz, dump blits/mask via DjVuLibre internals.
-- `djvu_test.exe` flags: `-info -page N -out f -text -bzzdec -comps`,
+- `djvu_test.exe` flags: `-info -page N -out f -text -bzzdec -comps -bench`,
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
+  `-bench` times our decode vs DjVuLibre's per page (see `bun cmd/bench.ts`).
 
 ## Methodology
 Reference-oracle verification: every codec layer is checked byte-exact against

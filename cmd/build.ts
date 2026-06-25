@@ -9,9 +9,20 @@ import { $ } from "bun";
 import { existsSync, mkdirSync } from "fs";
 import { getDeps } from "./get-deps";
 
-const ROOT = `${import.meta.dir}/..`;
+// Forward slashes: Bun's shell treats backslashes as escapes, which breaks the
+// *.cpp / *.o globs below (import.meta.dir is backslashed on Windows).
+const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DJVULIBRE = `${ROOT}/../DjVuLibre`; // sibling checkout (see get-deps.ts)
 const REF = `${ROOT}/ref_build`;
+const LIBDJVU = `${REF}/libdjvu.lib`; // cached static lib (for djvu_test -bench)
+const OBJDIR = `${REF}/djvuobj`;
+
+// DjVuLibre C++ compile flags (static link, no dll import/export indirection).
+// -O3: both sides are built at max optimization so `-bench` is a fair compare.
+const DJVU_CXXFLAGS =
+  `-std=c++14 -w -O3 -DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
+  `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
+  `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
 const SRCS = [
   "src/zptable.c",
@@ -32,10 +43,7 @@ const SRCS = [
 // Build ddjvu.exe / djvutxt.exe from DjVuLibre (static, decode oracle).
 export async function buildRef() {
   mkdirSync(REF, { recursive: true });
-  const common =
-    `-std=c++14 -w -O1 -DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
-    `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
-    `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
+  const common = DJVU_CXXFLAGS;
   const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
   for (const tool of ["ddjvu", "djvutxt", "bzz", "djvused"]) {
     const exe = `${REF}/${tool}.exe`;
@@ -58,10 +66,32 @@ export async function buildRef() {
   console.log("ref tools ready");
 }
 
-// Build the C library + test harness.
+// Compile all of libdjvu into a cached static lib (one-time, slow) so djvu_test
+// can link DjVuLibre's decoder for `-bench` without recompiling it every build.
+export async function buildLibDjvu() {
+  if (existsSync(LIBDJVU)) return;
+  console.log("building libdjvu.lib (one-time, slow)...");
+  mkdirSync(OBJDIR, { recursive: true });
+  await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c ${{ raw: `${DJVULIBRE}/libdjvu/*.cpp` }}`.cwd(OBJDIR);
+  await $`llvm-lib /out:${LIBDJVU} ${{ raw: "*.o" }}`.cwd(OBJDIR);
+  console.log("built libdjvu.lib");
+}
+
+// Build the C library + test harness. djvu_test links the DjVuLibre timing shim
+// (bench_ddjvu.cpp) + libdjvu.lib so `djvu_test -bench` can compare decode speed.
 export async function build() {
+  await buildLibDjvu();
   console.log("building djvu_test...");
-  await $`clang -std=c11 -g -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Isrc ${{ raw: SRCS.join(" ") }} test/djvu_test.c -o djvu_test.exe`.cwd(ROOT);
+  const objs = [
+    ...SRCS.map((s) => s.replace(/^src\//, "").replace(/\.c$/, ".o")),
+    "djvu_test.o",
+  ];
+  // 1. our C sources + harness -> objects (compiled as C, -O3 for benchmarking)
+  await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Isrc -c ${{ raw: SRCS.join(" ") }} test/djvu_test.c`.cwd(ROOT);
+  // 2. DjVuLibre timing shim -> object (compiled as C++)
+  await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c test/bench_ddjvu.cpp`.cwd(ROOT);
+  // 3. link with clang++ (C++ runtime) against libdjvu.lib
+  await $`clang++ ${{ raw: objs.join(" ") }} bench_ddjvu.o ${LIBDJVU} -ladvapi32 -o djvu_test.exe`.cwd(ROOT);
   console.log("built djvu_test.exe");
 }
 

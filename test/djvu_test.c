@@ -22,6 +22,10 @@ djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int
 djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no);
 int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);
 
+/* timing helpers from bench_ddjvu.cpp (DjVuLibre decode, same clock) */
+double bench_now_ms(void);
+double bench_ddjvu_page_ms(const char *path, int page0);
+
 static void on_error(void *user, djvu_severity sev, const char *msg)
 {
     (void)user;
@@ -91,7 +95,7 @@ int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
-    int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0;
+    int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
     int i, rc = 0;
     uint8_t *data; size_t len;
     djvu_ctx *ctx; djvu_doc *doc;
@@ -113,6 +117,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-outline")) do_outline = 1;
         else if (!strcmp(argv[i], "-links")) do_links = 1;
         else if (!strcmp(argv[i], "-type")) do_type = 1;
+        else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
@@ -161,6 +166,28 @@ int main(int argc, char **argv)
                 if (out) write_pnm(out, img);
                 djvu_image_destroy(ctx, img);
             } else rc = 1;
+        }
+        djvu_doc_close(doc); djvu_ctx_free(ctx); free(data);
+        return rc;
+    }
+
+    if (do_bench) {
+        int n = djvu_doc_page_count(doc);
+        for (i = 0; i < n; i++) {
+            double t0 = bench_now_ms();
+            djvu_image *img = djvu_page_render(doc, i, 1);
+            double mine = bench_now_ms() - t0;
+            if (img) djvu_image_destroy(ctx, img);
+            double lib = bench_ddjvu_page_ms(in, i);
+            if (lib < 0 || !img) {
+                printf("page %d, djvulibre %s, ours %.2f ms%s\n", i + 1,
+                       lib < 0 ? "ERROR" : "ok", mine, img ? "" : " (ours FAILED)");
+                continue;
+            }
+            double diff = mine - lib;            /* + => ours slower */
+            double pct = lib > 0 ? diff / lib * 100.0 : 0.0;
+            printf("page %d, djvulibre %.2f ms, ours %.2f ms, %+.2f ms, %+.1f%%\n",
+                   i + 1, lib, mine, diff, pct);
         }
         djvu_doc_close(doc); djvu_ctx_free(ctx); free(data);
         return rc;
