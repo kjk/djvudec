@@ -41,22 +41,29 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
 
 ## Build & test
 - `bun cmd/build.ts` — fetches deps (`getDeps`), builds the DjVuLibre reference
-  tools **once** into `ref_build/`, then compiles the C library + test harness
-  with clang (`-std=c11`) into `djvu_test.exe`. `bun cmd/build.ts ref` rebuilds
-  just the ref tools. `buildRef()`/`build()` are exported for `verify.ts`.
+  tools **once** into `ref_build/`, then compiles the C library + test harness.
+  Two toolchains: **MSVC is the default on Windows** (`djvu_test_msvc.exe`);
+  `-clang` builds with clang instead (`djvu_test_clang.exe`). The exe is suffixed
+  by toolchain so both can coexist; clang objects are `*.o`, MSVC objects
+  `*.obj`. `build(useClang)` returns the exe path; `bun cmd/build.ts ref`
+  rebuilds just the ref tools. `buildRef()`/`build()`/`defaultUseClang` are
+  exported for `verify.ts`/`bench.ts`.
   djvu_test also links DjVuLibre's decoder (via the `test/bench_ddjvu.cpp` shim
-  and a cached `ref_build/libdjvu.lib`, built once by `buildLibDjvu()`) so that
-  `-bench` works. NB: Bun's shell eats `\` in glob args, so `ROOT` is normalized
-  to forward slashes — keep paths fed to `*.cpp`/`*.o` globs forward-slashed.
-- `bun cmd/bench.ts [file.djvu]` — builds, then runs `djvu_test -bench` to
+  and a cached `ref_build/libdjvu.lib`, built once by `buildLibDjvu()` with
+  clang++) so that `-bench` works. libdjvu.lib uses the **static** CRT (`/MT`),
+  so the MSVC harness compiles with `-MT` to match (a `/MD` mismatch is LNK2038).
+  NB: Bun's shell eats `\` in glob args, so `ROOT` is normalized to forward
+  slashes; MSVC flags use `-` (a `/` synonym) to dodge the same path-mangling.
+- `bun cmd/bench.ts [file.djvu] [-clang]` — builds, then runs `djvu_test -bench` to
   compare our per-page decode speed against DjVuLibre's (decode+composite, same
   steady_clock both sides). With no file it picks a random `.djvu` from
   `testfiles/`. Each line: `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%`
   (`+` = we're slower).
-- `bun cmd/verify.ts` — the **test driver**: ensures deps, calls
+- `bun cmd/verify.ts [-clang]` — the **test driver**: ensures deps, calls
   `buildRef()`+`build()` from `build.ts` (build first, then verify), and
-  compares against the oracle over `testfiles/djvu/*.djvu`. (This inverts the
-  old relationship where build.ts invoked verify.)
+  compares against the oracle over `testfiles/djvu/*.djvu`. Builds with MSVC by
+  default; `-clang` selects the clang harness. (This inverts the old
+  relationship where build.ts invoked verify.)
 - IMPORTANT: run these from the `djvu` dir. The ref-tool build
   `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
 - Reference tools are built static from `libdjvu/*.cpp` with

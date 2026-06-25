@@ -1,8 +1,11 @@
 // build.ts -- build driver for the djvu C port (run with `bun cmd/build.ts`).
 //
-//   bun cmd/build.ts          fetch deps + build ref tools + the C library/harness
+//   bun cmd/build.ts          fetch deps + ref tools + the harness (MSVC default)
+//   bun cmd/build.ts -clang   build the harness with clang instead of MSVC
 //   bun cmd/build.ts ref      (re)build the DjVuLibre reference tools
 //
+// The harness exe is suffixed by toolchain: djvu_test_msvc.exe (default on
+// Windows) or djvu_test_clang.exe (-clang). build() returns the exe path.
 // Verification lives in verify.ts, which imports buildRef()/build() from here
 // and drives them (build first, then verify) -- run `bun cmd/verify.ts`.
 import { $ } from "bun";
@@ -77,30 +80,70 @@ export async function buildLibDjvu() {
   console.log("built libdjvu.lib");
 }
 
-// Build the C library + test harness. djvu_test links the DjVuLibre timing shim
-// (bench_ddjvu.cpp) + libdjvu.lib so `djvu_test -bench` can compare decode speed.
-export async function build() {
-  await buildLibDjvu();
-  console.log("building djvu_test...");
+// DjVuLibre include + define flags shared by the clang and cl shim builds.
+const DJVU_DEFINES =
+  `-DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
+  `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
+  `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
+
+// On Windows the default toolchain is MSVC; -clang forces clang. Elsewhere only
+// clang is available.
+export const defaultUseClang = process.platform !== "win32";
+const exeName = (useClang: boolean) =>
+  `djvu_test_${useClang ? "clang" : "msvc"}.exe`;
+
+// Build the harness with clang -> djvu_test_clang.exe (objects: *.o).
+async function buildClang(): Promise<string> {
+  const exe = exeName(true);
   const objs = [
     ...SRCS.map((s) => s.replace(/^src\//, "").replace(/\.c$/, ".o")),
     "djvu_test.o",
   ];
-  // 1. our C sources + harness -> objects (compiled as C, -O3 for benchmarking)
+  // 1. our C sources + harness -> objects (-O3 for benchmarking)
   await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Isrc -c ${{ raw: SRCS.join(" ") }} test/djvu_test.c`.cwd(ROOT);
-  // 2. DjVuLibre timing shim -> object (compiled as C++)
-  await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c test/bench_ddjvu.cpp`.cwd(ROOT);
+  // 2. DjVuLibre timing shim -> object (C++)
+  await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c -o bench_ddjvu_clang.o test/bench_ddjvu.cpp`.cwd(ROOT);
   // 3. link with clang++ (C++ runtime) against libdjvu.lib
-  await $`clang++ ${{ raw: objs.join(" ") }} bench_ddjvu.o ${LIBDJVU} -ladvapi32 -o djvu_test.exe`.cwd(ROOT);
-  console.log("built djvu_test.exe");
+  await $`clang++ ${{ raw: objs.join(" ") }} bench_ddjvu_clang.o ${LIBDJVU} -ladvapi32 -o ${exe}`.cwd(ROOT);
+  return `${ROOT}/${exe}`;
+}
+
+// Build the harness with MSVC cl -> djvu_test_msvc.exe (objects: *.obj). cl
+// flags use '-' (a synonym for '/') so Bun's shell doesn't treat them as paths.
+async function buildMsvc(): Promise<string> {
+  const exe = exeName(false);
+  const objs = [
+    ...SRCS.map((s) => s.replace(/^src\//, "").replace(/\.c$/, ".obj")),
+    "djvu_test.obj",
+  ];
+  // 1. our C sources + harness -> objects (C11, static CRT to match libdjvu.lib
+  //    which clang++ builds with /MT; -GL for whole-program/LTCG optimization)
+  await $`cl -nologo -O2 -GL -MT -W3 -std:c11 -D_CRT_SECURE_NO_WARNINGS -Isrc -c ${{ raw: SRCS.join(" ") }} test/djvu_test.c`.cwd(ROOT);
+  // 2. DjVuLibre timing shim -> object (C++ with exceptions)
+  await $`cl -nologo -O2 -GL -MT -EHsc -std:c++14 ${{ raw: DJVU_DEFINES }} -Fobench_ddjvu_msvc.obj -c test/bench_ddjvu.cpp`.cwd(ROOT);
+  // 3. link with cl against libdjvu.lib (-LTCG to consume the -GL objects)
+  await $`cl -nologo ${{ raw: objs.join(" ") }} bench_ddjvu_msvc.obj ${LIBDJVU} advapi32.lib -Fe:${exe} -link -LTCG`.cwd(ROOT);
+  return `${ROOT}/${exe}`;
+}
+
+// Build the C library + test harness. djvu_test links the DjVuLibre timing shim
+// (bench_ddjvu.cpp) + libdjvu.lib so `djvu_test -bench` can compare decode speed.
+// Returns the path to the built executable.
+export async function build(useClang = defaultUseClang): Promise<string> {
+  await buildLibDjvu();
+  console.log(`building ${exeName(useClang)} (${useClang ? "clang" : "msvc"})...`);
+  const exe = useClang ? await buildClang() : await buildMsvc();
+  console.log(`built ${exeName(useClang)}`);
+  return exe;
 }
 
 if (import.meta.main) {
   await getDeps();
-  const cmd = process.argv[2];
-  if (cmd === "ref") await buildRef();
+  const args = process.argv.slice(2);
+  const useClang = args.includes("-clang") || defaultUseClang;
+  if (args.includes("ref")) await buildRef();
   else {
     await buildRef();
-    await build();
+    await build(useClang);
   }
 }

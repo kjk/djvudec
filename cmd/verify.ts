@@ -14,11 +14,11 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
-import { buildRef, build } from "./build";
+import { buildRef, build, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
 const RB = join(ROOT, "ref_build");
-const TEST = join(ROOT, "djvu_test.exe");
+let TEST = join(ROOT, "djvu_test.exe"); // set to the built exe in main()
 const TMP = tmpdir();
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
@@ -132,8 +132,10 @@ async function main(): Promise<number> {
   // Verify against every .djvu under testfiles/ (recursively); DJVU_SPECS
   // overrides the root to point at any other directory of samples.
   const SPECS = process.env.DJVU_SPECS ?? join(ROOT, "testfiles");
+  // -clang forces the clang harness; default is MSVC on Windows.
+  const useClang = process.argv.includes("-clang") || defaultUseClang;
   await buildRef();
-  await build();
+  TEST = await build(useClang);
 
   let m = 0,
     mm = 0,
