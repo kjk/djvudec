@@ -185,7 +185,7 @@ static int parse_zone(zparse *z, djvu_text_zone *out,
 static void flip_zone_y(djvu_text_zone *z, int page_h)
 {
     int i;
-    z->y = page_h - (z->y + z->h);
+    z->y = djvu_y_bottomup_to_topdown(z->y, page_h, z->h);
     for (i = 0; i < z->nchildren; i++) flip_zone_y(&z->children[i], page_h);
 }
 

@@ -35,12 +35,14 @@ const SRCS = [
   "src/jb2.c",
   "src/iw44_zigzag.c",
   "src/iw44.c",
+  "src/scaler.c",
   "src/compose.c",
   "src/document.c",
   "src/render.c",
   "src/text.c",
   "src/outline.c",
   "src/annot.c",
+  "src/debug.c",
 ];
 
 // Build ddjvu.exe / djvutxt.exe from DjVuLibre (static, decode oracle).

@@ -218,21 +218,6 @@ static int load_djvm(djvu_doc *doc, uint32_t dirm_data, uint32_t dirm_size)
     return 0;
 }
 
-/* debug: list components (used by the test harness) */
-void djvu_debug_dump_comps(djvu_doc *doc)
-{
-    int i;
-    const char *tn[4] = {"incl", "page", "thumb", "anno"};
-    if (!doc) return;
-    printf("components: %d\n", doc->ncomp);
-    for (i = 0; i < doc->ncomp; i++) {
-        djvu_component *c = &doc->comps[i];
-        printf("  [%d] off=%u size=%u type=%s id=%s\n", i, c->offset, c->size,
-               (c->type >= 0 && c->type < 4) ? tn[c->type] : "?",
-               c->id ? c->id : "(null)");
-    }
-}
-
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id)
 {
     int i;

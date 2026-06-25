@@ -30,12 +30,14 @@ const SRCS = [
   "jb2.c",
   "iw44_zigzag.c",
   "iw44.c",
+  "scaler.c",
   "compose.c",
   "document.c",
   "render.c",
   "text.c",
   "outline.c",
   "annot.c",
+  "debug.c",
 ];
 
 // Drop a local-quote include of one of the named headers (system <...>

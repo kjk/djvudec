@@ -96,6 +96,14 @@ static inline int djvu_tag_eq(const uint8_t *p, const char *tag) {
            p[2] == (uint8_t)tag[2] && p[3] == (uint8_t)tag[3];
 }
 
+/* Bottom-up page Y (lower-left origin) -> top-down (y from top edge). */
+static inline int djvu_y_bottomup_to_topdown(int y, int page_h, int h) {
+    return page_h - (y + h);
+}
+
+/* Copy bottom-up RGB (row 0 = bottom) into top-down dst (w*h*3 bytes). */
+void djvu_flip_rgb_bottomup(uint8_t *dst, const uint8_t *src, int w, int h);
+
 /* ===================================================================== */
 /* zpcodec.c -- ZP-Coder binary adaptive arithmetic decoder (decode only) */
 /* Ported from DjvuNet Compression/ZPCodec.cs.                            */
@@ -265,5 +273,37 @@ int djvu_iw44_render_gray(iw_pixmap *pm, uint8_t *gray);
 
 /* debug: render plane 0=Y,1=Cb,2=Cr as gray (value+128). */
 int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray);
+
+/* ===================================================================== */
+/* scaler.c -- GPixmapScaler bilinear upsampler (compose background path) */
+/* ===================================================================== */
+
+typedef struct { int w, h; uint8_t *d; } djvu_cpix;  /* RGB, w*h*3 */
+
+int  djvu_cpix_init(djvu_ctx *ctx, djvu_cpix *p, int w, int h);
+void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);
+int  djvu_compute_red(int w, int h, int rw, int rh);
+int  djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
+                     int outw, int outh, int red);
+
+/* ===================================================================== */
+/* compose.c -- page compositing (IW44 bg + JB2 mask + fg)                 */
+/* ===================================================================== */
+
+int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int height,
+                            djvu_cpix *out);
+djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
+                              int width, int height);
+
+/* ===================================================================== */
+/* debug.c -- test-harness helpers (not part of the public API)           */
+/* ===================================================================== */
+
+void djvu_debug_dump_comps(djvu_doc *doc);
+djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind);
+djvu_image *djvu_debug_render_iw_gray(djvu_doc *doc, int page_no, int kind);
+djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane);
+djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no);
+int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);
 
 #endif /* DJVU_INTERNAL_H */

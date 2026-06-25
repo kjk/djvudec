@@ -243,7 +243,7 @@ static void collect_maparea(lcollect *lc, const snode *area)
         L->comment = (comment && *comment) ? dup_str(lc->ctx, comment) : NULL;
         L->shape = stype;
         L->x = x;
-        L->y = lc->page_h - (y + h);   /* flip to top-down */
+        L->y = djvu_y_bottomup_to_topdown(y, lc->page_h, h);
         L->w = w;
         L->h = h;
     }
