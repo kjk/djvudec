@@ -9,9 +9,10 @@
 // `ddjvu -format=pgm` byte-for-byte. Pages with an IW44 background or color are
 // compared as ppm. Text is compared against djvutxt (trailing separators
 // ignored). Runs over every .djvu under testfiles/ recursively; set the
-// DJVU_SPECS env var to point the scan at a different directory.
+// DJVU_SPECS env var to point the scan at a different directory. Files are
+// tested in parallel across one worker per CPU; `-cpu N` overrides the count.
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
-import { tmpdir } from "os";
+import { tmpdir, cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
 import { buildRef, build, defaultUseClang } from "./build";
@@ -84,17 +85,25 @@ function docFeatures(data: Buffer, offs: number[]): { anno: boolean; text: boole
   return { anno, text };
 }
 
-function run(cmd: string[]): Buffer {
-  const r = Bun.spawnSync({ cmd, stdout: "pipe", stderr: "pipe" });
-  return Buffer.from(r.stdout);
+// Run a subprocess and capture stdout (async, so files can run concurrently).
+async function run(cmd: string[]): Promise<Buffer> {
+  const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "ignore" });
+  const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
+  await proc.exited;
+  return out;
+}
+// Run a subprocess that writes to a file; we don't need its stdout.
+async function runToFile(cmd: string[]) {
+  const proc = Bun.spawn({ cmd, stdout: "ignore", stderr: "ignore" });
+  await proc.exited;
 }
 
-function renderRef(f: string, page: number, out: string, fmt = "pgm") {
-  run([join(RB, "ddjvu.exe"), `-format=${fmt}`, `-page=${page}`, f, out]);
+async function renderRef(f: string, page: number, out: string, fmt = "pgm") {
+  await runToFile([join(RB, "ddjvu.exe"), `-format=${fmt}`, `-page=${page}`, f, out]);
 }
-function renderMine(f: string, page: number, out: string) {
+async function renderMine(f: string, page: number, out: string) {
   if (existsSync(out)) rmSync(out);
-  run([TEST, "-page", String(page), "-out", out, f]);
+  await runToFile([TEST, "-page", String(page), "-out", out, f]);
 }
 
 // strip CR / form-feed and trailing whitespace (text normalization)
@@ -162,10 +171,21 @@ async function main(): Promise<number> {
 
   const files = walkDjvu(SPECS).sort();
 
-  const ref = join(TMP, "djref.pnm");
-  const mine = join(TMP, "djmine.pnm");
+  // -cpu N overrides the worker count (default: number of logical CPUs).
+  const cpuArg = process.argv.indexOf("-cpu");
+  const nWorkers = Math.max(
+    1,
+    Math.min(
+      cpuArg >= 0 ? parseInt(process.argv[cpuArg + 1]) || 1 : cpus().length,
+      files.length || 1,
+    ),
+  );
+  console.log(`testing ${files.length} files with ${nWorkers} workers`);
 
-  files.forEach((f, fi) => {
+  // Test one file: render+text every page, accumulate global counters, and
+  // print one line when done. ref/mine are this worker's private temp paths.
+  let finished = 0;
+  async function testFile(f: string, ref: string, mine: string) {
     const t0 = performance.now();
     const data = readFileSync(f);
     const offs = pageOffsets(data);
@@ -173,19 +193,18 @@ async function main(): Promise<number> {
     const feats = [`${offs.length} pages`];
     if (anno) feats.push("annots");
     if (text) feats.push("text");
-    console.log(`[${fi + 1}/${files.length}] ${basename(f)} (${feats.join(", ")})`);
     const fRender: number[] = []; // pages where our render differed
     const fText: number[] = []; // pages where our text differed
-    offs.forEach((o, i) => {
+    for (let i = 0; i < offs.length; i++) {
       const page = i + 1;
       // render: pure-mask pages -> pgm (gray); bg/color pages -> ppm
-      const kind = pageKind(data, o);
+      const kind = pageKind(data, offs[i]);
       if (kind === "other") {
         skip++;
       } else {
         const fmt = kind === "mask" ? "pgm" : "ppm";
-        renderRef(f, page, ref, fmt);
-        renderMine(f, page, mine);
+        await renderRef(f, page, ref, fmt);
+        await renderMine(f, page, mine);
         const a = readBytes(ref);
         const b = readBytes(mine);
         if (a.length && a.equals(b)) {
@@ -197,8 +216,8 @@ async function main(): Promise<number> {
         }
       }
       // text (all pages; ignores trailing page separator)
-      const rt = textNorm(getTextRef(f, page));
-      const mt = textNorm(getTextMine(f, page));
+      const rt = textNorm(await getTextRef(f, page));
+      const mt = textNorm(await getTextMine(f, page));
       if (!rt && !mt) te++;
       else if (rt === mt) tm++;
       else {
@@ -206,13 +225,31 @@ async function main(): Promise<number> {
         fText.push(page);
         tbad.push(`${basename(f)} p${page}`);
       }
-    });
+    }
     const diffs: string[] = [];
     if (fRender.length) diffs.push(`render diff p${fRender.join(",p")}`);
     if (fText.length) diffs.push(`text diff p${fText.join(",p")}`);
     const status = diffs.length ? diffs.join(", ") : "same";
-    console.log(`  tested in ${humanMs(performance.now() - t0)} — ${status}`);
-  });
+    // count this file as finished, then print its line (one atomic line, since
+    // workers run concurrently and would otherwise interleave)
+    finished++;
+    console.log(
+      `[${finished}/${files.length}] ${basename(f)} (${feats.join(", ")}) — ` +
+        `${humanMs(performance.now() - t0)} — ${status}`,
+    );
+  }
+
+  // Worker pool: each worker pulls the next file off a shared cursor and runs it
+  // with its own temp files so concurrent renders don't clobber each other.
+  let next = 0;
+  const worker = async (id: number) => {
+    const ref = join(TMP, `djref_${id}.pnm`);
+    const mine = join(TMP, `djmine_${id}.pnm`);
+    for (let idx = next++; idx < files.length; idx = next++) {
+      await testFile(files[idx], ref, mine);
+    }
+  };
+  await Promise.all(Array.from({ length: nWorkers }, (_, i) => worker(i)));
 
   console.log(`render (mask=pgm, bg/color=ppm): MATCH=${m} MISMATCH=${mm}; skipped=${skip}`);
   for (const x of bad.slice(0, 50)) console.log("  render MISMATCH", x);

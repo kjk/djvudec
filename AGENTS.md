@@ -59,11 +59,14 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   steady_clock both sides). With no file it picks a random `.djvu` from
   `testfiles/`. Each line: `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%`
   (`+` = we're slower).
-- `bun cmd/tests.ts [-clang]` — the **test driver**: ensures deps, calls
-  `buildRef()`+`build()` from `build.ts` (build first, then verify), and
+- `bun cmd/tests.ts [-clang] [-cpu N]` — the **test driver**: ensures deps,
+  calls `buildRef()`+`build()` from `build.ts` (build first, then verify), and
   compares against the oracle over `testfiles/djvu/*.djvu`. Builds with MSVC by
-  default; `-clang` selects the clang harness. (This inverts the old
-  relationship where build.ts invoked verify.)
+  default; `-clang` selects the clang harness. Files are tested **in parallel**,
+  one worker per CPU (each worker uses private temp PNMs); `-cpu N` overrides the
+  worker count. Per-file lines print in completion order (`[done/total] name …
+  — time — same|diff`). (This inverts the old relationship where build.ts
+  invoked verify.)
 - IMPORTANT: run these from the `djvu` dir. The ref-tool build
   `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
 - Reference tools are built static from `libdjvu/*.cpp` with
