@@ -10,6 +10,7 @@
 #include "djvu_bzz.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /* ---------- simple RGB pixmap ---------- */
 typedef struct { int w, h; uint8_t *d; } cpix;  /* d = w*h*3, R,G,B */
@@ -255,6 +256,36 @@ done:
     return rc;
 }
 
+/* Build DjVuLibre's gamma-correction LUT for correction factor `corr`
+   (corr = target_gamma / document_gamma). lut[i] = round(255*(i/255)^(1/corr)),
+   with endpoints forced to 0/255 (white = WHITE). Returns 1 if non-trivial. */
+static int build_gamma_lut(double corr, unsigned char lut[256])
+{
+    int i;
+    if (corr < 0.1) corr = 0.1; else if (corr > 10.0) corr = 10.0;
+    if (corr > 0.999 && corr < 1.001) {
+        for (i = 0; i < 256; i++) lut[i] = (unsigned char)i;
+        return 0;
+    }
+    for (i = 0; i < 256; i++) {
+        double x = pow((double)i / 255.0, 1.0 / corr);
+        int v = (int)floor(255.0 * x + 0.5);
+        lut[i] = (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
+    }
+    lut[0] = 0; lut[255] = 255;
+    return 1;
+}
+
+/* Read the page's document gamma from its INFO chunk (default 2.2). */
+static double page_gamma(djvu_doc *doc, uint32_t form_off)
+{
+    uint32_t sz;
+    const uint8_t *info = djvu_form_find_chunk(doc, form_off, "INFO", &sz, NULL);
+    if (info && sz >= 9 && info[8] != 0)
+        return (double)info[8] / 10.0;
+    return 2.2;
+}
+
 /* Composite mask + background + foreground into a top-down RGB djvu_image.
    `mask` is the decoded Sjbz JB2 image. Returns NULL on error. */
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
@@ -374,6 +405,14 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
             for (y = 0; y < bg.h; y++)
                 memcpy(out->data + (size_t)y * bg.w * 3,
                        bg.d + (size_t)(bg.h - 1 - y) * bg.w * 3, (size_t)bg.w * 3);
+            /* gamma correction (target 2.2 / document gamma), as ddjvu does */
+            {
+                unsigned char lut[256];
+                if (build_gamma_lut(2.2 / page_gamma(doc, form_off), lut)) {
+                    size_t k, npx = (size_t)bg.w * bg.h * 3;
+                    for (k = 0; k < npx; k++) out->data[k] = lut[out->data[k]];
+                }
+            }
         } else { djvu_free(ctx, out); out = NULL; }
     }
     (void)x;

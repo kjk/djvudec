@@ -120,8 +120,24 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
         }
 
         if (!sjbz) {
-            djvu_errorf(ctx, DJVU_SEVERITY_ERROR,
-                        "page %d: nothing to render (no Sjbz/BG44)", page_no);
+            /* blank page (only INFO, no image layers): render solid white */
+            djvu_page_info pi;
+            if (djvu_doc_page_info(doc, page_no, &pi) == 0 &&
+                pi.width > 0 && pi.height > 0) {
+                int sw = (pi.width + subsample - 1) / subsample;
+                int sh = (pi.height + subsample - 1) / subsample;
+                out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
+                if (out) {
+                    out->width = sw; out->height = sh;
+                    out->format = DJVU_FORMAT_GRAY8; out->stride = sw;
+                    out->data = (uint8_t *)djvu_alloc(ctx, (size_t)sw * sh);
+                    if (out->data) memset(out->data, 255, (size_t)sw * sh);
+                    else { djvu_free(ctx, out); out = NULL; }
+                }
+            } else {
+                djvu_errorf(ctx, DJVU_SEVERITY_ERROR,
+                            "page %d: nothing to render", page_no);
+            }
             goto done;
         }
     }
