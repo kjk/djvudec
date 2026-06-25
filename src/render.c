@@ -321,7 +321,6 @@ static void put_u32be(FILE *f, uint32_t v)
    (renamed to PM44) so DjVuLibre ddjvu can render the same IW44 data. */
 int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path)
 {
-    djvu_ctx *ctx;
     uint32_t form_off, start = 0, sz;
     const uint8_t *chunk;
     const char *id = kind ? "FG44" : "BG44";
@@ -330,7 +329,6 @@ int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path)
     const uint8_t *chunks[64]; uint32_t sizes[64]; int n = 0, i;
 
     if (!doc || page_no < 0 || page_no >= doc->npages) return -1;
-    ctx = doc->ctx;
     form_off = doc->pages[page_no].form_off;
     {
     const char *mc = getenv("DJVU_IW_MAXCHUNKS");

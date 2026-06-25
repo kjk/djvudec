@@ -111,6 +111,33 @@ whose INFO gamma != 2.2.
 `bun cmd/verify.ts` — the test driver: ensures deps, builds, then verifies over
 every .djvu under testfiles/ (recursively).
 
+## Known unported chunks / decode gaps
+Decode-path features present in DjvuNet (C#) that this port does NOT handle yet.
+Verified against `src/*.c` chunk dispatch. We DO handle: INFO, DIRM, NAVM, INCL,
+Sjbz, Djbz, BG44, FG44, FGbz, PM44, TXTz, TXTa, ANTa, ANTz.
+
+- **`BGjp` / `FGjp` — JPEG-coded bg/fg layers.** No JPEG decoder in the C port;
+  a page whose background/foreground is JPEG (instead of IW44) renders blank.
+  Rare. The only real correctness gap besides Smmr; would need a JPEG decoder.
+- **`Smmr` — CCITT-G4/MMR-coded bitonal mask** (legacy alternative to JB2 Sjbz).
+  Not handled; such pages get no mask. Rare.
+- **`TH44` / `FORM:THUM` — embedded thumbnails.** Not decoded or exposed (no
+  thumbnail API). Pure convenience: full-page render already works. C# exposes
+  `DjvuPage.Thumbnail`.
+- **`BM44` — standalone grayscale wavelet form.** Only relevant to raw
+  standalone wavelet files, not normal pages (page bg uses BG44). Not handled.
+- **`Wmrm` (watermark-removal), `CIDA` (obsolete).** Not handled; negligible,
+  normally ignored even by DjVuLibre.
+- **Annotation richness (partial).** We extract hyperlink mapareas
+  (rect/oval/text/poly/line + url + comment); we do NOT model highlight color,
+  border styles, pushpins, etc. that C#'s `Annotation` carries.
+
+Deliberately OUT of scope (not gaps): all encoders/writers (no DjVu writing),
+external image-format I/O (ImageConverter, PBM/PGM/RLE serialization), and
+progressive/incremental decoding (we decode the whole buffer up-front). SIMD
+wavelet paths, caching, and multithreading are impl details, not features.
+NB: we render INFO rotation (compose.c); the C# port does not.
+
 ## Change log (most recent first)
 - richer public API (modeled on SumatraPDF's ddjvuapi usage): structured text
   with bounding boxes (zone tree, src/text.c), document outline/bookmarks

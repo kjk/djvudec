@@ -45,7 +45,6 @@ static void prepare_interp(void)
 }
 
 static int imini(int a, int b) { return a < b ? a : b; }
-static int imaxi(int a, int b) { return a > b ? a : b; }
 
 static void prepare_coord(int *coord, int inmax, int outmax, int in, int out)
 {
