@@ -12,10 +12,9 @@
 //   - libdjvu -> EngineDjVu::RenderPage (src/EngineDjVu.cpp): one
 //     ddjvu_page_render into a BGR24 buffer at the mediabox size (page scaled
 //     to fileDPI=300), letting ddjvu scale during decode.
-// Both render at zoom=1, user-rotation=0. The timed region covers decode +
-// pixel conversion only; the GDI StretchBlt/DIB step the engines do is
-// excluded (it is not a decoder cost). This surfaces why libdjvu can win in
-// SumatraPDF even though bench.ts shows our raw render is faster.
+// Both render at zoom=1, user-rotation=0. Per-page timings use a warm page:
+// ours preloads Sjbz at doc-open; libdjvu runs ddjvu_page_decoding_done before
+// the timer. The timed region is render-to-buffer only (GDI StretchBlt excluded).
 //
 // Regenerates dist/ when src/ is newer (`-clean`: full rebuild). Builds
 // djvu_test from dist/djvu.c, then runs `djvu_test -bench-sum` on the file.

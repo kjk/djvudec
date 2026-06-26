@@ -495,8 +495,8 @@ static size_t sum_dst_capacity(djvu_doc *doc, int page0)
     return (size_t)info.width * (size_t)info.height * 3;
 }
 
-/* Cold sum page render: fresh doc per rep; timer covers render_into + rotate
-   (the dst buffer, standing in for the DIB, is allocated outside the timer). */
+/* Warm sum page render: fresh doc per rep (Sjbz preloaded at open); timer covers
+   render_into only (dst buffer allocated outside the timer). */
 static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t len,
                                      int page0)
 {
@@ -1295,7 +1295,7 @@ int main(int argc, char **argv)
         bench_ddjvu_reset();
         if (sum) {
             djvu_ctx_set_bgr(ctx, 1); /* EngineDjvuDec requests BGR output */
-            printf("(bench-sum: EngineDjvuDec vs EngineDjVu render path, zoom=1)\n");
+            printf("(bench-sum: warm render-to-buffer, zoom=1; decode at doc-open)\n");
         }
         for (i = 0; i < n; i++) {
             double mine = -1, lib = -1;

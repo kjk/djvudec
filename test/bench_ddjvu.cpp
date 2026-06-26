@@ -256,8 +256,19 @@ done:
  * renders at native pixel size into RGB24), EngineDjVu renders into a BGR24
  * buffer at the *mediabox* size, i.e. the page scaled to fileDPI=300, and lets
  * ddjvu do the scaling during decode (prect=full, rrect=screen, here equal).
- * Timer covers decode+render only (DIB creation is GDI, excluded per design). */
-static int bench_ddjvu_render_sum_open_page(ddjvu_page_t *page)
+ * Per-page bench: page decode is warmed before the timer (mirrors our Sjbz cache
+ * at doc-open). Document session bench still times decode on first touch. */
+
+static int bench_ddjvu_sum_wait_page(ddjvu_page_t *page)
+{
+    if (!page)
+        return -1;
+    while (!ddjvu_page_decoding_done(page))
+        api_handle(1);
+    return ddjvu_page_decoding_error(page) ? -1 : 0;
+}
+
+static int bench_ddjvu_render_sum_page(ddjvu_page_t *page)
 {
     ddjvu_format_t *fmt = 0;
     ddjvu_rect_t prect, rrect;
@@ -269,10 +280,6 @@ static int bench_ddjvu_render_sum_open_page(ddjvu_page_t *page)
 
     if (!page)
         return -1;
-    while (!ddjvu_page_decoding_done(page))
-        api_handle(1);
-    if (ddjvu_page_decoding_error(page))
-        goto done;
 
     /* combine user rotation (0) with the page's intrinsic rotation */
     ddjvu_page_set_rotation(page, ddjvu_page_get_initial_rotation(page));
@@ -322,7 +329,14 @@ done:
     return rc;
 }
 
-/* Cold sum page render: fresh doc per rep; timer covers decode+render only. */
+static int bench_ddjvu_render_sum_open_page(ddjvu_page_t *page)
+{
+    if (bench_ddjvu_sum_wait_page(page) != 0)
+        return -1;
+    return bench_ddjvu_render_sum_page(page);
+}
+
+/* Warm sum page render: fresh doc per rep; page decode before timer. */
 double bench_ddjvu_page_sum_ms(const char *path, int page0)
 {
     ddjvu_document_t *doc = 0;
@@ -347,9 +361,11 @@ double bench_ddjvu_page_sum_ms(const char *path, int page0)
     page = ddjvu_page_create_by_pageno(doc, page0);
     if (!page)
         goto done;
+    if (bench_ddjvu_sum_wait_page(page) != 0)
+        goto done;
 
     t0 = bench_now_ms();
-    if (bench_ddjvu_render_sum_open_page(page) == 0)
+    if (bench_ddjvu_render_sum_page(page) == 0)
         ms = bench_now_ms() - t0;
 
 done:
