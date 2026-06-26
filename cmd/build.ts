@@ -336,13 +336,51 @@ export async function build(useClang = defaultUseClang): Promise<string> {
   return exe;
 }
 
+// Build a clang + AddressSanitizer harness -> out/clang_asan/. The decoder
+// units are instrumented (-fsanitize=address -O1 for readable traces); the
+// bench shim + prebuilt libdjvu.lib stay uninstrumented (they're the oracle).
+// Used by `bun cmd/tests.ts -asan` to run the verifier under ASan.
+const ASAN_DIR = `${OUT_ROOT}/clang_asan`;
+const ASAN_EXE = `${ASAN_DIR}/djvu_test_clang_asan.exe`;
+
+export async function buildAsan(): Promise<string> {
+  await buildLibDjvu();
+  mkdirSync(ASAN_DIR, { recursive: true });
+  const units = cUnits(ASAN_DIR, "o");
+  const bench = {
+    src: `${ROOT}/test/bench_ddjvu.cpp`,
+    obj: `${ASAN_DIR}/bench_ddjvu_clang.o`,
+  };
+  const ASAN = "-fsanitize=address";
+  let built = false;
+  for (const u of units) {
+    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
+    built = true;
+    await $`clang ${{ raw: ASAN }} -std=c11 -g -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+  }
+  if (needsRebuild(bench.obj, bench.src)) {
+    built = true;
+    await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c -o ${bench.obj} ${bench.src}`;
+  }
+  const objs = [...units.map((u) => u.obj), bench.obj];
+  if (needsRebuild(ASAN_EXE, ...objs, LIBDJVU)) {
+    built = true;
+    await $`clang++ ${{ raw: ASAN }} ${{ raw: objs.join(" ") }} ${LIBDJVU} -ladvapi32 -o ${ASAN_EXE}`;
+  }
+  console.log(built ? "built djvu_test_clang_asan.exe" : "djvu_test_clang_asan.exe up to date");
+  return ASAN_EXE;
+}
+
 if (import.meta.main) {
   await getDeps();
   const args = process.argv.slice(2);
   if (args.includes("-clean")) cleanBuildOutput();
   const useClang = args.includes("-clang") || defaultUseClang;
   if (args.includes("ref")) await buildRef();
-  else {
+  else if (args.includes("asan")) {
+    await buildRef();
+    await buildAsan();
+  } else {
     await buildRef();
     await build(useClang);
   }

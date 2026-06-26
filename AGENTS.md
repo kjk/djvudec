@@ -110,7 +110,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   prints a before/after breakdown per stage (fastest of 3 per stage).
   Same flags on `djvudec_dump`: `bun cmd/build_dump.ts` /
   `djvudec_dump -bench-render -warm 1 -layers file.djvu`.
-- `bun cmd/tests.ts [-clang] [-cpu N]` — the **test driver**: ensures deps,
+- `bun cmd/tests.ts [-clang] [-cpu N] [-asan]` — the **test driver**: ensures deps,
   calls `buildRef()`+`build()` from `build.ts` (build first, then verify), and
   compares against the oracle over `testfiles/djvu/*.djvu`. Builds with MSVC by
   default; `-clang` selects the clang harness. Files are tested **in parallel**,
@@ -127,6 +127,14 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   and flags `memory leak`. (`-bench` keeps the default allocator so timing is
   unperturbed.) A separate older RSS/commit watchdog (`DJVU_VERIFY_MEM_MB`,
   default 4096) also exits 3 on process-level runaway.
+  **`-asan`** builds a clang + AddressSanitizer harness into `out/clang_asan/`
+  (`bun cmd/build.ts asan`, exported as `buildAsan()`; decoder units instrumented
+  at `-O1`, the bench shim + prebuilt `libdjvu.lib` stay uninstrumented as the
+  oracle) and runs the verifier under it. ASan's default exit code (1) would read
+  as "completed with mismatches", so the runner gives ASan `exitcode=21`,
+  captures stderr, and surfaces any detected error as a file failure with the
+  ASan report. (This is how the JB2 cross-coding heap over-read on
+  size-mismatched reference shapes was found.)
 - IMPORTANT: run these from the `djvu` dir. The ref-tool build
   `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
 - Reference tools are built static from `libdjvu/*.cpp` with

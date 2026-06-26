@@ -31,7 +31,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
-import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
+import { buildRef, build, buildAsan, cleanBuildOutput, defaultUseClang } from "./build";
 import { corpusDir } from "./corpus";
 import { trackDjvuTestProc, awaitDjvuTestProc } from "./win_proc_mem";
 
@@ -40,6 +40,17 @@ const RB = join(ROOT, "ref_build");
 const VERIFY_DIFFS = join(ROOT, "verify_diffs");
 let TEST = join(ROOT, "out", "msvc", "djvu_test_msvc.exe"); // set by build() in main()
 const pidToFile = new Map<number, string>();
+
+// -asan: run djvu_test under AddressSanitizer. We give ASan a sentinel exit code
+// (its default is 1, which we treat as "completed with mismatches") and capture
+// stderr so a detected error surfaces as a file failure instead of being absorbed.
+let ASAN = false;
+const ASAN_EXITCODE = 21;
+const asanEnv = () => (ASAN ? { ASAN_OPTIONS: `exitcode=${ASAN_EXITCODE}:halt_on_error=1` } : {});
+function asanReport(stderr: string): string {
+  const m = stderr.match(/==\d+==ERROR: AddressSanitizer[\s\S]*?SUMMARY: AddressSanitizer[^\n]*/);
+  return m ? m[0] : stderr.slice(-1500).trim();
+}
 
 // Fresh djvu_test subprocess every N pages so CRT/libdjvu working set does not
 // climb on long multipage -verify-render runs (e.g. 360-page books).
@@ -300,16 +311,34 @@ async function verifyRender(
     const proc = Bun.spawn({
       cmd: [TEST, "-verify-render", "-diffdir", diffDir, f],
       stdout: "pipe",
-      stderr: "ignore",
+      stderr: ASAN ? "pipe" : "ignore",
       env: {
         ...process.env,
         DJVU_VERIFY_LO: String(lo),
         DJVU_VERIFY_HI: String(hi),
+        ...asanEnv(),
       },
     });
     trackDjvuTestProc(proc, f, pidToFile);
-    const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
+    // read stdout and (asan) stderr concurrently to avoid pipe-buffer deadlock
+    const [out, errTxt] = await Promise.all([
+      new Response(proc.stdout).arrayBuffer().then((b) => Buffer.from(b)),
+      ASAN ? new Response(proc.stderr!).text() : Promise.resolve(""),
+    ]);
     const code = await awaitDjvuTestProc(proc, pidToFile);
+    if (ASAN && code === ASAN_EXITCODE) {
+      return {
+        fRender: [] as number[],
+        m: 0,
+        mm: 1,
+        skip: 0,
+        bad: [`${name}: AddressSanitizer error (p${lo}-${hi})\n${asanReport(errTxt)}`],
+        memTotal: 0,
+        memPeak: 0,
+        memAllocs: 0,
+        memLeak: false,
+      };
+    }
     if (code === 3) {
       return {
         fRender: [] as number[],
@@ -359,11 +388,24 @@ async function verifyText(f: string, nPages: number, hasText: boolean, name: str
     cmd: [TEST, "-verify-text", f],
     stdin: refText,
     stdout: "pipe",
-    stderr: "ignore",
+    stderr: ASAN ? "pipe" : "ignore",
+    env: { ...process.env, ...asanEnv() },
   });
   trackDjvuTestProc(proc, f, pidToFile);
-  const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
+  const [out, errTxt] = await Promise.all([
+    new Response(proc.stdout).arrayBuffer().then((b) => Buffer.from(b)),
+    ASAN ? new Response(proc.stderr!).text() : Promise.resolve(""),
+  ]);
   const code = await awaitDjvuTestProc(proc, pidToFile);
+  if (ASAN && code === ASAN_EXITCODE) {
+    return {
+      fText: [] as number[],
+      tm: 0,
+      tmm: 1,
+      te: 0,
+      tbad: [`${name}: AddressSanitizer error (verify-text)\n${asanReport(errTxt)}`],
+    };
+  }
   if (code !== 0 && code !== 1) {
     return {
       fText: [] as number[],
@@ -429,10 +471,13 @@ function readFailureList(path: string): string[] {
 async function main(): Promise<number> {
   await getDeps();
   const SPECS = corpusDir(ROOT);
+  ASAN = process.argv.includes("-asan");
   const useClang = process.argv.includes("-clang") || defaultUseClang;
   if (process.argv.includes("-clean")) cleanBuildOutput();
   await buildRef();
-  TEST = await build(useClang);
+  // -asan: verify under a clang + AddressSanitizer build to catch memory bugs.
+  TEST = ASAN ? await buildAsan() : await build(useClang);
+  if (ASAN) console.log("running under AddressSanitizer (out/clang_asan)");
 
   let m = 0,
     mm = 0,
