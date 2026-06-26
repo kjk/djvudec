@@ -26,7 +26,7 @@ import { buildRef, build, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
 const RB = join(ROOT, "ref_build");
-let TEST = join(ROOT, "djvu_test.exe"); // set to the built exe in main()
+let TEST = join(ROOT, "out", "djvu_test_msvc.exe"); // set by build() in main()
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
 

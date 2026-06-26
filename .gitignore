@@ -1,10 +1,8 @@
-# build outputs
-*.exe
+# build outputs (harness objects + exes)
+out/
 *.lib
 *.exp
 *.pdb
-*.o
-*.obj
 # reference tools are rebuilt from DjVuLibre by build.ts
 ref_build/
 # local test corpora (copied in, not part of the repo)

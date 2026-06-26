@@ -4,8 +4,9 @@
 //   bun cmd/build.ts -clang   build the harness with clang instead of MSVC
 //   bun cmd/build.ts ref      (re)build the DjVuLibre reference tools
 //
-// The harness exe is suffixed by toolchain: djvu_test_msvc.exe (default on
-// Windows) or djvu_test_clang.exe (-clang). build() returns the exe path.
+// The harness exe is suffixed by toolchain: out/djvu_test_msvc.exe (default on
+// Windows) or out/djvu_test_clang.exe (-clang). Objects land in out/ too.
+// build() returns the exe path.
 // Verification lives in tests.ts, which imports buildRef()/build() from here
 // and drives them (build first, then verify) -- run `bun cmd/tests.ts`.
 import { $ } from "bun";
@@ -16,6 +17,7 @@ import { getDeps } from "./get-deps";
 // *.cpp / *.o globs below (import.meta.dir is backslashed on Windows).
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DJVULIBRE = `${ROOT}/../DjVuLibre`; // sibling checkout (see get-deps.ts)
+const OUT = `${ROOT}/out`;
 const REF = `${ROOT}/ref_build`;
 const LIBDJVU = `${REF}/libdjvu.lib`; // cached static lib (for djvu_test -bench)
 const OBJDIR = `${REF}/djvuobj`;
@@ -95,38 +97,42 @@ export const defaultUseClang = process.platform !== "win32";
 const exeName = (useClang: boolean) =>
   `djvu_test_${useClang ? "clang" : "msvc"}.exe`;
 
-// Build the harness with clang -> djvu_test_clang.exe (objects: *.o).
+// Build the harness with clang -> out/djvu_test_clang.exe (objects: out/*.o).
 async function buildClang(): Promise<string> {
   const exe = exeName(true);
+  mkdirSync(OUT, { recursive: true });
+  const srcPaths = SRCS.map((s) => `../${s}`).join(" ");
   const objs = [
     ...SRCS.map((s) => s.replace(/^src\//, "").replace(/\.c$/, ".o")),
     "djvu_test.o",
   ];
-  // 1. our C sources + harness -> objects (-O3 for benchmarking)
-  await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -Isrc -c ${{ raw: SRCS.join(" ") }} test/djvu_test.c`.cwd(ROOT);
+  // 1. our C sources + harness -> out/*.o (-O3 for benchmarking)
+  await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I../src -c ${{ raw: srcPaths }} ../test/djvu_test.c`.cwd(OUT);
   // 2. DjVuLibre timing shim -> object (C++)
-  await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c -o bench_ddjvu_clang.o test/bench_ddjvu.cpp`.cwd(ROOT);
+  await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c -o bench_ddjvu_clang.o ../test/bench_ddjvu.cpp`.cwd(OUT);
   // 3. link with clang++ (C++ runtime) against libdjvu.lib
-  await $`clang++ ${{ raw: objs.join(" ") }} bench_ddjvu_clang.o ${LIBDJVU} -ladvapi32 -o ${exe}`.cwd(ROOT);
-  return `${ROOT}/${exe}`;
+  await $`clang++ ${{ raw: objs.join(" ") }} bench_ddjvu_clang.o ${LIBDJVU} -ladvapi32 -o ${exe}`.cwd(OUT);
+  return `${OUT}/${exe}`;
 }
 
-// Build the harness with MSVC cl -> djvu_test_msvc.exe (objects: *.obj). cl
-// flags use '-' (a synonym for '/') so Bun's shell doesn't treat them as paths.
+// Build the harness with MSVC cl -> out/djvu_test_msvc.exe (objects: out/*.obj).
+// cl flags use '-' (a synonym for '/') so Bun's shell doesn't treat them as paths.
 async function buildMsvc(): Promise<string> {
   const exe = exeName(false);
+  mkdirSync(OUT, { recursive: true });
+  const obj = (name: string) => `${OUT}/${name}`;
   const objs = [
-    ...SRCS.map((s) => s.replace(/^src\//, "").replace(/\.c$/, ".obj")),
-    "djvu_test.obj",
+    ...SRCS.map((s) => obj(s.replace(/^src\//, "").replace(/\.c$/, ".obj"))),
+    obj("djvu_test.obj"),
   ];
-  // 1. our C sources + harness -> objects (C11, static CRT to match libdjvu.lib
+  // 1. our C sources + harness -> out/*.obj (C11, static CRT to match libdjvu.lib
   //    which clang++ builds with /MT; -GL for whole-program/LTCG optimization)
-  await $`cl -nologo -O2 -GL -MT -W3 -std:c11 -D_CRT_SECURE_NO_WARNINGS -Isrc -c ${{ raw: SRCS.join(" ") }} test/djvu_test.c`.cwd(ROOT);
+  await $`cl -nologo -O2 -GL -MT -W3 -std:c11 -D_CRT_SECURE_NO_WARNINGS -Isrc -Fo${OUT}/ -c ${{ raw: SRCS.join(" ") }} test/djvu_test.c`.cwd(ROOT);
   // 2. DjVuLibre timing shim -> object (C++ with exceptions)
-  await $`cl -nologo -O2 -GL -MT -EHsc -std:c++14 ${{ raw: DJVU_DEFINES }} -Fobench_ddjvu_msvc.obj -c test/bench_ddjvu.cpp`.cwd(ROOT);
+  await $`cl -nologo -O2 -GL -MT -EHsc -std:c++14 ${{ raw: DJVU_DEFINES }} -Fo${OUT}/bench_ddjvu_msvc.obj -c test/bench_ddjvu.cpp`.cwd(ROOT);
   // 3. link with cl against libdjvu.lib (-LTCG to consume the -GL objects)
-  await $`cl -nologo ${{ raw: objs.join(" ") }} bench_ddjvu_msvc.obj ${LIBDJVU} advapi32.lib -Fe:${exe} -link -LTCG`.cwd(ROOT);
-  return `${ROOT}/${exe}`;
+  await $`cl -nologo ${{ raw: objs.join(" ") }} ${OUT}/bench_ddjvu_msvc.obj ${LIBDJVU} advapi32.lib -Fe:${OUT}/${exe} -link -LTCG`.cwd(ROOT);
+  return `${OUT}/${exe}`;
 }
 
 // Build the C library + test harness. djvu_test links the DjVuLibre timing shim
