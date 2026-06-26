@@ -23,17 +23,22 @@
 // each failure is appended as soon as it is found.
 // `-failures path` tests only paths listed in that file (one per line, # comments).
 // `-clean` deletes out/ before building, forcing a full harness rebuild.
+// After each djvu_test_* subprocess exits, Windows FFI enumerates processes; if
+// any djvu_test_* process exceeds 8 GB RAM, all are killed and the offending
+// file is printed before exit.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
 import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
 import { corpusDir } from "./corpus";
+import { trackDjvuTestProc, awaitDjvuTestProc } from "./win_proc_mem";
 
 const ROOT = dirname(import.meta.dir);
 const RB = join(ROOT, "ref_build");
 const VERIFY_DIFFS = join(ROOT, "verify_diffs");
 let TEST = join(ROOT, "out", "msvc", "djvu_test_msvc.exe"); // set by build() in main()
+const pidToFile = new Map<number, string>();
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
 
@@ -112,16 +117,17 @@ async function fileMeta(
 ): Promise<{ nPages: number; anno: boolean; text: boolean }> {
   const offs = pageOffsets(data);
   if (offs.length > 0) return { nPages: offs.length, ...docFeatures(data, offs) };
-  const out = await run([TEST, "-info", f]);
+  const out = await run([TEST, "-info", f], f);
   const pages = parseInt(out.toString("latin1").match(/pages: (\d+)/)?.[1] ?? "0", 10);
   return { nPages: pages, ...scanChunkTags(data) };
 }
 
-// Run a subprocess and capture stdout (async, so files can run concurrently).
-async function run(cmd: string[]): Promise<Buffer> {
+// Run djvu_test and capture stdout; checks for runaway memory after exit (Windows FFI).
+async function run(cmd: string[], file: string): Promise<Buffer> {
   const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "ignore" });
+  trackDjvuTestProc(proc, file, pidToFile);
   const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
+  const code = await awaitDjvuTestProc(proc, pidToFile);
   if (code !== 0) return Buffer.alloc(0);
   return out;
 }
@@ -246,8 +252,9 @@ async function verifyRender(
     stdout: "pipe",
     stderr: "ignore",
   });
+  trackDjvuTestProc(proc, f, pidToFile);
   const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
+  const code = await awaitDjvuTestProc(proc, pidToFile);
   if (code !== 0 && code !== 1) {
     return {
       fRender: [] as number[],
@@ -271,8 +278,9 @@ async function verifyText(f: string, nPages: number, hasText: boolean, name: str
     stdout: "pipe",
     stderr: "ignore",
   });
+  trackDjvuTestProc(proc, f, pidToFile);
   const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
+  const code = await awaitDjvuTestProc(proc, pidToFile);
   if (code !== 0 && code !== 1) {
     return {
       fText: [] as number[],
