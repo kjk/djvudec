@@ -60,6 +60,9 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   both sides). With no file it picks a random `.djvu` from `testfiles/subset`
   (`-full` → `testfiles/full`). Each line:
   `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%` (`+` = we're slower).
+  After the timing lines, a `document, allocs N, total <bytes>, peak <bytes>`
+  line reports the decoder's allocation stats for the whole document (gathered in
+  one extra untimed tracked pass, so it doesn't skew the timings).
 - `bun cmd/bench-sum.ts [file.djvu] [-clang] [-full]` — same harness as
   `bench.ts` (same `-bench`-style per-page + document lines), but replicates how
   **SumatraPDF** actually opens/renders pages instead of timing the bare

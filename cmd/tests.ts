@@ -150,6 +150,7 @@ type VerifyResult = {
   tbad: string[];
   memTotal: number; // bytes ever allocated for the file (sum over page chunks)
   memPeak: number; // peak live bytes for a single ctx (max over chunks)
+  memAllocs: number; // number of allocations (sum over page chunks)
   memLeak: boolean; // a chunk reported unfreed allocations
 };
 
@@ -204,7 +205,10 @@ function safeDirName(name: string): string {
 function parseVerifyRender(
   name: string,
   out: Buffer,
-): Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad" | "memTotal" | "memPeak" | "memLeak"> {
+): Pick<
+  VerifyResult,
+  "fRender" | "m" | "mm" | "skip" | "bad" | "memTotal" | "memPeak" | "memAllocs" | "memLeak"
+> {
   const fRender: number[] = [];
   const bad: string[] = [];
   let m = 0,
@@ -212,6 +216,7 @@ function parseVerifyRender(
     skip = 0,
     memTotal = 0,
     memPeak = 0,
+    memAllocs = 0,
     memLeak = false;
 
   for (const line of out.toString("latin1").split(/\r?\n/)) {
@@ -224,6 +229,7 @@ function parseVerifyRender(
       // memstat <total> <peak> <allocs> <frees> <live>
       memTotal += parseInt(parts[1], 10) || 0;
       memPeak = Math.max(memPeak, parseInt(parts[2], 10) || 0);
+      memAllocs += parseInt(parts[3], 10) || 0;
       if ((parseInt(parts[5], 10) || 0) > 0) memLeak = true;
     } else if (kind === "render") {
       if (status === "ok") m++;
@@ -245,7 +251,7 @@ function parseVerifyRender(
       skip = parseInt(parts[6], 10) || skip;
     }
   }
-  return { fRender, m, mm, skip, bad, memTotal, memPeak, memLeak };
+  return { fRender, m, mm, skip, bad, memTotal, memPeak, memAllocs, memLeak };
 }
 
 // Per-page djvutxt packed for -verify-text: u32-BE len + bytes per page.
@@ -285,6 +291,7 @@ async function verifyRender(
     bad: [] as string[],
     memTotal: 0,
     memPeak: 0,
+    memAllocs: 0,
     memLeak: false,
   };
 
@@ -312,6 +319,7 @@ async function verifyRender(
         bad: [`${name}: djvu_test -verify-render p${lo}-${hi} exceeded the memory limit (4 GB per ctx / DJVU_VERIFY_MEM_MB)`],
         memTotal: 0,
         memPeak: 0,
+        memAllocs: 0,
         memLeak: false,
       };
     }
@@ -324,6 +332,7 @@ async function verifyRender(
         bad: [`${name}: djvu_test -verify-render p${lo}-${hi} exited ${code}`],
         memTotal: 0,
         memPeak: 0,
+        memAllocs: 0,
         memLeak: false,
       };
     }
@@ -335,6 +344,7 @@ async function verifyRender(
     merged.bad.push(...part.bad);
     merged.memTotal += part.memTotal;
     merged.memPeak = Math.max(merged.memPeak, part.memPeak);
+    merged.memAllocs += part.memAllocs;
     merged.memLeak = merged.memLeak || part.memLeak;
   }
   return merged;
@@ -519,7 +529,7 @@ async function main(): Promise<number> {
     }
     finished++;
     const memNote = vr.memTotal
-      ? ` — alloc ${humanBytes(vr.memTotal)}, peak ${humanBytes(vr.memPeak)}`
+      ? ` — alloc ${humanBytes(vr.memTotal)} (${vr.memAllocs} allocs), peak ${humanBytes(vr.memPeak)}`
       : "";
     console.log(
       `[${finished}/${files.length}] ${basename(f)} (${feats.join(", ")}) — ` +

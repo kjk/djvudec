@@ -564,6 +564,55 @@ static double bench_ours_doc_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t l
     return ms;
 }
 
+/* One untimed, tracked document pass (open + render all pages + text + links +
+   close) using the accounting allocator, then print the decoder's allocation
+   stats for the whole document: count, total bytes, peak live bytes. Kept out of
+   the timed bench loops so the header/accounting overhead doesn't skew timings.
+   `sum` selects the EngineDjvuDec render path (bench-sum) vs plain render. */
+static void bench_mem_report(const uint8_t *data, size_t len, int sum)
+{
+    djvu_ctx *ctx;
+    djvu_doc *doc;
+    size_t total = 0, peak = 0;
+    long na = 0;
+    char tb[32], pb[32];
+    int i;
+
+    g_mem_n = 0; /* fresh accounting for this pass */
+    ctx = djvu_ctx_new(mem_alloc, mem_free, on_error, NULL);
+    if (!ctx) return;
+    if (sum) djvu_ctx_set_bgr(ctx, 1);
+    doc = djvu_doc_open(ctx, data, len);
+    if (doc) {
+        int n = djvu_doc_page_count(doc);
+        for (i = 0; i < n; i++) {
+            if (sum) {
+                djvu_page_type pt;
+                int ss = sum_page_subsample(doc, i, &pt);
+                size_t cap = sum_dst_capacity(doc, i);
+                uint8_t *dst = cap ? (uint8_t *)malloc(cap) : NULL;
+                if (dst) { sum_render_into(doc, i, ss, dst); free(dst); }
+            } else {
+                djvu_image *img = djvu_page_render(doc, i, 1);
+                if (img) djvu_image_destroy(ctx, img);
+            }
+            { char *t = djvu_page_text(doc, i); if (t) djvu_text_destroy(ctx, t); }
+            { djvu_page_links *L = djvu_page_get_links(doc, i);
+              if (L) djvu_page_links_destroy(ctx, L); }
+        }
+        djvu_doc_close(doc);
+    }
+    djvu_ctx_free(ctx);
+
+    for (i = 0; i < g_mem_n; i++) {
+        total += g_mem[i].total;
+        if (g_mem[i].peak > peak) peak = g_mem[i].peak;
+        na += g_mem[i].n_alloc;
+    }
+    printf("document, allocs %ld, total %s, peak %s\n",
+           na, human_bytes(total, tb), human_bytes(peak, pb));
+}
+
 /* Verify djvu_page_render_into is byte-identical to djvu_page_render (+ matching
    djvu_page_render_info geometry) for every page at subsample=1. */
 static int run_verify_into(djvu_doc *doc)
@@ -1236,6 +1285,7 @@ int main(int argc, char **argv)
                        doc_lib, doc_mine, diff, pct);
             }
         }
+        bench_mem_report(data, len, sum); /* decoder allocation stats for the doc */
         djvu_ctx_free(ctx); free(data);
         return rc;
     }
