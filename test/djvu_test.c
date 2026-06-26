@@ -72,9 +72,13 @@ static uint8_t *read_file(const char *path, size_t *out_len)
     return buf;
 }
 
-static int write_pnm(const char *path, djvu_image *img)
+/* Write img as a PNM. PNM color order is RGB; when bgr != 0 the image data is
+   B,G,R (e.g. rendered with djvu_ctx_set_bgr) and each pixel is swapped back to
+   RGB on the way out so the file is still a correct PPM. */
+static int write_pnm_ex(const char *path, djvu_image *img, int bgr)
 {
     FILE *f;
+    int y;
     if (path && !strcmp(path, "-")) {
 #if defined(_WIN32)
         _setmode(_fileno(stdout), _O_BINARY);
@@ -88,8 +92,21 @@ static int write_pnm(const char *path, djvu_image *img)
         fprintf(f, "P6\n%d %d\n255\n", img->width, img->height);
     else
         fprintf(f, "P5\n%d %d\n255\n", img->width, img->height);
-    {
-        int y;
+    if (bgr && img->format == DJVU_FORMAT_RGB24) {
+        uint8_t *row = (uint8_t *)malloc((size_t)img->width * 3);
+        if (!row) { if (f != stdout) fclose(f); return -1; }
+        for (y = 0; y < img->height; y++) {
+            const uint8_t *src = img->data + (size_t)y * img->stride;
+            int x;
+            for (x = 0; x < img->width; x++) {
+                row[x * 3 + 0] = src[x * 3 + 2];
+                row[x * 3 + 1] = src[x * 3 + 1];
+                row[x * 3 + 2] = src[x * 3 + 0];
+            }
+            fwrite(row, 1, (size_t)img->width * 3, f);
+        }
+        free(row);
+    } else {
         for (y = 0; y < img->height; y++)
             fwrite(img->data + (size_t)y * img->stride, 1,
                    (size_t)img->width * img->format, f);
@@ -97,6 +114,11 @@ static int write_pnm(const char *path, djvu_image *img)
     if (f != stdout)
         fclose(f);
     return 0;
+}
+
+static int write_pnm(const char *path, djvu_image *img)
+{
+    return write_pnm_ex(path, img, 0);
 }
 
 /* tests.ts textNorm: strip CR/FF and trailing whitespace. */
@@ -700,6 +722,12 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
     int m = 0, mm = 0, skip = 0;
     int i;
 
+    /* Compare in BGR: DjVuLibre's pixmap is natively B,G,R, so asking ddjvu for
+       BGR24 is a memcpy (RGB24 costs it a per-pixel swap). We render BGR too
+       (djvu_ctx_set_bgr); the byte-for-byte memcmp is then RGB-swap-free on the
+       reference side. BGR<->BGR equality is exactly as strict as RGB<->RGB. */
+    djvu_ctx_set_bgr(ctx, 1);
+
     {
         const char *lo_s = getenv("DJVU_VERIFY_LO");
         const char *hi_s = getenv("DJVU_VERIFY_HI");
@@ -778,9 +806,9 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
                         refimg.format = ref.bps == 3 ? DJVU_FORMAT_RGB24 : DJVU_FORMAT_GRAY8;
                         refimg.stride = ref.rowsize;
                         refimg.data = ref.data;
-                        write_pnm(refpath, &refimg);
+                        write_pnm_ex(refpath, &refimg, 1); /* ref is BGR -> swap to RGB */
                     }
-                    write_pnm(minepath, mine);
+                    write_pnm_ex(minepath, mine, 1); /* ours is BGR -> swap to RGB */
                     printf("render\t%d\tmismatch\t%s\t%s\n",
                            i + 1, refpath, minepath);
                 } else {

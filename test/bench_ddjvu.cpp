@@ -456,7 +456,10 @@ static int bench_ddjvu_render_open_page_out(ddjvu_page_t *page, int want_rgb,
     prect.h = (unsigned int)ih;
     rrect = prect;
 
-    style = want_rgb ? DDJVU_FORMAT_RGB24 : DDJVU_FORMAT_GREY8;
+    /* BGR24 is DjVuLibre's native pixel order (its GPixmap is B,G,R), so this is
+       a memcpy in fmt_convert; RGB24 would cost a per-pixel swap. djvu_test
+       renders BGR too (djvu_ctx_set_bgr) and compares BGR<->BGR. */
+    style = want_rgb ? DDJVU_FORMAT_BGR24 : DDJVU_FORMAT_GREY8;
     fmt = ddjvu_format_create(style, 0, 0);
     if (!fmt)
         goto done;
