@@ -105,12 +105,13 @@ struct djvu_doc {
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
 void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
+void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0);
+void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0);
 
 /* Cached JB2 dictionaries (read-only during render; freed in djvu_doc_close). */
 jb2_image *djvu_doc_jb2_dict(djvu_doc *doc, const char *incl_id);
 jb2_image *djvu_doc_jb2_dict_inline(djvu_doc *doc, uint32_t form_off);
 jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off);
-
 /* Resolve an INCL component id to its FORM file offset; 0 if not found. */
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id);
 

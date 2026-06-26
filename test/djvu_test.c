@@ -495,6 +495,10 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         if (lo < 1) lo = 1;
         if (hi > npages) hi = npages;
         ensure_dir(diffdir);
+        if (getenv("DJVU_LAZY_IW44")) {
+            djvu_doc_preload_jb2_range(doc, lo - 1, hi - 1);
+            djvu_doc_preload_iw44_range(doc, lo - 1, hi - 1);
+        }
         if (verify_mem_checkpoint(doc, lo, "chunk_start") < 0)
             goto mem_limit;
         for (i = lo - 1; i < hi; i++) {
@@ -699,8 +703,7 @@ int main(int argc, char **argv)
     data = read_file(in, &len);
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
 
-    /* Verify: lazy IW44/JB2 in our decoder; one ddjvuapi doc per subprocess chunk
-     * (tests.ts restarts every DJVU_VERIFY_* pages); bench_ddjvu_purge at end. */
+    /* Verify: lazy decode per chunk (tests.ts sets DJVU_VERIFY_LO/HI); cold ddjvu oracle. */
     if (do_verify_render) {
 #if defined(_WIN32)
         _putenv("DJVU_LAZY_IW44=1");

@@ -251,8 +251,19 @@ static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
 
 static void djvu_doc_preload_iw44(djvu_doc *doc)
 {
+    if (!doc) return;
+    djvu_doc_preload_iw44_range(doc, 0, doc->npages - 1);
+}
+
+void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0)
+{
     int i;
-    for (i = 0; i < doc->npages; i++) {
+
+    if (!doc) return;
+    if (lo0 < 0) lo0 = 0;
+    if (hi0 >= doc->npages) hi0 = doc->npages - 1;
+    if (lo0 > hi0) return;
+    for (i = lo0; i <= hi0; i++) {
         djvu_page_int *pg = &doc->pages[i];
         preload_iw_layer(doc, pg, "BG44", &pg->iw_bg);
         preload_iw_layer(doc, pg, "FG44", &pg->iw_fg);
@@ -418,11 +429,23 @@ static void preload_jb2_dict_inline(djvu_doc *doc, djvu_page_int *pg)
 static void djvu_doc_preload_jb2_dicts(djvu_doc *doc)
 {
     int i;
+
     if (!doc) return;
     for (i = 0; i < doc->ncomp; i++)
         if (doc->comps[i].type == 0 && doc->comps[i].id)
             preload_jb2_dict_incl(doc, doc->comps[i].id);
-    for (i = 0; i < doc->npages; i++) {
+    djvu_doc_preload_jb2_range(doc, 0, doc->npages - 1);
+}
+
+void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0)
+{
+    int i;
+
+    if (!doc) return;
+    if (lo0 < 0) lo0 = 0;
+    if (hi0 >= doc->npages) hi0 = doc->npages - 1;
+    if (lo0 > hi0) return;
+    for (i = lo0; i <= hi0; i++) {
         preload_jb2_dicts_from_page(doc, doc->pages[i].form_off);
         preload_jb2_dict_inline(doc, &doc->pages[i]);
     }
@@ -478,18 +501,15 @@ jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off)
         return NULL;
     while ((incl = djvu_form_find_chunk(doc, form_off, "INCL", &incl_sz, &start)) != NULL) {
         char id[64];
-        uint32_t coff;
-        const uint8_t *djbz;
         size_t n = incl_sz < sizeof(id) - 1 ? incl_sz : sizeof(id) - 1;
         memcpy(id, incl, n);
         id[n] = 0;
         djvu_trim_incl_id(id);
         dict = jb2_dict_find(doc, id);
         if (dict) return dict;
-        coff = djvu_doc_component_offset(doc, id);
-        if (!coff) continue;
-        djbz = djvu_form_find_chunk(doc, coff, "Djbz", &chunk_sz, NULL);
-        if (djbz) return NULL; /* INCL has Djbz but cache miss (preload failed) */
+        preload_jb2_dict_incl(doc, id);
+        dict = jb2_dict_find(doc, id);
+        if (dict) return dict;
     }
     return NULL;
 }
