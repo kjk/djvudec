@@ -178,15 +178,23 @@ const MUST_INCLUDE = new Set([
   "1998_compression.djvu",
   "1998_lossy_masked.djvu",
   "1998_distribution.djvu",
-  "Mcguffey's_Primer.djvu",
   "djvu3spec.djvu",
   "djvu2spec.djvu",
   "bug-3125-rotated-pages.djvu",
-  "bug-2200-probability-7.djvu",
+  "directory.djvu",
+  "test0.djvu",
+  "1737 - invalid DPI value.djvu",
+  "mtorrent_anons_screen.djvu",
 ]);
 
+function fileScore(f: FileFeat, newTagCount: number): number {
+  // Prefer more uncovered tags, then faster total render, then fewer pages.
+  return newTagCount * 1e9 - f.totalRenderMs * 100 - f.pagesCount * 100;
+}
+
 function pickSubset(all: FileFeat[]): FileFeat[] {
-  const ok = all.filter((f) => !f.error && f.pagesCount > 0);
+  const ok = all.filter((f) => !f.error);
+  const renderable = ok.filter((f) => f.pagesCount > 0);
   const universe = new Set<string>();
   for (const f of ok) for (const t of f.tags) universe.add(t);
 
@@ -200,7 +208,7 @@ function pickSubset(all: FileFeat[]): FileFeat[] {
     }
   }
 
-  const remaining = ok.filter((f) => !picked.includes(f));
+  const remaining = renderable.filter((f) => !picked.includes(f));
   while (covered.size < universe.size) {
     let best: FileFeat | null = null;
     let bestScore = -1;
@@ -208,8 +216,7 @@ function pickSubset(all: FileFeat[]): FileFeat[] {
       if (picked.includes(f)) continue;
       const newTags = f.tags.filter((t) => !covered.has(t));
       if (!newTags.length) continue;
-      // Prefer more new tags, then faster total render.
-      const score = newTags.length * 1e6 - f.totalRenderMs;
+      const score = fileScore(f, newTags.length);
       if (score > bestScore) {
         bestScore = score;
         best = f;
@@ -220,7 +227,25 @@ function pickSubset(all: FileFeat[]): FileFeat[] {
     for (const t of best.tags) covered.add(t);
   }
 
-  return picked.sort((a, b) => a.rel.localeCompare(b.rel));
+  return pruneRedundant(picked).sort((a, b) => a.rel.localeCompare(b.rel));
+}
+
+function pruneRedundant(picked: FileFeat[]): FileFeat[] {
+  const result = [...picked];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = result.length - 1; i >= 0; i--) {
+      const f = result[i];
+      if (MUST_INCLUDE.has(basename(f.path))) continue;
+      const covered = new Set(result.filter((_, j) => j !== i).flatMap((x) => x.tags));
+      if (f.tags.every((t) => covered.has(t))) {
+        result.splice(i, 1);
+        changed = true;
+      }
+    }
+  }
+  return result;
 }
 
 function writeSummary(all: FileFeat[], picked: FileFeat[] | null) {

@@ -11,9 +11,10 @@
 // ignored). Renders use one `djvu_test -verify-render` per file (in-memory bitmap
 // compare vs ddjvuapi; PNMs written to verify_diffs/ only on mismatch). Text uses
 // one `djvu_test -verify-text` per file (doc opened once)
-// with length-prefixed per-page djvutxt on stdin. Runs over every .djvu under testfiles/
-// recursively; set the DJVU_SPECS env var to point the scan at a different
-// directory. Files are tested in parallel across one worker per CPU; `-cpu N`
+// with length-prefixed per-page djvutxt on stdin. Runs over every .djvu under
+// testfiles/subset by default (`-full` uses testfiles/full); set DJVU_SPECS to
+// override. See test/file_features.md for the curated subset. Files are tested
+// in parallel across one worker per CPU; `-cpu N`
 // overrides the count.
 // `-rand N` limits the run to N randomly chosen files from the corpus.
 // `-failout path` writes failing file paths (default: failures.txt in repo root);
@@ -25,6 +26,7 @@ import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
 import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
+import { corpusDir } from "./corpus";
 
 const ROOT = dirname(import.meta.dir);
 const RB = join(ROOT, "ref_build");
@@ -323,7 +325,7 @@ function readFailureList(path: string): string[] {
 
 async function main(): Promise<number> {
   await getDeps();
-  const SPECS = process.env.DJVU_SPECS ?? join(ROOT, "testfiles");
+  const SPECS = corpusDir(ROOT);
   const useClang = process.argv.includes("-clang") || defaultUseClang;
   if (process.argv.includes("-clean")) cleanBuildOutput();
   await buildRef();
@@ -384,6 +386,7 @@ async function main(): Promise<number> {
     randArg >= 0 && files.length < totalFiles
       ? ` (${files.length} random of ${totalFiles})`
       : "";
+  console.log(`corpus: ${SPECS}`);
   console.log(`testing ${files.length} files${randNote} with ${nWorkers} workers`);
 
   writeFileSync(failOutPath, "");
