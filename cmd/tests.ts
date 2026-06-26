@@ -31,14 +31,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
-import { buildRef, build, buildAsan, cleanBuildOutput, defaultUseClang } from "./build";
+import { buildRef, build, buildAsan, cleanBuildOutput, defaultUseClang, refToolPath } from "./build";
 import { corpusDir } from "./corpus";
 import { trackDjvuTestProc, awaitDjvuTestProc } from "./win_proc_mem";
 
 const ROOT = dirname(import.meta.dir);
-const RB = join(ROOT, "ref_build");
 const VERIFY_DIFFS = join(ROOT, "verify_diffs");
-let TEST = join(ROOT, "out", "msvc", "djvu_test_msvc.exe"); // set by build() in main()
+let TEST = ""; // set by build() / buildAsan() in main()
 const pidToFile = new Map<number, string>();
 
 // -asan: run djvu_test under AddressSanitizer. We give ASan a sentinel exit code
@@ -274,7 +273,7 @@ async function fetchRefText(f: string, nPages: number): Promise<Buffer> {
     const pages: number[] = [];
     for (let p = start; p <= end; p++) pages.push(p);
     const chunks = await Promise.all(
-      pages.map((p) => run([join(RB, "djvutxt.exe"), `--page=${p}`, f])),
+      pages.map((p) => run([refToolPath("djvutxt"), `--page=${p}`, f])),
     );
     for (const chunk of chunks) {
       const hdr = Buffer.alloc(4);
