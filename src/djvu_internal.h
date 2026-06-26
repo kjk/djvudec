@@ -28,6 +28,7 @@ struct djvu_ctx {
     int lazy_iw44;     /* defer IW44/JB2 preload until explicit preload or use */
     int no_compose;    /* skip color composite in render */
     int iw_max_chunks; /* cap IW44 chunks per layer (0 = unlimited) */
+    int bgr;           /* emit color output as B,G,R instead of R,G,B */
 };
 
 void *djvu_alloc(djvu_ctx *ctx, size_t size);
@@ -162,7 +163,9 @@ static inline int djvu_y_bottomup_to_topdown(int y, int page_h, int h) {
 }
 
 /* Copy bottom-up RGB (row 0 = bottom) into top-down dst (w*h*3 bytes). */
-void djvu_flip_rgb_bottomup(uint8_t *dst, const uint8_t *src, int w, int h);
+/* Flip a bottom-up RGB pixmap to top-down. When bgr != 0, also swap R<->B so
+   the output is in B,G,R order (matches a Windows DIB / DDJVU_FORMAT_BGR24). */
+void djvu_flip_rgb_bottomup(uint8_t *dst, const uint8_t *src, int w, int h, int bgr);
 
 /* Bounded buffer reader for NAVM/outline and text-zone payloads. */
 typedef struct {
@@ -578,6 +581,11 @@ static inline void djvu_render_timings_clear(djvu_render_timings *t)
 
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
                               int width, int height, djvu_render_timings *t);
+
+/* Composite a color page directly into a caller buffer (top-down, dst stride in
+   bytes); no intermediate djvu_image. dst must hold width*height*3. */
+int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
+                           int width, int height, uint8_t *dst, int stride);
 
 /* Like djvu_page_render; optional per-stage timings when t != NULL. */
 djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,

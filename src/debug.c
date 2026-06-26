@@ -107,7 +107,7 @@ djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no)
     out->stride = bg.w * 3;
     out->data = (uint8_t *)djvu_alloc(ctx, (size_t)bg.w * bg.h * 3);
     if (!out->data) { djvu_free(ctx, out); djvu_cpix_free(ctx, &bg); return NULL; }
-    djvu_flip_rgb_bottomup(out->data, bg.d, bg.w, bg.h);
+    djvu_flip_rgb_bottomup(out->data, bg.d, bg.w, bg.h, 0); /* debug dump: always RGB */
     djvu_cpix_free(ctx, &bg);
     return out;
 }

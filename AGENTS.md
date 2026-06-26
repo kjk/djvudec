@@ -65,16 +65,25 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   **SumatraPDF** actually opens/renders pages instead of timing the bare
   `djvu_page_render(subsample=1)` (runs `djvu_test -bench-sum`):
   - ours → `EngineDjvuDec::RenderPage` (src/EngineDjvuDec.cpp): pick an integer
-    subsample (compound pages forced to full res), decode, convert RGB→BGR (or
-    copy gray8), rotate when subsample>1.
+    subsample (compound pages forced to full res), query `djvu_page_render_info`
+    then `djvu_page_render_into` a destination buffer with `djvu_ctx_set_bgr`
+    on — color is composited straight into the buffer in BGR order, with no
+    intermediate `djvu_image` and no separate convert/copy pass; rotate when
+    subsample>1.
   - libdjvu → `EngineDjVu::RenderPage` (src/EngineDjVu.cpp): one
     `ddjvu_page_render` into a **BGR24** buffer at the mediabox size (page scaled
     to fileDPI=300), letting ddjvu scale during decode.
   Both render at zoom=1, user-rotation=0; the timed region is decode + pixel
   conversion only (the engines' GDI StretchBlt/DIB step is excluded — not a
-  decoder cost). This is why `bench.ts` shows us faster while libdjvu can win in
-  SumatraPDF: the per-pixel RGB→BGR convert our engine adds (libdjvu renders
-  straight to BGR) erases our raw decode lead on large color pages.
+  decoder cost). Historically `bench.ts` showed us faster while libdjvu won in
+  SumatraPDF because our engine ran an extra full-frame pass libdjvu avoids:
+  libdjvu renders straight into the caller's buffer in BGR (its native pixel
+  order), while our engine rendered into a `djvu_image` then copied/converted it
+  into the DIB. Two fixes close it: `djvu_ctx_set_bgr` (emit BGR directly, no
+  R→B swap) and `djvu_page_render_into` (composite straight into the caller
+  buffer, no intermediate image). With both, `bench-sum` shows us faster than
+  libdjvu on color pages too. `djvu_test -verify-into` checks `render_into` is
+  byte-identical to `djvu_page_render`.
 - **Before/after render perf** (djvudec only, no DjVuLibre):
   1. `bun cmd/build_bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`
   2. Edit `src/` (or regenerate `dist/djvu.c` if benchmarking the amalgamation)

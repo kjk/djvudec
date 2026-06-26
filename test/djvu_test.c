@@ -254,11 +254,14 @@ static double bench_ours_doc_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
 }
 
 /* --- bench-sum: replicate SumatraPDF EngineDjvuDec::RenderPage (our path) ---
- * Renders at zoom=1, user-rotation=0. Mirrors the engine's non-GDI work:
- * pick an integer subsample, decode, convert RGB->BGR (or copy gray8), and
- * rotate for subsample>1. The GDI StretchBlt/DIB step is excluded by design. */
+ * Renders at zoom=1, user-rotation=0. Mirrors the engine's non-GDI work: pick
+ * an integer subsample, query the output geometry, then render straight into a
+ * destination buffer (djvu_page_render_into -- the engine's DIB), so there is
+ * no separate format-convert/copy pass. Rotate for subsample>1. The GDI
+ * StretchBlt/DIB allocation is excluded by design (the dst buffer stands in for
+ * the DIB and is allocated outside the timer). */
 
-static volatile uint8_t sum_sink; /* defeat dead-code elimination of the convert */
+static volatile uint8_t sum_sink; /* defeat dead-code elimination of the rotate */
 
 static int sum_normalize_rotation(int r)
 {
@@ -289,77 +292,30 @@ static int sum_pick_subsample(djvu_page_type t, int upW, int upH, int tdx, int t
     return s;
 }
 
-/* Replicate EngineDjvuDec's RGB->BGR convert (or gray8 copy) + optional CPU
-   rotation into freshly-malloc'd buffers. Returns 0 on success. */
-static int sum_convert_rotate(djvu_image *img, djvu_page_type ptype, int rotateAfter)
+/* Replicate the engine's CPU rotation for subsample>1 (decode output is not
+   intrinsically rotated then). Allocates a rotated buffer to capture the cost. */
+static int sum_rotate(const uint8_t *src, int w, int h, int comp, int rot)
 {
-    int dx = img->width, dy = img->height;
-    int isBitonal = (ptype == DJVU_PAGE_BITONAL) || (img->format == DJVU_FORMAT_GRAY8);
-    int gray = isBitonal && img->format == DJVU_FORMAT_GRAY8;
-    int comp = gray ? 1 : 3;
-    uint8_t *buf;
+    int ndx = (rot == 180) ? w : h;
+    uint8_t *out;
     int x, y;
-
-    if (gray) {
-        buf = (uint8_t *)malloc((size_t)dx * dy);
-        if (!buf)
-            return -1;
-        for (y = 0; y < dy; y++)
-            memcpy(buf + (size_t)y * dx, img->data + (size_t)y * img->stride, (size_t)dx);
-    } else {
-        buf = (uint8_t *)malloc((size_t)dx * dy * 3);
-        if (!buf)
-            return -1;
-        for (y = 0; y < dy; y++) {
-            const uint8_t *src = img->data + (size_t)y * img->stride;
-            uint8_t *dst = buf + (size_t)y * dx * 3;
-            if (img->format == DJVU_FORMAT_GRAY8) {
-                for (x = 0; x < dx; x++) {
-                    uint8_t v = src[x];
-                    dst[x * 3 + 0] = v;
-                    dst[x * 3 + 1] = v;
-                    dst[x * 3 + 2] = v;
-                }
-            } else {
-                for (x = 0; x < dx; x++) {
-                    dst[x * 3 + 0] = src[x * 3 + 2]; /* B */
-                    dst[x * 3 + 1] = src[x * 3 + 1]; /* G */
-                    dst[x * 3 + 2] = src[x * 3 + 0]; /* R */
-                }
-            }
+    if (rot == 0)
+        return 0;
+    out = (uint8_t *)malloc((size_t)w * h * comp);
+    if (!out)
+        return -1;
+    for (y = 0; y < h; y++) {
+        for (x = 0; x < w; x++) {
+            int nx, ny;
+            if (rot == 90) { nx = h - 1 - y; ny = x; }
+            else if (rot == 180) { nx = w - 1 - x; ny = h - 1 - y; }
+            else { nx = y; ny = w - 1 - x; } /* 270 */
+            memcpy(out + ((size_t)ny * ndx + nx) * comp,
+                   src + ((size_t)y * w + x) * comp, (size_t)comp);
         }
     }
-
-    if (rotateAfter != 0) {
-        int ndx = (rotateAfter == 180) ? dx : dy;
-        uint8_t *rot = (uint8_t *)malloc((size_t)dx * dy * comp);
-        if (!rot) {
-            free(buf);
-            return -1;
-        }
-        for (y = 0; y < dy; y++) {
-            for (x = 0; x < dx; x++) {
-                int nx, ny;
-                if (rotateAfter == 90) {
-                    nx = dy - 1 - y;
-                    ny = x;
-                } else if (rotateAfter == 180) {
-                    nx = dx - 1 - x;
-                    ny = dy - 1 - y;
-                } else { /* 270 */
-                    nx = y;
-                    ny = dx - 1 - x;
-                }
-                memcpy(rot + ((size_t)ny * ndx + nx) * comp,
-                       buf + ((size_t)y * dx + x) * comp, (size_t)comp);
-            }
-        }
-        sum_sink ^= rot[0];
-        free(rot);
-    } else {
-        sum_sink ^= buf[0];
-    }
-    free(buf);
+    sum_sink ^= out[0];
+    free(out);
     return 0;
 }
 
@@ -394,27 +350,62 @@ static void sum_page_params(djvu_doc *doc, int page0, djvu_page_type *ptype,
     *rotateAfter = (*subsample > 1) ? sum_normalize_rotation(rot) : 0;
 }
 
-/* Cold sum page render: fresh doc per rep; timer covers render + convert. */
+/* Render a page the way the updated EngineDjvuDec does: query geometry, then
+   render straight into dst (no convert pass), then rotate if subsample>1.
+   dst (>= worst-case size) is provided by the caller. Returns 0 on success. */
+static int sum_render_into(djvu_doc *doc, int page0, int subsample, int rotateAfter,
+                           uint8_t *dst)
+{
+    djvu_render_info ri;
+    int comp, stride;
+    if (djvu_page_render_info(doc, page0, subsample, &ri) != 0)
+        return -1;
+    comp = (ri.format == DJVU_FORMAT_GRAY8) ? 1 : 3;
+    stride = ri.width * comp;
+    if (djvu_page_render_into(doc, page0, subsample, dst, stride) != 0)
+        return -1;
+    if (rotateAfter != 0)
+        return sum_rotate(dst, ri.width, ri.height, comp, rotateAfter);
+    sum_sink ^= dst[0];
+    return 0;
+}
+
+/* Worst-case dst size for any page render (full-res, 3 bytes/pixel). */
+static size_t sum_dst_capacity(djvu_doc *doc, int page0)
+{
+    djvu_page_info info;
+    if (djvu_doc_page_info(doc, page0, &info) != 0 || info.width <= 0 || info.height <= 0)
+        return 0;
+    return (size_t)info.width * (size_t)info.height * 3;
+}
+
+/* Cold sum page render: fresh doc per rep; timer covers render_into + rotate
+   (the dst buffer, standing in for the DIB, is allocated outside the timer). */
 static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t len,
                                      int page0)
 {
     djvu_doc *doc;
     djvu_page_type ptype;
     int subsample, rotateAfter, ok;
+    size_t cap;
+    uint8_t *dst;
     double t0, ms;
-    djvu_image *img;
 
     doc = djvu_doc_open(ctx, data, len);
     if (!doc)
         return -1.0;
     sum_page_params(doc, page0, &ptype, &subsample, &rotateAfter);
+    cap = sum_dst_capacity(doc, page0);
+    dst = cap ? (uint8_t *)malloc(cap) : NULL;
+    if (!dst) {
+        djvu_doc_close(doc);
+        return -1.0;
+    }
 
     t0 = bench_now_ms();
-    img = djvu_page_render(doc, page0, subsample);
-    ok = img && sum_convert_rotate(img, ptype, rotateAfter) == 0;
+    ok = sum_render_into(doc, page0, subsample, rotateAfter, dst) == 0;
     ms = bench_now_ms() - t0;
-    if (img)
-        djvu_image_destroy(ctx, img);
+    free(dst);
     djvu_doc_close(doc);
     return ok ? ms : -1.0;
 }
@@ -434,12 +425,12 @@ static double bench_ours_doc_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t l
     for (i = 0; i < n; i++) {
         djvu_page_type ptype;
         int subsample, rotateAfter;
-        djvu_image *img;
+        size_t cap = sum_dst_capacity(doc, i);
+        uint8_t *dst = cap ? (uint8_t *)malloc(cap) : NULL;
         sum_page_params(doc, i, &ptype, &subsample, &rotateAfter);
-        img = djvu_page_render(doc, i, subsample);
-        if (img) {
-            sum_convert_rotate(img, ptype, rotateAfter);
-            djvu_image_destroy(ctx, img);
+        if (dst) {
+            sum_render_into(doc, i, subsample, rotateAfter, dst);
+            free(dst);
         }
         {
             char *t = djvu_page_text(doc, i);
@@ -455,6 +446,48 @@ static double bench_ours_doc_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t l
     djvu_doc_close(doc);
     ms = bench_now_ms() - t0;
     return ms;
+}
+
+/* Verify djvu_page_render_into is byte-identical to djvu_page_render (+ matching
+   djvu_page_render_info geometry) for every page at subsample=1. */
+static int run_verify_into(djvu_doc *doc)
+{
+    djvu_ctx *ctx = doc->ctx;
+    int n = djvu_doc_page_count(doc), i, mism = 0, checked = 0;
+    for (i = 0; i < n; i++) {
+        djvu_render_info ri;
+        djvu_image *img;
+        uint8_t *dst;
+        int comp, stride, y, bad = 0;
+        if (djvu_page_render_info(doc, i, 1, &ri) != 0)
+            continue; /* page renders nothing at subsample 1 */
+        img = djvu_page_render(doc, i, 1);
+        if (!img)
+            continue;
+        if (img->width != ri.width || img->height != ri.height ||
+            img->format != ri.format) {
+            printf("page %d: render_info geometry mismatch\n", i + 1);
+            mism++; djvu_image_destroy(ctx, img); continue;
+        }
+        comp = (ri.format == DJVU_FORMAT_GRAY8) ? 1 : 3;
+        stride = ri.width * comp;
+        dst = (uint8_t *)malloc((size_t)stride * ri.height);
+        if (!dst) { djvu_image_destroy(ctx, img); continue; }
+        checked++;
+        if (djvu_page_render_into(doc, i, 1, dst, stride) != 0) {
+            printf("page %d: render_into failed\n", i + 1); mism++;
+        } else {
+            for (y = 0; y < ri.height && !bad; y++)
+                if (memcmp(dst + (size_t)y * stride,
+                           img->data + (size_t)y * img->stride, (size_t)stride) != 0)
+                    bad = 1;
+            if (bad) { printf("page %d: render_into bytes differ\n", i + 1); mism++; }
+        }
+        free(dst);
+        djvu_image_destroy(ctx, img);
+    }
+    printf("verify-into: %d/%d pages checked, %d mismatch\n", checked, n, mism);
+    return mism ? 1 : 0;
 }
 
 static int page_has_chunk(djvu_doc *doc, int page0, const char *cid)
@@ -872,7 +905,7 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
-    int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0;
+    int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0, do_verify_into = 0;
     const char *diffdir = NULL;
     int i, rc = 0;
     uint8_t *data; size_t len;
@@ -897,6 +930,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-bench-sum")) do_bench = 2; /* SumatraPDF Engine* render path */
+        else if (!strcmp(argv[i], "-verify-into")) do_verify_into = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
         else if (!strcmp(argv[i], "-verify-render")) do_verify_render = 1;
         else if (!strcmp(argv[i], "-dump-features")) do_dump_features = 1;
@@ -955,6 +989,14 @@ int main(int argc, char **argv)
         return rc;
     }
 
+    if (do_verify_into) {
+        rc = run_verify_into(doc);
+        djvu_doc_close(doc);
+        djvu_ctx_free(ctx);
+        free(data);
+        return rc;
+    }
+
     if (do_verify_text) {
         char *ref_blob = NULL;
         size_t ref_len = 0;
@@ -1004,8 +1046,10 @@ int main(int argc, char **argv)
         djvu_doc_close(doc);
         doc = NULL;
         bench_ddjvu_reset();
-        if (sum)
+        if (sum) {
+            djvu_ctx_set_bgr(ctx, 1); /* EngineDjvuDec requests BGR output */
             printf("(bench-sum: EngineDjvuDec vs EngineDjVu render path, zoom=1)\n");
+        }
         for (i = 0; i < n; i++) {
             double mine = -1, lib = -1;
             int ok = 1, r;

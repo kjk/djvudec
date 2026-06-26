@@ -38,6 +38,7 @@ djvu_ctx *djvu_ctx_new(djvu_alloc_cb alloc, djvu_free_cb free_cb,
     ctx->lazy_iw44 = 0;
     ctx->no_compose = 0;
     ctx->iw_max_chunks = 0;
+    ctx->bgr = 0;
     return ctx;
 }
 
@@ -54,6 +55,11 @@ void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable)
 void djvu_ctx_set_no_compose(djvu_ctx *ctx, int enable)
 {
     if (ctx) ctx->no_compose = enable ? 1 : 0;
+}
+
+void djvu_ctx_set_bgr(djvu_ctx *ctx, int enable)
+{
+    if (ctx) ctx->bgr = enable ? 1 : 0;
 }
 
 void djvu_ctx_set_iw_max_chunks(djvu_ctx *ctx, int max_chunks)

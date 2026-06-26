@@ -6,8 +6,9 @@
 // djvu_page_render(subsample=1) it replicates how SumatraPDF actually opens
 // and renders pages:
 //   - ours  -> EngineDjvuDec::RenderPage (src/EngineDjvuDec.cpp): pick an
-//     integer subsample (compound pages forced to full res), decode, convert
-//     RGB->BGR (or copy gray8), rotate for subsample>1.
+//     integer subsample (compound pages forced to full res), decode with
+//     djvu_ctx_set_bgr so color comes out BGR-ready (no per-pixel swap), pack
+//     rows / copy gray8, rotate for subsample>1.
 //   - libdjvu -> EngineDjVu::RenderPage (src/EngineDjVu.cpp): one
 //     ddjvu_page_render into a BGR24 buffer at the mediabox size (page scaled
 //     to fileDPI=300), letting ddjvu scale during decode.

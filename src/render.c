@@ -259,6 +259,126 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
     return djvu_page_render_timed(doc, page_no, subsample, NULL);
 }
 
+/* Decide a render's output geometry/format without decoding pixels, mirroring
+   the branch selection in djvu_page_render_timed. Returns 0 and fills outputs
+   on success; -1 if the page would not render. *color marks the RGB24 composite
+   path; *rotation is the INFO rotation (applied only at subsample==1). */
+static int render_plan(djvu_doc *doc, int page_no, int subsample,
+                       int *pw, int *ph, djvu_format *pfmt, int *pcolor,
+                       int *protation)
+{
+    djvu_ctx *ctx = doc->ctx;
+    uint32_t form_off, sz;
+    djvu_page_type type;
+    djvu_page_info pi;
+    int info_ok, has_bg, has_mask, color, w, h, k;
+    djvu_format fmt;
+
+    if (!doc || page_no < 0 || page_no >= doc->npages) return -1;
+    if (subsample < 1) subsample = 1;
+    form_off = doc->pages[page_no].form_off;
+    type = djvu_page_get_type(doc, page_no);
+    info_ok = (djvu_doc_page_info(doc, page_no, &pi) == 0);
+    if (!info_ok || pi.width <= 0 || pi.height <= 0) return -1;
+    has_bg = djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL;
+    has_mask = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
+
+    color = subsample == 1 && !ctx->no_compose &&
+            (type == DJVU_PAGE_COMPOUND || type == DJVU_PAGE_PHOTO) && has_bg;
+
+    if (color) {
+        w = pi.width; h = pi.height; fmt = DJVU_FORMAT_RGB24;
+    } else if (type == DJVU_PAGE_UNKNOWN || has_mask) {
+        w = (pi.width + subsample - 1) / subsample;
+        h = (pi.height + subsample - 1) / subsample;
+        fmt = DJVU_FORMAT_GRAY8;
+    } else {
+        return -1; /* e.g. a photo page at subsample>1 renders nothing */
+    }
+
+    k = (subsample == 1) ? rotation_quarter_turns(pi.rotation) : 0;
+    if (k == 1 || k == 3) { int tmp = w; w = h; h = tmp; } /* 90/270 swap dims */
+
+    *pw = w; *ph = h; *pfmt = fmt; *pcolor = color; *protation = pi.rotation;
+    return 0;
+}
+
+int djvu_page_render_info(djvu_doc *doc, int page_no, int subsample,
+                          djvu_render_info *info)
+{
+    int w, h, color, rotation;
+    djvu_format fmt;
+    if (!info) return -1;
+    if (render_plan(doc, page_no, subsample, &w, &h, &fmt, &color, &rotation) != 0)
+        return -1;
+    info->width = w;
+    info->height = h;
+    info->format = fmt;
+    return 0;
+}
+
+/* Copy a freshly rendered image into the caller buffer (validates it matches
+   the plan). Used for the non-zero-copy cases (gray, rotated, subsampled). */
+static int blit_image_into(djvu_image *img, uint8_t *dst, int stride,
+                           int w, int h, djvu_format fmt)
+{
+    int comp = (fmt == DJVU_FORMAT_GRAY8) ? 1 : 3;
+    size_t rowbytes = (size_t)w * comp;
+    int y;
+    if (img->width != w || img->height != h || img->format != fmt) return -1;
+    for (y = 0; y < h; y++)
+        memcpy(dst + (size_t)y * stride, img->data + (size_t)y * img->stride, rowbytes);
+    return 0;
+}
+
+int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
+                          uint8_t *dst, int stride)
+{
+    djvu_ctx *ctx;
+    int w, h, color, rotation, k, rc;
+    djvu_format fmt;
+    djvu_image *img;
+
+    if (!dst) return -1;
+    if (render_plan(doc, page_no, subsample, &w, &h, &fmt, &color, &rotation) != 0)
+        return -1;
+    if (subsample < 1) subsample = 1;
+    ctx = doc->ctx;
+    k = (subsample == 1) ? rotation_quarter_turns(rotation) : 0;
+
+    /* Zero-copy color path: compose straight into dst when no rotation is
+       needed (w,h are then the unrotated page dims). */
+    if (color && k == 0) {
+        uint32_t form_off = doc->pages[page_no].form_off;
+        uint32_t sz;
+        const uint8_t *sjbz;
+        jb2_image *dict = NULL, *mask = NULL;
+        int owned = 0;
+
+        sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL);
+        if (sjbz) {
+            dict = load_page_dict(doc, form_off, &owned);
+            mask = djvu_jb2_decode(ctx, sjbz, sz, dict);
+            if (!mask) {
+                if (owned) djvu_jb2_free(ctx, dict);
+                return -1;
+            }
+        }
+        rc = djvu_compose_page_into(doc, page_no, mask, w, h, dst, stride);
+        djvu_jb2_free(ctx, mask);
+        if (owned) djvu_jb2_free(ctx, dict);
+        return rc;
+    }
+
+    /* Fallback: render normally (handles gray, rotation, subsampling) then copy
+       once into dst. These are the cheap / rare cases. */
+    img = djvu_page_render(doc, page_no, subsample);
+    if (!img) return -1;
+    rc = blit_image_into(img, dst, stride, w, h, fmt);
+    djvu_image_destroy(ctx, img);
+    return rc;
+}
+
 void djvu_image_destroy(djvu_ctx *ctx, djvu_image *img)
 {
     if (img) {

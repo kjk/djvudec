@@ -219,10 +219,25 @@ int djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
     return 0;
 }
 
-void djvu_flip_rgb_bottomup(uint8_t *dst, const uint8_t *src, int w, int h)
+void djvu_flip_rgb_bottomup(uint8_t *dst, const uint8_t *src, int w, int h, int bgr)
 {
-    int y;
+    int y, x;
     size_t row = (size_t)w * 3;
-    for (y = 0; y < h; y++)
-        memcpy(dst + (size_t)y * row, src + (size_t)(h - 1 - y) * row, row);
+    if (!bgr) {
+        for (y = 0; y < h; y++)
+            memcpy(dst + (size_t)y * row, src + (size_t)(h - 1 - y) * row, row);
+        return;
+    }
+    /* flip and swap R<->B in one pass (B,G,R output) */
+    for (y = 0; y < h; y++) {
+        uint8_t *d = dst + (size_t)y * row;
+        const uint8_t *s = src + (size_t)(h - 1 - y) * row;
+        for (x = 0; x < w; x++) {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            d += 3;
+            s += 3;
+        }
+    }
 }

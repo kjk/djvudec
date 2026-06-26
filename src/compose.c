@@ -87,12 +87,35 @@ static void compose_stamp_ink(void *user, int px, int py)
     }
 }
 
-djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
-                             int width, int height, djvu_render_timings *t)
+/* Flip the composited bottom-up pixmap *bg into a top-down destination buffer.
+   Swaps R<->B when bgr (B,G,R output); applies the gamma LUT when lut != NULL.
+   Honors dst stride, so it can write straight into a caller's DIB row. */
+static void compose_finalize(uint8_t *dst, int stride, const djvu_cpix *bg,
+                             int bgr, const unsigned char *lut)
+{
+    int x, y;
+    for (y = 0; y < bg->h; y++) {
+        const uint8_t *s = bg->d + (size_t)(bg->h - 1 - y) * bg->w * 3;
+        uint8_t *d = dst + (size_t)y * stride;
+        for (x = 0; x < bg->w; x++) {
+            uint8_t r = s[0], g = s[1], b = s[2];
+            if (lut) { r = lut[r]; g = lut[g]; b = lut[b]; }
+            if (bgr) { d[0] = b; d[1] = g; d[2] = r; }
+            else     { d[0] = r; d[1] = g; d[2] = b; }
+            d += 3; s += 3;
+        }
+    }
+}
+
+/* Composite a page into *bg (bottom-up RGB; caller frees via djvu_cpix_free).
+   Returns 0 on success, -1 on failure. */
+static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
+                         int width, int height, djvu_render_timings *t,
+                         djvu_cpix *bgout)
 {
     djvu_ctx *ctx = doc->ctx;
     uint32_t form_off = doc->pages[page_no].form_off;
-    djvu_cpix bg; djvu_image *out = NULL;
+    djvu_cpix bg;
     uint32_t sz; const uint8_t *fgbz;
     uint8_t *pal = NULL; int palsize = 0;
     short *colordata = NULL; int ncolor = 0;
@@ -103,7 +126,7 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     memset(&bg, 0, sizeof(bg)); memset(&fgnat, 0, sizeof(fgnat));
     if (t) t0 = djvu_bench_now_ms();
     if (djvu_compose_background(doc, form_off, width, height, &bg) != 0)
-        return NULL;
+        return -1;
     if (t) t->iw44_ms += djvu_bench_now_ms() - t0;
 
     if (t) t0 = djvu_bench_now_ms();
@@ -172,27 +195,62 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
         djvu_bm_visit_ink(&s->bm, b->left, b->bottom, compose_stamp_ink, &ink);
     }
 
+    if (t) t->composite_ms += djvu_bench_now_ms() - t0;
+
+    djvu_free(ctx, pal); djvu_free(ctx, colordata);
+    djvu_cpix_free(ctx, &fgnat);
+    *bgout = bg;          /* hand off the composited pixmap (caller frees) */
+    return 0;
+}
+
+/* Compute the page's gamma-correction LUT, or return 0 if no correction needed. */
+static int compose_gamma_lut(djvu_doc *doc, uint32_t form_off, unsigned char *lut)
+{
+    return build_gamma_lut(2.2 / page_gamma(doc, form_off), lut);
+}
+
+djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
+                             int width, int height, djvu_render_timings *t)
+{
+    djvu_ctx *ctx = doc->ctx;
+    uint32_t form_off = doc->pages[page_no].form_off;
+    djvu_cpix bg; djvu_image *out;
+    unsigned char lut[256]; const unsigned char *lp = NULL;
+
+    memset(&bg, 0, sizeof(bg));
+    if (compose_to_bg(doc, page_no, mask, width, height, t, &bg) != 0)
+        return NULL;
+    if (compose_gamma_lut(doc, form_off, lut)) lp = lut;
+
     out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
     if (out) {
         out->width = bg.w; out->height = bg.h; out->format = DJVU_FORMAT_RGB24;
         out->stride = bg.w * 3;
         out->data = (uint8_t *)djvu_alloc(ctx, (size_t)bg.w * bg.h * 3);
-        if (out->data) {
-            djvu_flip_rgb_bottomup(out->data, bg.d, bg.w, bg.h);
-            {
-                unsigned char lut[256];
-                if (build_gamma_lut(2.2 / page_gamma(doc, form_off), lut)) {
-                    size_t k, npx = (size_t)bg.w * bg.h * 3;
-                    for (k = 0; k < npx; k++) out->data[k] = lut[out->data[k]];
-                }
-            }
-        } else { djvu_free(ctx, out); out = NULL; }
+        if (out->data)
+            compose_finalize(out->data, bg.w * 3, &bg, ctx->bgr, lp);
+        else { djvu_free(ctx, out); out = NULL; }
     }
-
-    if (t) t->composite_ms += djvu_bench_now_ms() - t0;
-
-    djvu_free(ctx, pal); djvu_free(ctx, colordata);
-    djvu_cpix_free(ctx, &fgnat);
     djvu_cpix_free(ctx, &bg);
     return out;
+}
+
+/* Composite a color page straight into a caller buffer (top-down, dst stride in
+   bytes), skipping the intermediate djvu_image. dst must hold width*height*3
+   (the composited dims, == page width/height). Returns 0 on success. */
+int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
+                           int width, int height, uint8_t *dst, int stride)
+{
+    djvu_ctx *ctx = doc->ctx;
+    uint32_t form_off = doc->pages[page_no].form_off;
+    djvu_cpix bg;
+    unsigned char lut[256]; const unsigned char *lp = NULL;
+
+    memset(&bg, 0, sizeof(bg));
+    if (compose_to_bg(doc, page_no, mask, width, height, NULL, &bg) != 0)
+        return -1;
+    if (compose_gamma_lut(doc, form_off, lut)) lp = lut;
+    compose_finalize(dst, stride, &bg, ctx->bgr, lp);
+    djvu_cpix_free(ctx, &bg);
+    return 0;
 }

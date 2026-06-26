@@ -47,6 +47,12 @@ void djvu_ctx_free(djvu_ctx *ctx);
 void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable);
 void djvu_ctx_set_no_compose(djvu_ctx *ctx, int enable);
 void djvu_ctx_set_iw_max_chunks(djvu_ctx *ctx, int max_chunks);
+/* When enabled, color render output (DJVU_FORMAT_RGB24) is written in B,G,R
+   byte order instead of R,G,B. The image is still tagged DJVU_FORMAT_RGB24
+   (3 bytes/pixel); only the channel order changes. Lets a caller whose target
+   wants BGR (e.g. a Windows DIB) skip a separate RGB->BGR pass -- the swap is
+   folded into the decoder's final output copy at no extra cost. */
+void djvu_ctx_set_bgr(djvu_ctx *ctx, int enable);
 
 /* ----- documents ----- */
 
@@ -89,6 +95,29 @@ typedef struct {
    Returns NULL on error; free with djvu_image_destroy. */
 djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample);
 void djvu_image_destroy(djvu_ctx *ctx, djvu_image *img);
+
+/* Geometry + format a page render will produce, without decoding pixels.
+   Lets a caller size a destination buffer (e.g. a DIB) before rendering into
+   it with djvu_page_render_into. */
+typedef struct {
+    int width;
+    int height;
+    djvu_format format;   /* GRAY8 or RGB24 (RGB24 honors djvu_ctx_set_bgr) */
+} djvu_render_info;
+
+/* Fill *info for a page render at the given subsample. Returns 0 on success,
+   -1 if the page cannot be rendered. */
+int djvu_page_render_info(djvu_doc *doc, int page_no, int subsample,
+                          djvu_render_info *info);
+
+/* Render a page directly into a caller-provided buffer instead of allocating a
+   djvu_image, eliminating one full-frame copy. dst is top-down with `stride`
+   bytes per row; it must match the geometry/format reported by
+   djvu_page_render_info (query that first to size dst). When color output goes
+   straight into dst (the common no-rotation case) the composite is written in
+   one pass. Returns 0 on success, -1 on error. */
+int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
+                          uint8_t *dst, int stride);
 
 /* Page content classification (from the chunks present in the page form).
    Lets a caller pick a render format the way ddjvu_page_get_type does. */
