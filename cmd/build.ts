@@ -113,6 +113,12 @@ const DJVU_DEFINES =
 // On Windows the default toolchain is MSVC; -clang forces clang. Elsewhere only
 // clang is available.
 export const defaultUseClang = process.platform !== "win32";
+
+// MSVC cl.exe flags (use '-' not '/' — Bun's shell treats backslashes as escapes).
+// -Ob3: inline any suitable function (aggressive inlining with /O2).
+export const MSVC_CL_COMMON = `-nologo -O2 -Ob3 -GL -MT`;
+export const MSVC_CL_C = `${MSVC_CL_COMMON} -W3 -std:c11 -D_CRT_SECURE_NO_WARNINGS`;
+export const MSVC_CL_CXX = `${MSVC_CL_COMMON} -EHsc -std:c++14`;
 const exeName = (useClang: boolean) =>
   `djvu_test_${useClang ? "clang" : "msvc"}.exe`;
 
@@ -180,15 +186,14 @@ async function buildMsvc(): Promise<string> {
     label: "test/bench_ddjvu.cpp",
   };
 
-  const clC =
-    `-nologo -O2 -GL -MT -W3 -std:c11 -D_CRT_SECURE_NO_WARNINGS -Isrc -Fo${dir}/ -c`;
+  const clC = `${MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src)) continue;
     const rel = u.src.startsWith(`${ROOT}/`) ? u.src.slice(ROOT.length + 1) : u.src;
     await $`cl ${{ raw: clC }} ${{ raw: rel }}`.cwd(ROOT);
   }
   if (needsRebuild(bench.obj, bench.src)) {
-    await $`cl -nologo -O2 -GL -MT -EHsc -std:c++14 ${{ raw: DJVU_DEFINES }} -Fo${bench.obj} -c test/bench_ddjvu.cpp`.cwd(ROOT);
+    await $`cl ${{ raw: MSVC_CL_CXX }} ${{ raw: DJVU_DEFINES }} -Fo${bench.obj} -c test/bench_ddjvu.cpp`.cwd(ROOT);
   }
 
   const objs = [...units.map((u) => u.obj), bench.obj];
