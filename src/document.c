@@ -624,6 +624,12 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
         return NULL;
     }
 
+    {
+        int i;
+        for (i = 0; i < doc->npages; i++)
+            page_load_info(doc, &doc->pages[i]);
+    }
+    djvu_scaler_init();
     djvu_doc_preload_iw44(doc);
     djvu_doc_preload_jb2_dicts(doc);
     return doc;

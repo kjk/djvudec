@@ -23,6 +23,11 @@ static void prepare_interp(void)
     s_interp_ready = 1;
 }
 
+void djvu_scaler_init(void)
+{
+    prepare_interp();
+}
+
 static int imini(int a, int b) { return a < b ? a : b; }
 
 static void prepare_coord(int *coord, int inmax, int outmax, int in, int out)

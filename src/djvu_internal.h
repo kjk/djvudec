@@ -554,6 +554,8 @@ void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);
 int  djvu_compute_red(int w, int h, int rw, int rh);
 int  djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
                      int outw, int outh, int red);
+/* Idempotent; call once before concurrent renders (lazy table in scaler.c). */
+void djvu_scaler_init(void);
 
 /* ===================================================================== */
 /* compose.c -- page compositing (IW44 bg + JB2 mask + fg)                 */
