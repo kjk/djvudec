@@ -355,32 +355,6 @@ static const char *page_kind_name(page_kind_t k)
     return "other";
 }
 
-/* Sort ascending (fastest first) for bench rep printing. */
-static void bench_sort_asc(double *t, int n)
-{
-    int i, j;
-    for (i = 0; i < n - 1; i++)
-        for (j = i + 1; j < n; j++)
-            if (t[j] < t[i]) {
-                double tmp = t[i];
-                t[i] = t[j];
-                t[j] = tmp;
-            }
-}
-
-static void bench_print_sorted_ms(const double *t, int n)
-{
-    int i;
-    if (n <= 0) {
-        printf("ERROR");
-        return;
-    }
-    printf("%.2f", t[0]);
-    for (i = 1; i < n; i++)
-        printf(" %.2f", t[i]);
-    printf(" ms");
-}
-
 static double bench_best2(double a, double b)
 {
     if (a < 0.0) return b;
@@ -482,58 +456,6 @@ static int bench_ours_session(djvu_ctx *ctx, const uint8_t *data, size_t len, in
     return 0;
 }
 
-/* Cold page render: fresh doc per rep; timer covers render only (open/close outside). */
-static double bench_ours_page_ms(djvu_ctx *ctx, const uint8_t *data, size_t len,
-                                 int page0)
-{
-    djvu_doc *doc;
-    djvu_image *img;
-    double t0, ms;
-
-    doc = djvu_doc_open(ctx, data, len);
-    if (!doc)
-        return -1.0;
-    t0 = bench_now_ms();
-    img = djvu_page_render(doc, page0, 1);
-    ms = bench_now_ms() - t0;
-    if (img)
-        djvu_image_destroy(ctx, img);
-    djvu_doc_close(doc);
-    return img ? ms : -1.0;
-}
-
-/* One cold session: open + render all pages + text + links + close. */
-static double bench_ours_doc_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
-{
-    djvu_doc *doc;
-    int n, i;
-    double t0, ms;
-
-    t0 = bench_now_ms();
-    doc = djvu_doc_open(ctx, data, len);
-    if (!doc)
-        return -1.0;
-    n = djvu_doc_page_count(doc);
-    for (i = 0; i < n; i++) {
-        djvu_image *img = djvu_page_render(doc, i, 1);
-        if (img)
-            djvu_image_destroy(ctx, img);
-        {
-            char *t = djvu_page_text(doc, i);
-            if (t)
-                djvu_text_destroy(ctx, t);
-        }
-        {
-            djvu_page_links *L = djvu_page_get_links(doc, i);
-            if (L)
-                djvu_page_links_destroy(ctx, L);
-        }
-    }
-    djvu_doc_close(doc);
-    ms = bench_now_ms() - t0;
-    return ms;
-}
-
 /* --- bench-sum: replicate SumatraPDF EngineDjvuDec::RenderPage (our path) ---
  * Renders at zoom=1, user-rotation=0. Mirrors the engine's non-GDI work: pick
  * an integer subsample, query the output geometry, then render straight into a
@@ -631,37 +553,6 @@ static size_t sum_dst_capacity(djvu_doc *doc, int page0)
     return (size_t)info.width * (size_t)info.height * 3;
 }
 
-/* Warm sum page render: fresh doc per rep (Sjbz preloaded at open); timer covers
-   render_into only (dst buffer allocated outside the timer). */
-static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t len,
-                                     int page0)
-{
-    djvu_doc *doc;
-    djvu_page_type ptype;
-    int subsample, ok;
-    size_t cap;
-    uint8_t *dst;
-    double t0, ms;
-
-    doc = djvu_doc_open(ctx, data, len);
-    if (!doc)
-        return -1.0;
-    subsample = sum_page_subsample(doc, page0, &ptype);
-    cap = sum_dst_capacity(doc, page0);
-    dst = cap ? (uint8_t *)malloc(cap) : NULL;
-    if (!dst) {
-        djvu_doc_close(doc);
-        return -1.0;
-    }
-
-    t0 = bench_now_ms();
-    ok = sum_render_into(doc, page0, subsample, dst) == 0;
-    ms = bench_now_ms() - t0;
-    free(dst);
-    djvu_doc_close(doc);
-    return ok ? ms : -1.0;
-}
-
 /* Tight loop for macOS `sample` profiling: one doc open, repeated sum renders. */
 static int profile_sum_page(djvu_ctx *ctx, const uint8_t *data, size_t len, int page0)
 {
@@ -692,44 +583,6 @@ static int profile_sum_page(djvu_ctx *ctx, const uint8_t *data, size_t len, int 
     for (;;)
         sum_render_into(doc, page0, subsample, dst);
     /* not reached */
-}
-
-/* One cold session, sum render: open + render all pages + text + links + close. */
-static double bench_ours_doc_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
-{
-    djvu_doc *doc;
-    int n, i;
-    double t0, ms;
-
-    t0 = bench_now_ms();
-    doc = djvu_doc_open(ctx, data, len);
-    if (!doc)
-        return -1.0;
-    n = djvu_doc_page_count(doc);
-    for (i = 0; i < n; i++) {
-        djvu_page_type ptype;
-        int subsample;
-        size_t cap = sum_dst_capacity(doc, i);
-        uint8_t *dst = cap ? (uint8_t *)malloc(cap) : NULL;
-        subsample = sum_page_subsample(doc, i, &ptype);
-        if (dst) {
-            sum_render_into(doc, i, subsample, dst);
-            free(dst);
-        }
-        {
-            char *t = djvu_page_text(doc, i);
-            if (t)
-                djvu_text_destroy(ctx, t);
-        }
-        {
-            djvu_page_links *L = djvu_page_get_links(doc, i);
-            if (L)
-                djvu_page_links_destroy(ctx, L);
-        }
-    }
-    djvu_doc_close(doc);
-    ms = bench_now_ms() - t0;
-    return ms;
 }
 
 /* One untimed, tracked document pass (open + render all pages + text + links +
