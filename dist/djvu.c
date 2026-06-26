@@ -232,6 +232,7 @@ struct djvu_doc {
 
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
+void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
 
 jb2_image *djvu_doc_jb2_dict(djvu_doc *doc, const char *incl_id);
 jb2_image *djvu_doc_jb2_dict_inline(djvu_doc *doc, uint32_t form_off);
@@ -946,9 +947,11 @@ void djvu_zp_init(djvu_zp *zp, const uint8_t *data, size_t len)
 #define BZZ_FREQMAX  4
 #define BZZ_CTXIDS   3
 
+#define BZZ_CXT_SIZE 384
+
 typedef struct {
     djvu_zp zp;
-    djvu_zp_ctx cxt[300];
+    djvu_zp_ctx cxt[BZZ_CXT_SIZE];
     uint8_t *block;
     int block_cap;
     int *pos;
@@ -1122,15 +1125,17 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
 uint8_t *djvu_bzz_decode_all(djvu_ctx *ctx, const uint8_t *data, size_t len,
                              size_t *out_len)
 {
-    bzz_dec d;
+    bzz_dec *d;
     uint8_t *out = NULL;
     size_t out_cap = 0, out_size = 0;
 
-    memset(&d, 0, sizeof(d));
-    djvu_zp_init(&d.zp, data, len);
+    d = (bzz_dec *)djvu_alloc(ctx, sizeof(bzz_dec));
+    if (!d) return NULL;
+    memset(d, 0, sizeof(*d));
+    djvu_zp_init(&d->zp, data, len);
 
     for (;;) {
-        int n = bzz_decode_block(&d, ctx);
+        int n = bzz_decode_block(d, ctx);
         if (n < 0) { djvu_free(ctx, out); out = NULL; out_size = 0; break; }
         if (n == 0) break;
         if (out_size + (size_t)n + 1 > out_cap) {
@@ -1142,12 +1147,13 @@ uint8_t *djvu_bzz_decode_all(djvu_ctx *ctx, const uint8_t *data, size_t len,
             if (out) { memcpy(no, out, out_size); djvu_free(ctx, out); }
             out = no; out_cap = ncap;
         }
-        memcpy(out + out_size, d.block, (size_t)n);
+        memcpy(out + out_size, d->block, (size_t)n);
         out_size += (size_t)n;
     }
 
-    djvu_free(ctx, d.block);
-    djvu_free(ctx, d.pos);
+    djvu_free(ctx, d->block);
+    djvu_free(ctx, d->pos);
+    djvu_free(ctx, d);
     if (out) {
         out[out_size] = 0;
         if (out_len) *out_len = out_size;
@@ -2299,6 +2305,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
 
 static void codec_free(jb2_codec *c)
 {
+    if (!c) return;
     djvu_free(c->ctx, c->bitcells);
     djvu_free(c->ctx, c->leftcell);
     djvu_free(c->ctx, c->rightcell);
@@ -2310,28 +2317,31 @@ static void codec_free(jb2_codec *c)
 static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len,
                                   jb2_image *dict, int is_image)
 {
-    jb2_codec c;
+    jb2_codec *c;
     jb2_image *jim = jb2_image_new(ctx);
     int rectype;
     if (!jim) return NULL;
 
-    memset(&c, 0, sizeof(c));
-    c.ctx = ctx;
-    c.zdict = dict;
+    c = (jb2_codec *)djvu_alloc(ctx, sizeof(jb2_codec));
+    if (!c) { djvu_jb2_free(ctx, jim); return NULL; }
 
-    ensure_cells(&c, 1);
-    c.ncells = 1;
+    memset(c, 0, sizeof(*c));
+    c->ctx = ctx;
+    c->zdict = dict;
 
-    djvu_zp_init(&c.zp, data, len);
+    ensure_cells(c, 1);
+    c->ncells = 1;
+
+    djvu_zp_init(&c->zp, data, len);
 
     rectype = REC_StartOfData;
     {
         int hist[12]; int k; int dbg = getenv("DJVU_JB2_DEBUG") != NULL;
         for (k = 0; k < 12; k++) hist[k] = 0;
         do {
-            rectype = code_record(&c, jim, is_image);
+            rectype = code_record(c, jim, is_image);
             if (rectype >= 0 && rectype < 12) hist[rectype]++;
-            if (c.error) break;
+            if (c->error) break;
         } while (rectype != REC_EndOfData);
         if (dbg) {
             fprintf(stderr, "JB2 rectypes: SOD=%d NM=%d NMlib=%d NMimg=%d MR=%d "
@@ -2378,9 +2388,10 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
         }
     }
 
-    if (c.error || !c.got_start_record) {
+    if (c->error || !c->got_start_record) {
         djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "JB2: decode failed");
-        codec_free(&c);
+        codec_free(c);
+        djvu_free(ctx, c);
         djvu_jb2_free(ctx, jim);
         return NULL;
     }
@@ -2389,7 +2400,8 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
         for (si = 0; si < jim->nshapes; si++)
             djvu_bm_compress(ctx, &jim->shapes[si].bm);
     }
-    codec_free(&c);
+    codec_free(c);
+    djvu_free(ctx, c);
     return jim;
 }
 
@@ -3840,12 +3852,28 @@ static void djvu_doc_preload_iw44(djvu_doc *doc)
     }
 }
 
+void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no)
+{
+    if (!doc || page_no < 0 || page_no >= doc->npages) return;
+    free_page_iw44(&doc->pages[page_no]);
+}
+
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id)
 {
+    djvu_page_int *pg;
+    iw_pixmap **slot;
+
     if (!doc || page_no < 0 || page_no >= doc->npages || !chunk_id) return NULL;
-    if (chunk_id[0] == 'B' && chunk_id[1] == 'G') return doc->pages[page_no].iw_bg;
-    if (chunk_id[0] == 'F' && chunk_id[1] == 'G') return doc->pages[page_no].iw_fg;
-    return NULL;
+    pg = &doc->pages[page_no];
+    if (chunk_id[0] == 'B' && chunk_id[1] == 'G' && chunk_id[2] == '4')
+        slot = &pg->iw_bg;
+    else if (chunk_id[0] == 'F' && chunk_id[1] == 'G' && chunk_id[2] == '4')
+        slot = &pg->iw_fg;
+    else
+        return NULL;
+    if (!*slot)
+        preload_iw_layer(doc, pg, chunk_id, slot);
+    return *slot;
 }
 
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id)
@@ -4209,7 +4237,8 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
             page_load_info(doc, &doc->pages[i]);
     }
     djvu_scaler_init();
-    djvu_doc_preload_iw44(doc);
+    if (!getenv("DJVU_LAZY_IW44"))
+        djvu_doc_preload_iw44(doc);
     djvu_doc_preload_jb2_dicts(doc);
     return doc;
 }
