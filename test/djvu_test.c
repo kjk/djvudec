@@ -35,6 +35,15 @@ typedef struct bench_render {
 } bench_render;
 
 double bench_now_ms(void);
+typedef struct bench_session_timings {
+    double open_ms;
+    double close_ms;
+    double total_ms;
+    double *page_ms;
+    int npages;
+} bench_session_timings;
+
+int bench_ddjvu_session(const char *path, int sum, bench_session_timings *out);
 double bench_ddjvu_page_ms(const char *path, int page0);
 double bench_ddjvu_doc_ms(const char *path);
 double bench_ddjvu_page_sum_ms(const char *path, int page0);
@@ -370,6 +379,107 @@ static void bench_print_sorted_ms(const double *t, int n)
     for (i = 1; i < n; i++)
         printf(" %.2f", t[i]);
     printf(" ms");
+}
+
+static double bench_best2(double a, double b)
+{
+    if (a < 0.0) return b;
+    if (b < 0.0) return a;
+    return a < b ? a : b;
+}
+
+static void bench_print_session_line(const char *tag, const bench_session_timings *t)
+{
+    int i;
+    printf("%s open: %.2f", tag, t->open_ms);
+    for (i = 0; i < t->npages; i++)
+        printf(" %d: %.2f", i + 1, t->page_ms[i]);
+    printf(" close: %.2f\n", t->close_ms);
+}
+
+static void bench_print_compare_line(const char *label, double ours, double lib)
+{
+    if (lib < 0.0 || ours < 0.0) {
+        printf("%s: djvudec %s, libdjvu %s\n", label,
+               ours < 0.0 ? "ERROR" : "ok", lib < 0.0 ? "ERROR" : "ok");
+        return;
+    }
+    {
+        double diff = ours - lib;
+        double pct = lib > 0.0 ? diff / lib * 100.0 : 0.0;
+        printf("%s: djvudec %.2f ms, libdjvu %.2f ms, %+.2f ms, %+.1f%%\n",
+               label, ours, lib, diff, pct);
+    }
+}
+
+static int sum_page_subsample(djvu_doc *doc, int page0, djvu_page_type *ptype);
+static int sum_render_into(djvu_doc *doc, int page0, int subsample, uint8_t *dst);
+static size_t sum_dst_capacity(djvu_doc *doc, int page0);
+
+/* Open doc, render each page, close; record open/page/close times. */
+static int bench_ours_session(djvu_ctx *ctx, const uint8_t *data, size_t len, int sum,
+                              bench_session_timings *out)
+{
+    djvu_doc *doc;
+    int n, i;
+    double t0, t_session;
+    uint8_t *sum_dst = NULL;
+    size_t sum_cap = 0;
+
+    if (!out || !out->page_ms || out->npages <= 0)
+        return -1;
+
+    t_session = bench_now_ms();
+    t0 = bench_now_ms();
+    doc = djvu_doc_open(ctx, data, len);
+    out->open_ms = bench_now_ms() - t0;
+    if (!doc)
+        return -1;
+
+    n = djvu_doc_page_count(doc);
+    if (n > out->npages)
+        n = out->npages;
+
+    for (i = 0; i < n; i++) {
+        t0 = bench_now_ms();
+        if (sum) {
+            djvu_page_type ptype;
+            int subsample;
+            size_t cap;
+            int ok = 0;
+
+            subsample = sum_page_subsample(doc, i, &ptype);
+            cap = sum_dst_capacity(doc, i);
+            if (cap > sum_cap) {
+                uint8_t *nd = cap ? (uint8_t *)realloc(sum_dst, cap) : NULL;
+                if (cap && !nd) {
+                    out->page_ms[i] = -1.0;
+                    continue;
+                }
+                sum_dst = nd;
+                sum_cap = cap;
+            }
+            if (sum_dst && sum_render_into(doc, i, subsample, sum_dst) == 0)
+                ok = 1;
+            out->page_ms[i] = ok ? bench_now_ms() - t0 : -1.0;
+        } else {
+            djvu_image *img = djvu_page_render(doc, i, 1);
+            out->page_ms[i] = bench_now_ms() - t0;
+            if (img)
+                djvu_image_destroy(ctx, img);
+            else
+                out->page_ms[i] = -1.0;
+        }
+    }
+    for (i = n; i < out->npages; i++)
+        out->page_ms[i] = -1.0;
+    free(sum_dst);
+
+    t0 = bench_now_ms();
+    djvu_doc_close(doc);
+    out->close_ms = bench_now_ms() - t0;
+    out->total_ms = bench_now_ms() - t_session;
+    return 0;
 }
 
 /* Cold page render: fresh doc per rep; timer covers render only (open/close outside). */
@@ -1315,86 +1425,79 @@ int main(int argc, char **argv)
     if (do_bench) {
         int n = djvu_doc_page_count(doc);
         int sum = (do_bench == 2); /* replicate SumatraPDF Engine* render path */
-        const int REPS = 2;   /* REPS fresh docs/page; time render only; keep fastest */
+        const int RUNS = 2;
+        bench_session_timings ours[2], lib[2];
+        double *page_ms[4];
+        int r, p;
+        char lbl[16];
+
         djvu_doc_close(doc);
         doc = NULL;
         bench_ddjvu_reset();
         if (sum) {
-            djvu_ctx_set_bgr(ctx, 1); /* EngineDjvuDec requests BGR output */
-            printf("(bench-sum: warm render-to-buffer, zoom=1; decode at doc-open)\n");
+            djvu_ctx_set_bgr(ctx, 1);
+            printf("(bench-sum: session open/render-all/close, zoom=1)\n");
+        } else {
+            printf("(bench: session open/render-all/close)\n");
         }
-        for (i = 0; i < n; i++) {
-            double mine[2], lib[2];
-            int mine_n = 0, lib_n = 0, r;
-            for (r = 0; r < REPS; r++) {
-                double dt = sum ? bench_ours_page_sum_ms(ctx, data, len, i)
-                                : bench_ours_page_ms(ctx, data, len, i);
-                if (dt >= 0)
-                    mine[mine_n++] = dt;
-                {
-                    double l = sum ? bench_ddjvu_page_sum_ms(in, i)
-                                   : bench_ddjvu_page_ms(in, i);
-                    if (l >= 0)
-                        lib[lib_n++] = l;
-                }
-            }
-            bench_sort_asc(lib, lib_n);
-            bench_sort_asc(mine, mine_n);
-            if (lib_n <= 0 || mine_n <= 0) {
-                printf("page %d, djvulibre ", i + 1);
-                if (lib_n <= 0)
-                    printf("ERROR");
-                else
-                    bench_print_sorted_ms(lib, lib_n);
-                printf(", ours ");
-                if (mine_n <= 0)
-                    printf("ERROR");
-                else
-                    bench_print_sorted_ms(mine, mine_n);
-                printf("\n");
-                continue;
-            }
-            {
-                double diff = mine[0] - lib[0]; /* fastest reps; + => ours slower */
-                double pct = lib[0] > 0 ? diff / lib[0] * 100.0 : 0.0;
-                printf("page %d, djvulibre ", i + 1);
-                bench_print_sorted_ms(lib, lib_n);
-                printf(", ours ");
-                bench_print_sorted_ms(mine, mine_n);
-                printf(", %+.2f ms, %+.1f%%\n", diff, pct);
+
+        for (i = 0; i < 4; i++) {
+            page_ms[i] = (double *)malloc((size_t)n * sizeof(double));
+            if (!page_ms[i]) {
+                while (--i >= 0) free(page_ms[i]);
+                fprintf(stderr, "bench: out of memory\n");
+                djvu_ctx_free(ctx);
+                free(data);
+                return 1;
             }
         }
+        for (r = 0; r < RUNS; r++) {
+            memset(&ours[r], 0, sizeof ours[r]);
+            ours[r].page_ms = page_ms[r];
+            ours[r].npages = n;
+        }
+        for (r = 0; r < RUNS; r++) {
+            memset(&lib[r], 0, sizeof lib[r]);
+            lib[r].page_ms = page_ms[r + 2];
+            lib[r].npages = n;
+        }
+
+        for (r = 0; r < RUNS; r++) {
+            if (bench_ours_session(ctx, data, len, sum, &ours[r]) != 0)
+                fprintf(stderr, "bench: djvudec session run %d failed\n", r + 1);
+            bench_print_session_line("djvudec", &ours[r]);
+        }
+        for (r = 0; r < RUNS; r++) {
+            if (bench_ddjvu_session(in, sum, &lib[r]) != 0)
+                fprintf(stderr, "bench: libdjvu session run %d failed\n", r + 1);
+            bench_print_session_line("libdjvu", &lib[r]);
+        }
+
         {
-            double doc_mine = -1, doc_lib = -1;
-            int ok = 1, r;
-            bench_ddjvu_reset();
-            for (r = 0; r < REPS; r++) {
-                double dt = sum ? bench_ours_doc_sum_ms(ctx, data, len)
-                                : bench_ours_doc_ms(ctx, data, len);
-                if (dt < 0)
-                    ok = 0;
-                else if (doc_mine < 0 || dt < doc_mine)
-                    doc_mine = dt;
-                {
-                    double l = sum ? bench_ddjvu_doc_sum_ms(in)
-                                   : bench_ddjvu_doc_ms(in);
-                    if (l >= 0 && (doc_lib < 0 || l < doc_lib))
-                        doc_lib = l;
-                }
+            double open_ours = bench_best2(ours[0].open_ms, ours[1].open_ms);
+            double open_lib = bench_best2(lib[0].open_ms, lib[1].open_ms);
+            double close_ours = bench_best2(ours[0].close_ms, ours[1].close_ms);
+            double close_lib = bench_best2(lib[0].close_ms, lib[1].close_ms);
+            double total_ours = bench_best2(ours[0].total_ms, ours[1].total_ms);
+            double total_lib = bench_best2(lib[0].total_ms, lib[1].total_ms);
+
+            printf("(best of %d runs; + = djvudec slower)\n", RUNS);
+            bench_print_compare_line("open", open_ours, open_lib);
+            for (p = 0; p < n; p++) {
+                double pg_ours = bench_best2(ours[0].page_ms[p], ours[1].page_ms[p]);
+                double pg_lib = bench_best2(lib[0].page_ms[p], lib[1].page_ms[p]);
+                snprintf(lbl, sizeof lbl, "%d", p + 1);
+                bench_print_compare_line(lbl, pg_ours, pg_lib);
             }
-            if (doc_lib < 0 || !ok) {
-                printf("document, djvulibre %s, ours %.2f ms%s\n",
-                       doc_lib < 0 ? "ERROR" : "ok", doc_mine,
-                       ok ? "" : " (ours FAILED)");
-            } else {
-                double diff = doc_mine - doc_lib;
-                double pct = doc_lib > 0 ? diff / doc_lib * 100.0 : 0.0;
-                printf("document, djvulibre %.2f ms, ours %.2f ms, %+.2f ms, %+.1f%%\n",
-                       doc_lib, doc_mine, diff, pct);
-            }
+            bench_print_compare_line("close", close_ours, close_lib);
+            bench_print_compare_line("total", total_ours, total_lib);
         }
-        bench_mem_report(data, len, sum); /* decoder allocation stats for the doc */
-        djvu_ctx_free(ctx); free(data);
+
+        for (i = 0; i < 4; i++)
+            free(page_ms[i]);
+        bench_mem_report(data, len, sum);
+        djvu_ctx_free(ctx);
+        free(data);
         return rc;
     }
 

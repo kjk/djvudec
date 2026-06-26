@@ -63,6 +63,14 @@ typedef struct bench_render {
     unsigned char *data;
 } bench_render;
 
+typedef struct bench_session_timings {
+    double open_ms;
+    double close_ms;
+    double total_ms;
+    double *page_ms;
+    int npages;
+} bench_session_timings;
+
 extern "C" {
 
 void bench_ddjvu_reset(void)
@@ -440,6 +448,68 @@ void bench_render_free(bench_render *img)
         img->data = 0;
         img->width = img->height = img->bps = img->rowsize = 0;
     }
+}
+
+/* One session: open doc, render every page, close. Fills page_ms[0..npages-1]. */
+int bench_ddjvu_session(const char *path, int sum, bench_session_timings *out)
+{
+    ddjvu_document_t *doc = 0;
+    int np, p;
+    double t0, t_session;
+
+    if (!out || !out->page_ms || out->npages <= 0)
+        return -1;
+
+    t_session = bench_now_ms();
+    bench_ddjvu_reset();
+    if (!g_api_ctx)
+        g_api_ctx = ddjvu_context_create("djvu_test");
+    if (!g_api_ctx)
+        return -1;
+
+    t0 = bench_now_ms();
+    doc = ddjvu_document_create_by_filename_utf8(g_api_ctx, path, 1);
+    if (!doc)
+        return -1;
+    while (!ddjvu_document_decoding_done(doc))
+        api_handle(1);
+    if (ddjvu_document_decoding_error(doc)) {
+        ddjvu_document_release(doc);
+        bench_ddjvu_reset();
+        return -1;
+    }
+    out->open_ms = bench_now_ms() - t0;
+
+    np = ddjvu_document_get_pagenum(doc);
+    if (np > out->npages)
+        np = out->npages;
+
+    for (p = 0; p < np; p++) {
+        ddjvu_page_t *page = 0;
+        int ok = -1;
+
+        t0 = bench_now_ms();
+        page = ddjvu_page_create_by_pageno(doc, p);
+        if (page) {
+            if (sum)
+                ok = bench_ddjvu_render_sum_open_page(page);
+            else
+                ok = bench_ddjvu_render_open_page(page);
+            ddjvu_page_release(page);
+        }
+        out->page_ms[p] = bench_now_ms() - t0;
+        if (ok != 0)
+            out->page_ms[p] = -1.0;
+    }
+    for (p = np; p < out->npages; p++)
+        out->page_ms[p] = -1.0;
+
+    t0 = bench_now_ms();
+    ddjvu_document_release(doc);
+    out->close_ms = bench_now_ms() - t0;
+    out->total_ms = bench_now_ms() - t_session;
+    bench_ddjvu_reset();
+    return 0;
 }
 
 /* Render one decoded page into *out (ddjvu -format=pgm|ppm). */

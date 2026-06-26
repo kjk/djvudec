@@ -5,12 +5,11 @@
 // Regenerates dist/ when src/ is newer (`-clean`: always regenerate dist/,
 // delete out/, full rebuild). Builds djvu_test from dist/djvu.c
 // (DjVuLibre via test/bench_ddjvu.cpp), then runs `djvu_test -bench` on the
-// given file. Per page: 2 fresh doc opens (outside timer),
-// fastest of 2 timed renders; no cross-render cache. Full render (decode + composite
-// + rotation), 2 reps, fastest kept. At the end: whole-document session (open,
-// render every page, extract text + annotations per page, close), 2 reps, fastest
-// kept. With no file, picks a random .djvu from testfiles/subset (`-full` →
-// testfiles/full). Lines print DjVuLibre ms, ours ms, delta (+ = slower).
+// given file. Session benchmark: open doc, render every page, close; 2 runs each
+// for djvudec and libdjvu. Prints one line per run (open, per-page, close ms),
+// then best-of-2 comparison lines (open, each page, close; + = djvudec slower).
+// With no file, picks a random .djvu from testfiles/subset (`-full` →
+// testfiles/full).
 import { existsSync, readdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { getDeps } from "./get-deps";
