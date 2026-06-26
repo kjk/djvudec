@@ -4,6 +4,7 @@
  *   ddjvu.exe and our djvu_page_render output path.
  * -verify-render uses the same ddjvuapi page_render for byte-exact compares. */
 #include "libdjvu/ddjvuapi.h"
+#include "miniexp.h"
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
@@ -76,26 +77,18 @@ double bench_now_ms(void)
         .count();
 }
 
-/* Time one full page render via ddjvuapi (page decode + composite + rotation). */
-double bench_ddjvu_page_ms(const char *path, int page0)
+/* Render one open page (decode + composite + rotation). Returns 0 on success. */
+static int bench_ddjvu_render_open_page(ddjvu_page_t *page)
 {
-    ddjvu_page_t *page = 0;
     ddjvu_format_t *fmt = 0;
     ddjvu_rect_t prect, rrect;
     ddjvu_format_style_t style;
     int iw, ih, rowsize, want_rgb;
     unsigned char *image = 0;
-    double ms = -1.0;
-    double t0;
+    int rc = -1;
 
-    if (api_open_doc(path) != 0)
-        return -1.0;
-
-    t0 = bench_now_ms();
-
-    page = ddjvu_page_create_by_pageno(g_api_doc, page0);
     if (!page)
-        goto done;
+        return -1;
     while (!ddjvu_page_decoding_done(page))
         api_handle(1);
     if (ddjvu_page_decoding_error(page))
@@ -126,15 +119,88 @@ double bench_ddjvu_page_ms(const char *path, int page0)
     if (!ddjvu_page_render(page, DDJVU_RENDER_COLOR, &prect, &rrect, fmt,
                            rowsize, (char *)image))
         std::memset(image, 0xff, (size_t)rowsize * (size_t)ih);
-
-    ms = bench_now_ms() - t0;
+    rc = 0;
 
 done:
     std::free(image);
     if (fmt)
         ddjvu_format_release(fmt);
+    return rc;
+}
+
+/* Time one full page render via ddjvuapi (page decode + composite + rotation). */
+double bench_ddjvu_page_ms(const char *path, int page0)
+{
+    ddjvu_page_t *page = 0;
+    double ms = -1.0;
+    double t0;
+
+    if (api_open_doc(path) != 0)
+        return -1.0;
+
+    t0 = bench_now_ms();
+    page = ddjvu_page_create_by_pageno(g_api_doc, page0);
+    if (page && bench_ddjvu_render_open_page(page) == 0)
+        ms = bench_now_ms() - t0;
     if (page)
         ddjvu_page_release(page);
+    return ms;
+}
+
+/* Time open + render all pages + text + annotations + close (one cold session). */
+double bench_ddjvu_doc_ms(const char *path)
+{
+    ddjvu_document_t *doc = 0;
+    double ms = -1.0;
+    double t0;
+    int np, p;
+
+    bench_ddjvu_reset();
+    if (!g_api_ctx)
+        g_api_ctx = ddjvu_context_create("djvu_test");
+    if (!g_api_ctx)
+        return -1.0;
+
+    t0 = bench_now_ms();
+
+    doc = ddjvu_document_create_by_filename_utf8(g_api_ctx, path, 1);
+    if (!doc)
+        goto done;
+    while (!ddjvu_document_decoding_done(doc))
+        api_handle(1);
+    if (ddjvu_document_decoding_error(doc))
+        goto done;
+
+    np = ddjvu_document_get_pagenum(doc);
+    for (p = 0; p < np; p++) {
+        ddjvu_page_t *page = ddjvu_page_create_by_pageno(doc, p);
+        if (page) {
+            (void)bench_ddjvu_render_open_page(page);
+            ddjvu_page_release(page);
+        }
+        {
+            miniexp_t r;
+            while ((r = ddjvu_document_get_pagetext(doc, p, "page")) == miniexp_dummy)
+                api_handle(1);
+            (void)r;
+        }
+        {
+            miniexp_t anno;
+            while ((anno = ddjvu_document_get_pageanno(doc, p)) == miniexp_dummy)
+                api_handle(1);
+            if (miniexp_consp(anno)) {
+                miniexp_t *links = ddjvu_anno_get_hyperlinks(anno);
+                if (links)
+                    std::free(links);
+            }
+        }
+    }
+    ms = bench_now_ms() - t0;
+
+done:
+    if (doc)
+        ddjvu_document_release(doc);
+    bench_ddjvu_reset();
     return ms;
 }
 

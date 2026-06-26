@@ -29,6 +29,7 @@ typedef struct bench_render {
 
 double bench_now_ms(void);
 double bench_ddjvu_page_ms(const char *path, int page0);
+double bench_ddjvu_doc_ms(const char *path);
 int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
                             bench_render *out);
 void bench_render_free(bench_render *img);
@@ -187,6 +188,38 @@ static const char *page_kind_name(page_kind_t k)
     if (k == PK_MASK) return "mask";
     if (k == PK_BG) return "bg";
     return "other";
+}
+
+/* One cold session: open + render all pages + text + links + close. */
+static double bench_ours_doc_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
+{
+    djvu_doc *doc;
+    int n, i;
+    double t0, ms;
+
+    t0 = bench_now_ms();
+    doc = djvu_doc_open(ctx, data, len);
+    if (!doc)
+        return -1.0;
+    n = djvu_doc_page_count(doc);
+    for (i = 0; i < n; i++) {
+        djvu_image *img = djvu_page_render(doc, i, 1);
+        if (img)
+            djvu_image_destroy(ctx, img);
+        {
+            char *t = djvu_page_text(doc, i);
+            if (t)
+                djvu_text_destroy(ctx, t);
+        }
+        {
+            djvu_page_links *L = djvu_page_get_links(doc, i);
+            if (L)
+                djvu_page_links_destroy(ctx, L);
+        }
+    }
+    djvu_doc_close(doc);
+    ms = bench_now_ms() - t0;
+    return ms;
 }
 
 static int page_has_chunk(djvu_doc *doc, int page0, const char *cid)
@@ -636,6 +669,33 @@ int main(int argc, char **argv)
             double pct = lib > 0 ? diff / lib * 100.0 : 0.0;
             printf("page %d, djvulibre %.2f ms, ours %.2f ms, %+.2f ms, %+.1f%%\n",
                    i + 1, lib, mine, diff, pct);
+        }
+        {
+            double doc_mine = -1, doc_lib = -1;
+            int ok = 1, r;
+            bench_ddjvu_reset();
+            for (r = 0; r < REPS; r++) {
+                double dt = bench_ours_doc_ms(ctx, data, len);
+                if (dt < 0)
+                    ok = 0;
+                else if (doc_mine < 0 || dt < doc_mine)
+                    doc_mine = dt;
+                {
+                    double l = bench_ddjvu_doc_ms(in);
+                    if (l >= 0 && (doc_lib < 0 || l < doc_lib))
+                        doc_lib = l;
+                }
+            }
+            if (doc_lib < 0 || !ok) {
+                printf("document, djvulibre %s, ours %.2f ms%s\n",
+                       doc_lib < 0 ? "ERROR" : "ok", doc_mine,
+                       ok ? "" : " (ours FAILED)");
+            } else {
+                double diff = doc_mine - doc_lib;
+                double pct = doc_lib > 0 ? diff / doc_lib * 100.0 : 0.0;
+                printf("document, djvulibre %.2f ms, ours %.2f ms, %+.2f ms, %+.1f%%\n",
+                       doc_lib, doc_mine, diff, pct);
+            }
         }
         djvu_doc_close(doc); djvu_ctx_free(ctx); free(data);
         return rc;
