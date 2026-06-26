@@ -577,6 +577,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
         parent = c->lib2shape[match];
         tmp_shape.parent = parent;
         cbm = &djvu_jb2_get_shape(jim, parent)->bm;
+        djvu_bm_ensure_bytes(c->ctx, cbm);
         cw = (1 + c->libinfo[match * 4 + 2]) - c->libinfo[match * 4 + 0];
         ch = (1 + c->libinfo[match * 4 + 3]) - c->libinfo[match * 4 + 1];
         code_rel_mark_size(c, &tmp_shape.bm, cw, ch, 4);
@@ -643,6 +644,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
             blit.shapeno = shapeno;
             img_add_blit(jim, blit);
         }
+        djvu_bm_compress(c->ctx, &jim->shapes[jim->nshapes - 1].bm);
     } else if (rectype == REC_MatchedCopy) {
         img_add_blit(jim, blit);
     }
@@ -700,8 +702,9 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
             if (shs) {
                 int sn = atoi(shs);
                 jb2_shape *sh = djvu_jb2_get_shape(jim, sn);
-                if (sh && sh->bm.data) {
+                if (sh && djvu_bm_has_pixels(&sh->bm)) {
                     int rr, cc, w = sh->bm.width, h = sh->bm.height;
+                    djvu_bm_ensure_bytes(ctx, &sh->bm);
                     fprintf(stderr, "SHAPE %d %dx%d:\n", sn, w, h);
                     for (rr = h - 1; rr >= 0; rr--) {  /* top row first */
                         int ro = djvu_bm_rowoffset(&sh->bm, rr);
@@ -718,8 +721,9 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
                 jb2_blit *b = &jim->blits[bi];
                 jb2_shape *sh = djvu_jb2_get_shape(jim, b->shapeno);
                 unsigned sum = 0; int rr, cc, w = 0, h = 0;
-                if (sh && sh->bm.data) {
+                if (sh && djvu_bm_has_pixels(&sh->bm)) {
                     w = sh->bm.width; h = sh->bm.height;
+                    djvu_bm_ensure_bytes(ctx, &sh->bm);
                     for (rr = 0; rr < h; rr++) {
                         int ro = djvu_bm_rowoffset(&sh->bm, rr);
                         for (cc = 0; cc < w; cc++)

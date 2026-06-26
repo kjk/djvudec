@@ -57,6 +57,36 @@ static double page_gamma(djvu_doc *doc, uint32_t form_off)
     return 2.2;
 }
 
+typedef struct {
+    djvu_cpix *bg;
+    int palr, palg, palb;
+    int has_pal, has_fg;
+    int fgred;
+    djvu_cpix *fgnat;
+} compose_ink_ctx;
+
+static void compose_stamp_ink(void *user, int px, int py)
+{
+    compose_ink_ctx *ink = (compose_ink_ctx *)user;
+    uint8_t *d;
+
+    if (py < 0 || py >= ink->bg->h || px < 0 || px >= ink->bg->w) return;
+    d = ink->bg->d + ((size_t)py * ink->bg->w + px) * 3;
+    if (ink->has_pal) {
+        d[0] = (uint8_t)ink->palr; d[1] = (uint8_t)ink->palg; d[2] = (uint8_t)ink->palb;
+    } else if (ink->has_fg) {
+        int fx = px / ink->fgred, fy = py / ink->fgred;
+        if (fx >= ink->fgnat->w) fx = ink->fgnat->w - 1;
+        if (fy >= ink->fgnat->h) fy = ink->fgnat->h - 1;
+        {
+            uint8_t *f = ink->fgnat->d + ((size_t)fy * ink->fgnat->w + fx) * 3;
+            d[0] = f[0]; d[1] = f[1]; d[2] = f[2];
+        }
+    } else {
+        d[0] = d[1] = d[2] = 0;
+    }
+}
+
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
                              int width, int height, djvu_render_timings *t)
 {
@@ -123,40 +153,23 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     for (i = 0; mask && i < mask->nblits; i++) {
         jb2_blit *b = &mask->blits[i];
         jb2_shape *s = djvu_jb2_get_shape(mask, b->shapeno);
-        int sw, sh, rr, cc, palr = 0, palg = 0, palb = 0;
-        if (!s || !s->bm.data) continue;
-        sw = s->bm.width; sh = s->bm.height;
+        compose_ink_ctx ink;
+        if (!s || !djvu_bm_has_pixels(&s->bm)) continue;
+        ink.bg = &bg;
+        ink.palr = ink.palg = ink.palb = 0;
+        ink.has_pal = ink.has_fg = 0;
+        ink.fgred = fgred;
+        ink.fgnat = &fgnat;
         if (pal && colordata && i < ncolor) {
             int ci = colordata[i];
             if (ci >= 0 && ci < palsize) {
-                palb = pal[ci*3+0]; palg = pal[ci*3+1]; palr = pal[ci*3+2];
+                ink.palb = pal[ci*3+0]; ink.palg = pal[ci*3+1]; ink.palr = pal[ci*3+2];
+                ink.has_pal = 1;
             }
+        } else if (fgpm) {
+            ink.has_fg = 1;
         }
-        for (rr = 0; rr < sh; rr++) {
-            int srow = djvu_bm_rowoffset(&s->bm, rr);
-            int py = b->bottom + rr;
-            if (py < 0 || py >= bg.h) continue;
-            for (cc = 0; cc < sw; cc++) {
-                int px = b->left + cc;
-                uint8_t *d;
-                if (px < 0 || px >= bg.w) continue;
-                if (s->bm.data[srow + cc] == 0) continue;
-                d = bg.d + ((size_t)py * bg.w + px) * 3;
-                if (pal) {
-                    d[0] = (uint8_t)palr; d[1] = (uint8_t)palg; d[2] = (uint8_t)palb;
-                } else if (fgpm) {
-                    int fx = px / fgred, fy = py / fgred;
-                    if (fx >= fgnat.w) fx = fgnat.w - 1;
-                    if (fy >= fgnat.h) fy = fgnat.h - 1;
-                    {
-                        uint8_t *f = fgnat.d + ((size_t)fy * fgnat.w + fx) * 3;
-                        d[0] = f[0]; d[1] = f[1]; d[2] = f[2];
-                    }
-                } else {
-                    d[0] = d[1] = d[2] = 0;
-                }
-            }
-        }
+        djvu_bm_visit_ink(&s->bm, b->left, b->bottom, compose_stamp_ink, &ink);
     }
 
     out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));

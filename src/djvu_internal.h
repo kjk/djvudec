@@ -380,9 +380,16 @@ typedef struct {
     int border;
     int bytes_per_row;   /* width + border */
     int max_offset;      /* height*bytes_per_row + border = length of data */
-    uint8_t *data;
+    uint8_t *data;       /* raw pixels; NULL when RLE-compressed */
     uint8_t *guard;      /* zero row for row<0/row>=height (GBitmap zerobuffer) */
+    uint8_t *rle;        /* run-length encoding (DjVuLibre GBitmap::compress) */
+    size_t rle_len;
 } djvu_bitmap;
+
+static inline int djvu_bm_has_pixels(const djvu_bitmap *bm)
+{
+    return bm && bm->width > 0 && bm->height > 0 && (bm->data || bm->rle);
+}
 
 /* (re)initialize bm to height x width with the given context border (zeroed). */
 int  djvu_bm_init(djvu_ctx *ctx, djvu_bitmap *bm, int height, int width, int border);
@@ -442,6 +449,17 @@ void djvu_bm_bbox(const djvu_bitmap *bm, int *xmin, int *ymin, int *xmax, int *y
 
 /* OR-blit src into dst at (dx,dy) (bottom-up coords), clamping to maxval. */
 void djvu_bm_blit(djvu_bitmap *dst, const djvu_bitmap *src, int dx, int dy, int maxval);
+
+/* DjVuLibre GBitmap::compress — drop raw bytes, keep RLE only. */
+void djvu_bm_compress(djvu_ctx *ctx, djvu_bitmap *bm);
+/* DjVuLibre GBitmap::uncompress — expand RLE to raw bytes. */
+void djvu_bm_uncompress(djvu_ctx *ctx, djvu_bitmap *bm);
+/* Uncompress when only RLE is present (no-op if bytes already exist). */
+void djvu_bm_ensure_bytes(djvu_ctx *ctx, djvu_bitmap *bm);
+
+/* Call fn(user, px, py) for each ink pixel at page offset (left, bottom). */
+void djvu_bm_visit_ink(const djvu_bitmap *src, int left, int bottom,
+                       void (*fn)(void *user, int px, int py), void *user);
 
 /* ===================================================================== */
 /* bzz.c -- BZZ (Burrows-Wheeler + ZP) decompression.                     */
