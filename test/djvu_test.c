@@ -176,6 +176,163 @@ static page_kind_t page_kind(djvu_doc *doc, int page0)
     return PK_OTHER;
 }
 
+static const char *page_type_name(djvu_page_type t)
+{
+    static const char *names[] = {"unknown", "bitonal", "photo", "compound"};
+    return names[(t >= 0 && t <= 3) ? t : 0];
+}
+
+static const char *page_kind_name(page_kind_t k)
+{
+    if (k == PK_MASK) return "mask";
+    if (k == PK_BG) return "bg";
+    return "other";
+}
+
+static int page_has_chunk(djvu_doc *doc, int page0, const char *cid)
+{
+    uint32_t sz;
+    return djvu_form_find_chunk(doc, doc->pages[page0].form_off, cid, &sz, NULL) != NULL;
+}
+
+static int page_has_incl(djvu_doc *doc, int page0)
+{
+    uint32_t sz, start = 0;
+    return djvu_form_find_chunk(doc, doc->pages[page0].form_off, "INCL", &sz, &start) != NULL;
+}
+
+static const char *container_kind(djvu_doc *doc)
+{
+    const uint8_t *data = doc->data;
+    size_t len = doc->len;
+    uint32_t pos = doc->root_form_off;
+
+    if (pos + 12 > len) return "unknown";
+    if (djvu_tag_eq(data + pos + 8, "DJVU")) return "single";
+    if (!djvu_tag_eq(data + pos + 8, "DJVM")) return "unknown";
+    {
+        uint32_t form_end = pos + 8 + djvu_rd_u32be(data + pos + 4);
+        uint32_t p = pos + 12;
+        if (form_end > len) form_end = (uint32_t)len;
+        while (p + 8 <= form_end) {
+            uint32_t csz = djvu_rd_u32be(data + p + 4);
+            uint32_t chunk_end = p + 8 + csz;
+            if (chunk_end > form_end) break;
+            if (djvu_tag_eq(data + p, "DIRM") && p + 11 <= chunk_end) {
+                return ((data[p + 8] >> 7) & 1) ? "bundled" : "indirect";
+            }
+            p = chunk_end + (csz & 1);
+        }
+    }
+    return "djvm";
+}
+
+/* Feature dump for cmd/dump_features.ts (tab-separated; one file per invocation). */
+static int run_dump_features(djvu_doc *doc)
+{
+    djvu_ctx *ctx = doc->ctx;
+    int npages = djvu_doc_page_count(doc);
+    int i, ncomp_djvi = 0;
+    int file_incl = 0, file_incl_djbz = 0, file_inline_djbz = 0;
+    int file_outline = 0, file_text = 0, file_annot = 0, file_links = 0;
+    int file_fgbz = 0, file_fg44 = 0, file_bgjp = 0, file_fgjp = 0;
+    int type_bitonal = 0, type_photo = 0, type_compound = 0;
+    int kind_mask = 0, kind_bg = 0, kind_other = 0;
+    int rot_nonzero = 0;
+    double total_ms = 0.0;
+    djvu_outline_item *outline;
+
+    if (doc->comps) {
+        for (i = 0; i < doc->ncomp; i++)
+            if (doc->comps[i].type == 0) ncomp_djvi++;
+    }
+    outline = djvu_doc_outline(doc);
+    file_outline = (outline && outline->nchildren > 0) ? 1 : 0;
+    if (outline) djvu_outline_destroy(ctx, outline);
+
+    for (i = 0; i < npages; i++) {
+        djvu_page_type pt = djvu_page_get_type(doc, i);
+        page_kind_t pk = page_kind(doc, i);
+        djvu_page_info pi;
+        int has_text = 0, has_annot = 0, has_links = 0;
+        int incl = page_has_incl(doc, i);
+        int inline_djbz = page_has_chunk(doc, i, "Djbz");
+        int incl_djbz = djvu_form_find_incl_chunk(doc, doc->pages[i].form_off,
+                                                  "Djbz", NULL) != NULL;
+        double t0, dt;
+        djvu_image *img;
+        djvu_page_links *L;
+
+        if (pt == DJVU_PAGE_BITONAL) type_bitonal = 1;
+        else if (pt == DJVU_PAGE_PHOTO) type_photo = 1;
+        else if (pt == DJVU_PAGE_COMPOUND) type_compound = 1;
+        if (pk == PK_MASK) kind_mask = 1;
+        else if (pk == PK_BG) kind_bg = 1;
+        else kind_other = 1;
+
+        if (page_has_chunk(doc, i, "FGbz")) file_fgbz = 1;
+        if (page_has_chunk(doc, i, "FG44")) file_fg44 = 1;
+        if (page_has_chunk(doc, i, "BGjp")) file_bgjp = 1;
+        if (page_has_chunk(doc, i, "FGjp")) file_fgjp = 1;
+        if (incl) file_incl = 1;
+        if (incl_djbz) file_incl_djbz = 1;
+        if (inline_djbz) file_inline_djbz = 1;
+
+        {
+            char *tx = djvu_page_text(doc, i);
+            has_text = (tx && tx[0]) ? 1 : 0;
+            if (tx) djvu_text_destroy(ctx, tx);
+        }
+        if (page_has_chunk(doc, i, "ANTa") || page_has_chunk(doc, i, "ANTz"))
+            has_annot = 1;
+        L = djvu_page_get_links(doc, i);
+        if (L) {
+            has_links = (L->nlinks > 0) ? 1 : 0;
+            djvu_page_links_destroy(ctx, L);
+        }
+        if (has_text) file_text = 1;
+        if (has_annot) file_annot = 1;
+        if (has_links) file_links = 1;
+
+        pi.rotation = 0;
+        if (djvu_doc_page_info(doc, i, &pi) == 0 && pi.rotation != 0)
+            rot_nonzero = 1;
+
+        t0 = bench_now_ms();
+        img = djvu_page_render(doc, i, 1);
+        dt = bench_now_ms() - t0;
+        if (img) djvu_image_destroy(ctx, img);
+        total_ms += dt;
+
+        printf("page\t%d\ttype\t%s\tkind\t%s\trot\t%d\ttext\t%d\tannot\t%d\t"
+               "links\t%d\tincl\t%d\tinline_djbz\t%d\tincl_djbz\t%d\t"
+               "fgbz\t%d\tfg44\t%d\tbgjp\t%d\tfgjp\t%d\trender_ms\t%.3f\n",
+               i + 1, page_type_name(pt), page_kind_name(pk),
+               (pi.rotation == 90 || pi.rotation == 180 || pi.rotation == 270)
+                   ? pi.rotation : 0,
+               has_text, has_annot, has_links, incl, inline_djbz, incl_djbz,
+               page_has_chunk(doc, i, "FGbz"), page_has_chunk(doc, i, "FG44"),
+               page_has_chunk(doc, i, "BGjp"), page_has_chunk(doc, i, "FGjp"),
+               dt);
+    }
+
+    printf("summary\tpages\t%d\tcontainer\t%s\tncomp_djvi\t%d\t"
+           "incl\t%d\tincl_djbz\t%d\tinline_djbz\t%d\toutline\t%d\t"
+           "text\t%d\tannot\t%d\tlinks\t%d\t"
+           "type_bitonal\t%d\ttype_photo\t%d\ttype_compound\t%d\t"
+           "kind_mask\t%d\tkind_bg\t%d\tkind_other\t%d\t"
+           "fgbz\t%d\tfg44\t%d\tbgjp\t%d\tfgjp\t%d\trot_nonzero\t%d\t"
+           "total_render_ms\t%.3f\n",
+           npages, container_kind(doc), ncomp_djvi,
+           file_incl, file_incl_djbz, file_inline_djbz, file_outline,
+           file_text, file_annot, file_links,
+           type_bitonal, type_photo, type_compound,
+           kind_mask, kind_bg, kind_other,
+           file_fgbz, file_fg44, file_bgjp, file_fgjp, rot_nonzero,
+           total_ms);
+    return 0;
+}
+
 static int image_equal(djvu_image *mine, const bench_render *ref)
 {
     int y;
@@ -338,7 +495,7 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
-    int do_verify_text = 0, do_verify_render = 0;
+    int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0;
     const char *diffdir = NULL;
     int i, rc = 0;
     uint8_t *data; size_t len;
@@ -364,6 +521,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
         else if (!strcmp(argv[i], "-verify-render")) do_verify_render = 1;
+        else if (!strcmp(argv[i], "-dump-features")) do_dump_features = 1;
         else if (!strcmp(argv[i], "-diffdir") && i + 1 < argc) diffdir = argv[++i];
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
@@ -395,6 +553,14 @@ int main(int argc, char **argv)
     }
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) { fprintf(stderr, "cannot open document\n"); free(data); djvu_ctx_free(ctx); return 1; }
+
+    if (do_dump_features) {
+        rc = run_dump_features(doc);
+        djvu_doc_close(doc);
+        djvu_ctx_free(ctx);
+        free(data);
+        return rc;
+    }
 
     if (do_verify_render) {
         rc = run_verify_render(doc, in, diffdir);

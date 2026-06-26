@@ -1,28 +1,11 @@
-# djvu — a plain-C DjVu decoder
+# djvudec — a plain-C DjVu decoder
 
-A from-scratch C port of the [DjvuNet](https://github.com/DjvuNet/DjvuNet) (C#)
-DjVu decoder, in the style of [jbig2dec](https://github.com/ArtifexSoftware/jbig2dec).
-Decode only: page info, bitmaps, and hidden text. The whole file is supplied
-up-front as an in-memory buffer.
-
-Correctness is verified against [DjVuLibre](https://github.com/DjvuNet/DjVuLibre)
-(`ddjvu`, `djvutxt`) on the sample files in `DjvuNet/Specs`.
-
-## Status
-| Feature | State |
-|---|---|
-| Page count / dimensions / dpi / rotation | ✅ matches ddjvu (11/11 files) |
-| Bitonal page bitmap (JB2) | ✅ byte-exact vs ddjvu (122/122 mask pages) |
-| Hidden text (TXTz/TXTa) | ✅ matches djvutxt (144/144 pages) |
-| Color / gray pages (IW44 + composite) | ✅ byte-exact vs ddjvu (188/189 pages) |
-
-Overall: `bun cmd/tests.ts` → render 188/189 == ddjvu, text 144/144 ==
-djvutxt. The 1 render miss (1998_compression p19, 0.008% of pixels) is a ddjvu
-three-layer-stencil quirk, not a decode bug: our JB2 mask, background, and FG44
-each match DjVuLibre's internals byte-for-byte; ddjvu just paints the foreground
-~1px off the mask for a few shapes there. See PROGRESS.md.
-
-See [PROGRESS.md](PROGRESS.md) for the design, port map, and milestones.
+This is a djvu format decoder, like [libdjvu](https://github.com/barak/djvulibre), but better:
+* smaller (in [SumatraPDF](https://www.sumatrapdfreader.org/), I saved 400 kB when I replaced libdjvu)
+* plain C, no dependencies (vs. C++)
+* simpler API
+* simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite.
+* tested on thousands of .djvu files for bit-by-bit correctness to libdjvu
 
 ## API
 See [`src/djvu.h`](src/djvu.h). Sketch:
@@ -51,3 +34,11 @@ djvu_test -info in.djvu
 djvu_test -page N -out out.pgm in.djvu
 djvu_test -page N -text in.djvu
 ```
+
+## How it was made
+
+This is automatic, ai assited port of of [DjvuNet](https://github.com/DjvuNet/DjvuNet) (C#)
+DjVu decoder, done with Grok Build.
+
+Correctness is verified against [DjVuLibre](https://github.com/DjvuNet/DjVuLibre)
+(`ddjvu`, `djvutxt`) on the sample files in `DjvuNet/Specs`, and my own collection large collection of djvu files collected for testing [SumatraPDF](https://www.sumatrapdfreader.org/).

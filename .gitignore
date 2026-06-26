@@ -11,6 +11,9 @@ ref_build/
 testfiles/
 # verifier failure list (written by cmd/tests.ts)
 failures.txt
+# feature scan output (cmd/dump_features.ts)
+features.jsonl
+features_summary.txt
 # scratch render/text outputs
 *.pnm
 *.pgm
