@@ -190,6 +190,26 @@ static const char *page_kind_name(page_kind_t k)
     return "other";
 }
 
+/* Cold page render: fresh doc per rep; timer covers render only (open/close outside). */
+static double bench_ours_page_ms(djvu_ctx *ctx, const uint8_t *data, size_t len,
+                                 int page0)
+{
+    djvu_doc *doc;
+    djvu_image *img;
+    double t0, ms;
+
+    doc = djvu_doc_open(ctx, data, len);
+    if (!doc)
+        return -1.0;
+    t0 = bench_now_ms();
+    img = djvu_page_render(doc, page0, 1);
+    ms = bench_now_ms() - t0;
+    if (img)
+        djvu_image_destroy(ctx, img);
+    djvu_doc_close(doc);
+    return img ? ms : -1.0;
+}
+
 /* One cold session: open + render all pages + text + links + close. */
 static double bench_ours_doc_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
 {
@@ -647,18 +667,24 @@ int main(int argc, char **argv)
 
     if (do_bench) {
         int n = djvu_doc_page_count(doc);
-        const int REPS = 3;   /* time each page REPS times, keep the fastest */
+        const int REPS = 3;   /* REPS fresh docs/page; time render only; keep fastest */
+        djvu_doc_close(doc);
+        doc = NULL;
+        bench_ddjvu_reset();
         for (i = 0; i < n; i++) {
             double mine = -1, lib = -1;
             int ok = 1, r;
             for (r = 0; r < REPS; r++) {
-                double t0 = bench_now_ms();
-                djvu_image *img = djvu_page_render(doc, i, 1);
-                double dt = bench_now_ms() - t0;
-                if (img) djvu_image_destroy(ctx, img); else ok = 0;
-                if (mine < 0 || dt < mine) mine = dt;
-                double l = bench_ddjvu_page_ms(in, i);
-                if (l >= 0 && (lib < 0 || l < lib)) lib = l;
+                double dt = bench_ours_page_ms(ctx, data, len, i);
+                if (dt < 0)
+                    ok = 0;
+                else if (mine < 0 || dt < mine)
+                    mine = dt;
+                {
+                    double l = bench_ddjvu_page_ms(in, i);
+                    if (l >= 0 && (lib < 0 || l < lib))
+                        lib = l;
+                }
             }
             if (lib < 0 || !ok) {
                 printf("page %d, djvulibre %s, ours %.2f ms%s\n", i + 1,
@@ -697,7 +723,7 @@ int main(int argc, char **argv)
                        doc_lib, doc_mine, diff, pct);
             }
         }
-        djvu_doc_close(doc); djvu_ctx_free(ctx); free(data);
+        djvu_ctx_free(ctx); free(data);
         return rc;
     }
 

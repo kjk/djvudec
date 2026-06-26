@@ -1,7 +1,7 @@
 /* bench_ddjvu.cpp -- DjVuLibre oracle + timing shim for djvu_test.
  *
- * -bench times ddjvuapi page_render (decode + composite + rotation), matching
- *   ddjvu.exe and our djvu_page_render output path.
+ * -bench times page decode+render with a fresh document per rep (open outside
+ *   the timer), matching our djvu_page_render timing.
  * -verify-render uses the same ddjvuapi page_render for byte-exact compares. */
 #include "libdjvu/ddjvuapi.h"
 #include "miniexp.h"
@@ -10,7 +10,7 @@
 #include <cstdlib>
 #include <cstdio>
 
-/* Cached ddjvuapi document for -bench / -verify-render. */
+/* Cached ddjvuapi document for -verify-render (bench opens fresh each rep). */
 static ddjvu_context_t *g_api_ctx;
 static ddjvu_document_t *g_api_doc;
 static char g_api_path[4096];
@@ -128,22 +128,41 @@ done:
     return rc;
 }
 
-/* Time one full page render via ddjvuapi (page decode + composite + rotation). */
+/* Cold page render: fresh doc per rep; timer covers page decode+render only. */
 double bench_ddjvu_page_ms(const char *path, int page0)
 {
+    ddjvu_document_t *doc = 0;
     ddjvu_page_t *page = 0;
     double ms = -1.0;
     double t0;
 
-    if (api_open_doc(path) != 0)
+    bench_ddjvu_reset();
+    if (!g_api_ctx)
+        g_api_ctx = ddjvu_context_create("djvu_test");
+    if (!g_api_ctx)
         return -1.0;
 
+    doc = ddjvu_document_create_by_filename_utf8(g_api_ctx, path, 1);
+    if (!doc)
+        goto done;
+    while (!ddjvu_document_decoding_done(doc))
+        api_handle(1);
+    if (ddjvu_document_decoding_error(doc))
+        goto done;
+
+    page = ddjvu_page_create_by_pageno(doc, page0);
+    if (!page)
+        goto done;
+
     t0 = bench_now_ms();
-    page = ddjvu_page_create_by_pageno(g_api_doc, page0);
-    if (page && bench_ddjvu_render_open_page(page) == 0)
+    if (bench_ddjvu_render_open_page(page) == 0)
         ms = bench_now_ms() - t0;
+
+done:
     if (page)
         ddjvu_page_release(page);
+    if (doc)
+        ddjvu_document_release(doc);
     return ms;
 }
 
