@@ -137,3 +137,100 @@ If JB2 is fixed, revisit only if composite resurfaces on other files.
 
 - `1998_compression.djvu` p19 render mismatch vs ddjvu (cosmetic fg-stencil
   quirk; mask/bg/fg byte-exact vs DjVuLibre internals).
+
+---
+
+# SIMD / vectorization opportunities (color IW44 path)
+
+Separate track from the JB2 work above. Profile-backed; inspiration cross-read
+from DjvuNet's SIMD (`deps/DjvuNet/DjvuNet/Wavelet/InterWaveTransform.Vector128/256.cs`).
+
+## Build reality
+Both toolchains compile at max opt (`clang -O3`, `cl -O2 -Ob3 -GL`) but **neither
+passes `-march` / `-arch:AVX2`** — codegen is baseline **SSE2 (128-bit), no
+AVX/AVX2**. Clang auto-vectorizes simple contiguous loops to SSE2 but bails on
+strided access, per-pixel callbacks, and edge-case-laden filters. Headroom in
+both *width* (enabling AVX2) and *loops the compiler can't touch*.
+
+Any SIMD must fold into the single-TU amalgamation (`dist/djvu.c`) — keep helpers
+file-local (no two `.c` sharing a `static` name). For AVX2, use a runtime CPUID
+dispatch with a scalar fallback (lib ships to unknown targets); do **not** use
+`-march=native`.
+
+## Where time goes (color/compound pages)
+`djvudec_dump -bench-render -warm 1 -layers` (fastest of 3, warm caches):
+
+| Page kind (example)                           | total   | dominant layers                         |
+|-----------------------------------------------|---------|-----------------------------------------|
+| Compound color, full-res (`1998_compression`) | ~15 ms  | **iw44 ~4.3 ms**, **composite ~2.3 ms** |
+| Color screen, small (`mtorrent`)              | ~0.3 ms | iw44 0.09 ms                            |
+
+(Bitonal text pages are JB2/stamp-bound — see the JB2 section above and #4 below.)
+ZP / arithmetic decoders are inherently serial bit-at-a-time — **not vectorizable**.
+
+## What DjvuNet vectorizes (the inspiration)
+DjvuNet does **not** SIMD the wavelet lifting. It vectorizes the **YCbCr↔RGB color
+transform**. `TransformYCbCrToRgbVector256` is op-for-op identical to our scalar
+loop in `iw44.c` `iw44_render_rgb_impl` (~lines 652-665):
+
+```
+DjvuNet AVX2          our scalar (iw44.c)
+blue>>2               t1 = bv>>2
+red + red>>1          t2 = rv + (rv>>1)
+luma+128              yv + 128
+luma128 - temp1       t3 = yv+128 - t1
+luma128 + temp2       tr  (red out)
+temp3 - temp2>>1      tg  (green out)
+temp3 + blue<<1       tb  (blue out)
+Max(0,Min(255,..))    clamp255
+PackUnsignedSaturate  (uint8_t) store
+```
+
+Same integer math → SIMD port verifies **byte-exact** vs scalar (`-verify-into` /
+corpus oracle).
+
+## Ranked opportunities
+
+### 1. Planar `map_image` + SIMD clamp + SIMD YCbCr→RGB — best risk/reward, DjvuNet-proven  [IN PROGRESS]
+`map_image` (`iw44.c:277`) writes int8 with stride (`pixsep=3`, interleaved
+Y/B/R); `iw44_render_rgb_impl` reads it back interleaved and writes to a *flipped*
+index. Two SIMD blockers: clamp loop scatters (stride 3), color loop reads
+interleaved + writes flipped.
+
+Fix: `map_image` writes **planar** (pixsep=1, contiguous) into 3 buffers. Then:
+- clamp `(x+32)>>6` to [-128,127] = load int16 → add → shift → `packs_epi16`
+  (signed saturation *is* the [-128,127] clamp) → packed store;
+- YCbCr→RGB loads 3 contiguous planes (no deinterlace shuffle DjvuNet needs),
+  runs the recipe above, interleaves to RGB. Flip done as a row-reorder, not a
+  per-pixel flipped index.
+
+Impact: removes strided scatter, unlocks color+clamp portion of the 4.3 ms iw44
+layer; also speeds the scalar path (contiguous).
+
+### 2. `filter_bv` vertical lifting, interior rows — largest compute, more work
+`filter_bv` (`iw44.c:114`) is **column-parallel**: every x does identical math
+with neighbors at rows ±s/±3s. At `scale=1` (finest, every coefficient) neighbors
+are contiguous int16 rows → ideal (8×int32 lanes to stay overflow-safe on
+`(a<<3)+a`). Interior case (`y∈[3,h-3]`) is the bulk; edges stay scalar.
+`filter_bh` (`iw44.c:184`) is a left-to-right recurrence → not x-vectorizable
+(row-parallel only, transpose-heavy). DjVuLibre/DjvuNet leave both scalar.
+Biggest potential single win but most code + most numerically delicate. Do after #1.
+
+### 3. `compose_finalize` / `djvu_flip_rgb_bottomup` — small, easy
+`compose.c:186` / `scaler.c:243`: row flip + optional R↔B swap = `pshufb` + copy.
+Gamma branch is a 256-LUT gather (leave scalar). Low effort, small payoff.
+
+### 4. Bitonal ink-stamp — algorithmic, not pure SIMD, ~2 ms on text pages
+`render.c` stamps each ink pixel via indirect call through `djvu_bm_visit_ink`
+(`bitmap.c:392`) — per-pixel function pointers can't vectorize. The RLE path knows
+ink **runs**; replace the per-pixel callback with a run-aware sink (`memset(0)` of
+`[left+col, left+nc)` on the dest row). Structural refactor; highest value for
+text corpora. (Overlaps the composite item in the JB2 section.)
+
+### 5. `scaler.c` bilinear — skip
+Runs at doc-open (BG44 upscale cached), off render hot path; `s_interp` lookups
+are gather-bound.
+
+## Verification
+- Byte-exact: `bun cmd/tests.ts` (corpus oracle), `djvu_test -verify-into`.
+- Speed: `cmd/build_bench.ts before/after` + `cmd/bench_perf.ts` (`-warm 1 -layers`).
