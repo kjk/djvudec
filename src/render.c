@@ -4,19 +4,27 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Decode the JB2 shape dictionary for a page: either embedded directly in the
-   page form as a Djbz chunk, or referenced by an INCL chunk pointing at a
-   shared DJVI component that contains the Djbz. */
-static jb2_image *load_page_dict(djvu_doc *doc, uint32_t form_off)
+/* Borrow or decode the JB2 shape dictionary for a page. Inline Djbz on the page
+   form is decoded per call (caller frees). INCL-referenced shared dicts are
+   cached at doc open; *owned is 0 for those (do not free). */
+static jb2_image *load_page_dict(djvu_doc *doc, uint32_t form_off, int *owned)
 {
     djvu_ctx *ctx = doc->ctx;
     uint32_t sz;
     const uint8_t *djbz;
+    jb2_image *dict;
 
+    if (owned) *owned = 0;
     djbz = djvu_form_find_chunk(doc, form_off, "Djbz", &sz, NULL);
-    if (!djbz)
-        djbz = djvu_form_find_incl_chunk(doc, form_off, "Djbz", &sz);
+    if (djbz) {
+        if (owned) *owned = 1;
+        return djvu_jb2_decode_dict(ctx, djbz, sz);
+    }
+    dict = djvu_doc_jb2_dict_for_form(doc, form_off);
+    if (dict) return dict;
+    djbz = djvu_form_find_incl_chunk(doc, form_off, "Djbz", &sz);
     if (!djbz) return NULL;
+    if (owned) *owned = 1;
     return djvu_jb2_decode_dict(ctx, djbz, sz);
 }
 
@@ -199,6 +207,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     djvu_page_info pi;
     int info_ok;
     jb2_image *dict = NULL, *mask = NULL;
+    int dict_owned = 0;
     djvu_image *out = NULL;
     double t0;
 
@@ -215,7 +224,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
         const uint8_t *sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL);
         if (!sjbz) goto done;
         if (t) t0 = djvu_bench_now_ms();
-        dict = load_page_dict(doc, form_off);
+        dict = load_page_dict(doc, form_off, &dict_owned);
         mask = djvu_jb2_decode(ctx, sjbz, sz, dict);
         if (t) t->jb2_ms += djvu_bench_now_ms() - t0;
         if (!mask) goto done;
@@ -245,7 +254,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
 
 done:
     djvu_jb2_free(ctx, mask);
-    djvu_jb2_free(ctx, dict);
+    if (dict_owned) djvu_jb2_free(ctx, dict);
     return apply_page_rotation(ctx, doc, page_no, out, subsample, t);
 }
 

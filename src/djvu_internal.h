@@ -56,6 +56,13 @@ typedef struct {
 } djvu_component;
 
 typedef struct iw_pixmap iw_pixmap;
+typedef struct jb2_image jb2_image;
+
+/* Cached shared Djbz dictionary (keyed by INCL component id). */
+typedef struct {
+    char *incl_id;       /* owned; matches INCL chunk / DIRM component id */
+    jb2_image *dict;     /* decoded Djbz (doc-owned; read-only during render) */
+} djvu_jb2_dict_entry;
 
 /* A displayable page = a FORM:DJVU component in the document. */
 typedef struct {
@@ -78,11 +85,17 @@ struct djvu_doc {
     djvu_page_int *pages;
     int ncomp;
     djvu_component *comps;   /* all DIRM components, in directory order */
+    djvu_jb2_dict_entry *jb2_dicts;
+    int n_jb2_dicts;
 };
 
 /* Cached IW44 layers (read-only during render; freed in djvu_doc_close). */
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
+
+/* Cached shared JB2 dictionaries (read-only during render; freed in djvu_doc_close). */
+jb2_image *djvu_doc_jb2_dict(djvu_doc *doc, const char *incl_id);
+jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off);
 
 /* Resolve an INCL component id to its FORM file offset; 0 if not found. */
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id);
