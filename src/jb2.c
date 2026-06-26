@@ -247,23 +247,24 @@ static int code_num(jb2_codec *c, int low, int high, int *ctxslot)
 
 static void code_bitmap_directly(jb2_codec *c, djvu_bitmap *bm)
 {
-    int dw, dy, up2, up1, up0;
+    int dw, dy;
+    uint8_t *up2, *up1, *up0;
     djvu_bm_set_min_border(c->ctx, bm, 3);
     dw = bm->width;
     dy = bm->height - 1;
-    up2 = djvu_bm_rowoffset(bm, dy + 2);
-    up1 = djvu_bm_rowoffset(bm, dy + 1);
-    up0 = djvu_bm_rowoffset(bm, dy);
+    up2 = djvu_bm_rowptr(bm, dy + 2);
+    up1 = djvu_bm_rowptr(bm, dy + 1);
+    up0 = djvu_bm_rowptr(bm, dy);
     while (dy >= 0) {
-        int context = jb2_get_direct_context(bm, up2, up1, up0, 0);
+        int context = jb2_get_direct_context(up2, up1, up0, 0);
         int dx = 0;
         while (dx < dw) {
             int n = code_bit_arr(c, c->bitdist, context);
-            djvu_bm_set(bm, up0 + dx, n);
+            up0[dx] = (uint8_t)n;
             dx++;
-            context = jb2_shift_direct_context(bm, context, n, up2, up1, up0, dx);
+            context = jb2_shift_direct_context(context, n, up2, up1, dx);
         }
-        up2 = up1; up1 = up0; up0 = djvu_bm_rowoffset(bm, --dy);
+        up2 = up1; up1 = up0; up0 = djvu_bm_rowptr(bm, --dy);
     }
 }
 
@@ -276,7 +277,8 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
     int ymax = c->libinfo[libno * 4 + 3];
     int xd2c = ((1 + (dw >> 1)) - dw) - ((((1 + xmax) - xmin) >> 1) - xmax);
     int yd2c = ((1 + (dh >> 1)) - dh) - ((((1 + ymax) - ymin) >> 1) - ymax);
-    int dy, cy, up1, up0, xup1, xup0, xdn1;
+    int dy, cy;
+    uint8_t *up1, *up0, *xup1, *xup0, *xdn1;
 
     djvu_bm_set_min_border(c->ctx, bm, 2);
     djvu_bm_set_min_border(c->ctx, cbm, 2 - xd2c);
@@ -284,25 +286,24 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
 
     dy = dh - 1;
     cy = dy + yd2c;
-    up1 = djvu_bm_rowoffset(bm, dy + 1);
-    up0 = djvu_bm_rowoffset(bm, dy);
-    xup1 = djvu_bm_rowoffset(cbm, cy + 1) + xd2c;
-    xup0 = djvu_bm_rowoffset(cbm, cy) + xd2c;
-    xdn1 = djvu_bm_rowoffset(cbm, cy - 1) + xd2c;
+    up1 = djvu_bm_rowptr(bm, dy + 1);
+    up0 = djvu_bm_rowptr(bm, dy);
+    xup1 = djvu_bm_rowptr(cbm, cy + 1) + xd2c;
+    xup0 = djvu_bm_rowptr(cbm, cy) + xd2c;
+    xdn1 = djvu_bm_rowptr(cbm, cy - 1) + xd2c;
 
     while (dy >= 0) {
-        int context = jb2_get_cross_context(bm, cbm, up1, up0, xup1, xup0, xdn1, 0);
+        int context = jb2_get_cross_context(up1, up0, xup1, xup0, xdn1, 0);
         int dx = 0;
         while (dx < dw) {
             int n = code_bit_arr(c, c->cbitdist, context);
-            djvu_bm_set(bm, up0 + dx, n);
+            up0[dx] = (uint8_t)n;
             dx++;
-            context = jb2_shift_cross_context(bm, cbm, context, n, up1, up0,
-                                          xup1, xup0, xdn1, dx);
+            context = jb2_shift_cross_context(context, n, up1, xup1, xup0, xdn1, dx);
         }
-        up1 = up0; up0 = djvu_bm_rowoffset(bm, --dy);
+        up1 = up0; up0 = djvu_bm_rowptr(bm, --dy);
         xup1 = xup0; xup0 = xdn1;
-        xdn1 = djvu_bm_rowoffset(cbm, (--cy) - 1) + xd2c;
+        xdn1 = djvu_bm_rowptr(cbm, (--cy) - 1) + xd2c;
     }
 }
 

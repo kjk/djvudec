@@ -2,11 +2,25 @@
 #include "djvu_internal.h"
 #include <string.h>
 
+static int djvu_bm_alloc_guard(djvu_ctx *ctx, djvu_bitmap *bm)
+{
+    size_t gs = (size_t)bm->bytes_per_row + (size_t)bm->border;
+    djvu_free(ctx, bm->guard);
+    bm->guard = NULL;
+    if (gs == 0) return 0;
+    bm->guard = (uint8_t *)djvu_alloc(ctx, gs);
+    if (!bm->guard) return -1;
+    memset(bm->guard, 0, gs);
+    return 0;
+}
+
 int djvu_bm_init(djvu_ctx *ctx, djvu_bitmap *bm, int height, int width, int border)
 {
     long max;
     djvu_free(ctx, bm->data);
+    djvu_free(ctx, bm->guard);
     bm->data = NULL;
+    bm->guard = NULL;
     bm->width = width;
     bm->height = height;
     bm->border = border;
@@ -18,12 +32,17 @@ int djvu_bm_init(djvu_ctx *ctx, djvu_bitmap *bm, int height, int width, int bord
         if (!bm->data) return -1;
         memset(bm->data, 0, (size_t)max);
     }
-    return 0;
+    return djvu_bm_alloc_guard(ctx, bm);
 }
 
 void djvu_bm_free(djvu_ctx *ctx, djvu_bitmap *bm)
 {
-    if (bm) { djvu_free(ctx, bm->data); bm->data = NULL; }
+    if (bm) {
+        djvu_free(ctx, bm->data);
+        djvu_free(ctx, bm->guard);
+        bm->data = NULL;
+        bm->guard = NULL;
+    }
 }
 
 int djvu_bm_set_min_border(djvu_ctx *ctx, djvu_bitmap *bm, int value)
@@ -49,7 +68,7 @@ int djvu_bm_set_min_border(djvu_ctx *ctx, djvu_bitmap *bm, int value)
     bm->border = value;
     bm->bytes_per_row = new_bpr;
     bm->max_offset = (int)new_max;
-    return 0;
+    return djvu_bm_alloc_guard(ctx, bm);
 }
 
 /* InsertMap(doBlit=true): dst[off] = min(dst[off]+src[off], maxval), bottom-up. */

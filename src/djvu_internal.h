@@ -349,6 +349,7 @@ typedef struct {
     int bytes_per_row;   /* width + border */
     int max_offset;      /* height*bytes_per_row + border = length of data */
     uint8_t *data;
+    uint8_t *guard;      /* zero row for row<0/row>=height (GBitmap zerobuffer) */
 } djvu_bitmap;
 
 /* (re)initialize bm to height x width with the given context border (zeroed). */
@@ -358,49 +359,47 @@ void djvu_bm_free(djvu_ctx *ctx, djvu_bitmap *bm);
 static inline int djvu_bm_rowoffset(const djvu_bitmap *bm, int row) {
     return row * bm->bytes_per_row + bm->border;
 }
-static inline int djvu_bm_get(const djvu_bitmap *bm, int offset) {
-    return (offset < bm->border || offset >= bm->max_offset) ? 0 : bm->data[offset];
-}
-static inline void djvu_bm_set(djvu_bitmap *bm, int offset, int v) {
-    bm->data[offset] = (uint8_t)v;
+
+/* Row pointer at column 0; OOR rows map to bm->guard (zeroed, DjVuLibre zerobuffer). */
+static inline uint8_t *djvu_bm_rowptr(const djvu_bitmap *bm, int row)
+{
+    if (row < 0 || row >= bm->height)
+        return bm->guard + bm->border;
+    return bm->data + (size_t)row * (size_t)bm->bytes_per_row + (size_t)bm->border;
 }
 
-/* JB2 bitmap-coding context (inline into direct/cross pixel loops). */
-static inline int jb2_get_direct_context(djvu_bitmap *bm, int up2, int up1, int up0, int col)
+/* JB2 bitmap-coding context (unchecked column reads; border/guard rows are zero). */
+static inline int jb2_get_direct_context(const uint8_t *up2, const uint8_t *up1,
+                                           const uint8_t *up0, int col)
 {
-    return (djvu_bm_get(bm, up2 + col - 1) << 9) | (djvu_bm_get(bm, up2 + col) << 8) |
-           (djvu_bm_get(bm, up2 + col + 1) << 7) | (djvu_bm_get(bm, up1 + col - 2) << 6) |
-           (djvu_bm_get(bm, up1 + col - 1) << 5) | (djvu_bm_get(bm, up1 + col) << 4) |
-           (djvu_bm_get(bm, up1 + col + 1) << 3) | (djvu_bm_get(bm, up1 + col + 2) << 2) |
-           (djvu_bm_get(bm, up0 + col - 2) << 1) | (djvu_bm_get(bm, up0 + col - 1));
+    return (up2[col - 1] << 9) | (up2[col] << 8) | (up2[col + 1] << 7) |
+           (up1[col - 2] << 6) | (up1[col - 1] << 5) | (up1[col] << 4) |
+           (up1[col + 1] << 3) | (up1[col + 2] << 2) |
+           (up0[col - 2] << 1) | (up0[col - 1]);
 }
 
-static inline int jb2_shift_direct_context(djvu_bitmap *bm, int ctx, int next,
-                                           int up2, int up1, int up0, int col)
+static inline int jb2_shift_direct_context(int ctx, int next, const uint8_t *up2,
+                                           const uint8_t *up1, int col)
 {
-    (void)up0;
-    return ((ctx << 1) & 0x37a) | (djvu_bm_get(bm, up1 + col + 2) << 2) |
-           (djvu_bm_get(bm, up2 + col + 1) << 7) | next;
+    return ((ctx << 1) & 0x37a) | (up1[col + 2] << 2) | (up2[col + 1] << 7) | next;
 }
 
-static inline int jb2_get_cross_context(djvu_bitmap *bm, djvu_bitmap *cbm, int up1, int up0,
-                                        int xup1, int xup0, int xdn1, int col)
+static inline int jb2_get_cross_context(const uint8_t *up1, const uint8_t *up0,
+                                        const uint8_t *xup1, const uint8_t *xup0,
+                                        const uint8_t *xdn1, int col)
 {
-    return (djvu_bm_get(bm, up1 + col - 1) << 10) | (djvu_bm_get(bm, up1 + col) << 9) |
-           (djvu_bm_get(bm, up1 + col + 1) << 8) | (djvu_bm_get(bm, up0 + col - 1) << 7) |
-           (djvu_bm_get(cbm, xup1 + col) << 6) | (djvu_bm_get(cbm, xup0 + col - 1) << 5) |
-           (djvu_bm_get(cbm, xup0 + col) << 4) | (djvu_bm_get(cbm, xup0 + col + 1) << 3) |
-           (djvu_bm_get(cbm, xdn1 + col - 1) << 2) | (djvu_bm_get(cbm, xdn1 + col) << 1) |
-           (djvu_bm_get(cbm, xdn1 + col + 1));
+    return (up1[col - 1] << 10) | (up1[col] << 9) | (up1[col + 1] << 8) |
+           (up0[col - 1] << 7) | (xup1[col] << 6) | (xup0[col - 1] << 5) |
+           (xup0[col] << 4) | (xup0[col + 1] << 3) |
+           (xdn1[col - 1] << 2) | (xdn1[col] << 1) | (xdn1[col + 1]);
 }
 
-static inline int jb2_shift_cross_context(djvu_bitmap *bm, djvu_bitmap *cbm, int ctx, int n,
-                                          int up1, int up0, int xup1, int xup0, int xdn1, int col)
+static inline int jb2_shift_cross_context(int ctx, int n, const uint8_t *up1,
+                                          const uint8_t *xup1, const uint8_t *xup0,
+                                          const uint8_t *xdn1, int col)
 {
-    (void)up0;
-    return ((ctx << 1) & 0x636) | (djvu_bm_get(bm, up1 + col + 1) << 8) |
-           (djvu_bm_get(cbm, xup1 + col) << 6) | (djvu_bm_get(cbm, xup0 + col + 1) << 3) |
-           (djvu_bm_get(cbm, xdn1 + col + 1)) | (n << 7);
+    return ((ctx << 1) & 0x636) | (up1[col + 1] << 8) | (xup1[col] << 6) |
+           (xup0[col + 1] << 3) | (xdn1[col + 1]) | (n << 7);
 }
 
 /* grow the border to at least `value`, preserving pixels. */
