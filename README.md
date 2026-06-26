@@ -22,7 +22,7 @@ char *txt = djvu_page_text(doc, 0);
 
 ## Build & test
 Requires `clang`, `bun`, and `git`. `cmd/get-deps.ts` clones the DjvuNet and
-DjVuLibre repos as siblings of this project and assembles the test corpus into
+DjVuLibre repos into `deps/` and assembles the test corpus into
 `testfiles/djvu/`; `build.ts` and `tests.ts` call it automatically.
 ```
 bun cmd/get-deps.ts     # clone deps + assemble testfiles/djvu (auto-run below)
@@ -43,4 +43,4 @@ This is automatic, ai assited port of of [DjvuNet](https://github.com/DjvuNet/Dj
 DjVu decoder, done with Grok Build.
 
 Correctness is verified against [DjVuLibre](https://github.com/DjvuNet/DjVuLibre)
-(`ddjvu`, `djvutxt`) on the sample files in `DjvuNet/Specs`, and my own collection large collection of djvu files collected for testing [SumatraPDF](https://www.sumatrapdfreader.org/).
+(`ddjvu`, `djvutxt`) on the sample files in `deps/DjvuNet/Specs`, and my own collection large collection of djvu files collected for testing [SumatraPDF](https://www.sumatrapdfreader.org/).

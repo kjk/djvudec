@@ -2,16 +2,18 @@
 //
 //   bun cmd/get-deps.ts
 //
-// Clones the two upstream repos alongside this project (skipped if already
-// present), then copies every .djvu sample out of them into testfiles/djvu/.
-// Exported as getDeps() so build.ts and tests.ts can ensure deps are in place
-// before they build / verify. testfiles/ is gitignored.
+// Clones the two upstream repos into deps/ (skipped if already present), then
+// copies every .djvu sample out of them into testfiles/djvu/. Exported as
+// getDeps() so build.ts and tests.ts can ensure deps are in place before they
+// build / verify. deps/ and testfiles/ are gitignored.
 import { $ } from "bun";
 import { existsSync, mkdirSync, readdirSync, copyFileSync } from "fs";
 import { join } from "path";
 
 const ROOT = `${import.meta.dir}/..`; // the djvudec project root
-const PARENT = join(ROOT, ".."); // siblings (DjvuNet, DjVuLibre) live here
+export const DEPS_DIR = join(ROOT, "deps");
+export const DJVULIBRE_DIR = join(DEPS_DIR, "DjVuLibre");
+export const DJVUNET_DIR = join(DEPS_DIR, "DjvuNet");
 const DEST = join(ROOT, "testfiles", "djvu");
 
 const REPOS = [
@@ -19,7 +21,7 @@ const REPOS = [
   { url: "https://github.com/DjvuNet/DjVuLibre", dir: "DjVuLibre" },
 ];
 
-// Directories (relative to PARENT) to harvest .djvu samples from.
+// Directories (relative to deps/) to harvest .djvu samples from.
 const SAMPLE_DIRS = [
   "DjVuLibre/doc",
   "DjvuNet/Specs",
@@ -29,8 +31,9 @@ const SAMPLE_DIRS = [
 // Ensure the reference checkouts exist and the test corpus is assembled in
 // testfiles/djvu. Returns the corpus directory path.
 export async function getDeps(): Promise<string> {
+  mkdirSync(DEPS_DIR, { recursive: true });
   for (const { url, dir } of REPOS) {
-    const path = join(PARENT, dir);
+    const path = join(DEPS_DIR, dir);
     if (existsSync(path)) {
       console.log(`deps: ${dir} already present`);
       continue;
@@ -42,7 +45,7 @@ export async function getDeps(): Promise<string> {
   mkdirSync(DEST, { recursive: true });
   let copied = 0;
   for (const rel of SAMPLE_DIRS) {
-    const dir = join(PARENT, rel);
+    const dir = join(DEPS_DIR, rel);
     if (!existsSync(dir)) {
       console.log(`deps: sample dir missing, skipping: ${rel}`);
       continue;

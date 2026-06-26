@@ -24,14 +24,14 @@ that a caller can serialize themselves. The C# port (DjvuNet) has no XML code
 either. Don't re-investigate this.
 
 ## Reference checkouts (local)
-- C# source being ported:  `C:\Users\kjk\src\DjvuNet\DjvuNet`  (DjvuNet repo)
-- Verification oracle:      `C:\Users\kjk\src\DjVuLibre`        (DjVuLibre repo)
-- `bun cmd/get-deps.ts` clones both repos as siblings of this project (skipped
-  if present) and assembles the test corpus into `testfiles/djvu/*.djvu` by
-  copying every `.djvu` from `DjVuLibre/doc`, `DjvuNet/Specs`, and
-  `DjvuNet/DjvuNetTest/TestFiles`. Exported as `getDeps()`; `build.ts` and
-  `tests.ts` both call it, so a fresh checkout self-provisions. `testfiles/`
-  is gitignored.
+- C# source being ported:  `deps/DjvuNet/DjvuNet`  (DjvuNet repo)
+- Verification oracle:      `deps/DjVuLibre`        (DjVuLibre repo)
+- `bun cmd/get-deps.ts` clones both repos into `deps/` (skipped if present)
+  and assembles the test corpus into `testfiles/djvu/*.djvu` by copying every
+  `.djvu` from `deps/DjVuLibre/doc`, `deps/DjvuNet/Specs`, and
+  `deps/DjvuNet/DjvuNetTest/TestFiles`. Exported as `getDeps()`; `build.ts`
+  and `tests.ts` both call it, so a fresh checkout self-provisions. `deps/`
+  and `testfiles/` are gitignored.
 - Spec: https://www.sndjvu.org/spec.html
   (the **code** — DjvuNet and especially DjVuLibre — is the more definitive
   reference; the spec text is incomplete.)
@@ -166,7 +166,7 @@ harness (`test/djvu_test.c`) also includes it for `djvu_debug_*` and BZZ hooks.
 djvu_iw44.h / djvu_jb2.h / djvu_zp.h.)
 
 ## C → C# source map
-Paths relative to `C:\Users\kjk\src\DjvuNet\DjvuNet\`.
+Paths relative to `deps/DjvuNet/DjvuNet/`.
 
 | C file (`src/`) | C# source(s) (`DjvuNet/`) |
 |---|---|

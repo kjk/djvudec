@@ -8,8 +8,8 @@ Goal: a plain-C library that decodes DjVu files enough to:
 We are given the whole file up-front (no incremental fetch). Decode only — no encoders.
 
 ## References (checked out locally)
-- C# source being ported:   `../../DjvuNet/DjvuNet`            (DjvuNet repo)
-- Verification oracle:      `../../DjVuLibre`                  (DjVuLibre repo)
+- C# source being ported:   `deps/DjvuNet/DjvuNet`            (DjvuNet repo)
+- Verification oracle:      `deps/DjVuLibre`                  (DjVuLibre repo)
 - Test files (11 .djvu):    `testfiles/djvunet/*.djvu` (copied from DjvuNet/Specs; gitignored)
 - Spec: https://www.sndjvu.org/spec.html  (code is the more definitive reference)
 
@@ -106,7 +106,7 @@ whose INFO gamma != 2.2.
 - DJVU_JB2_DEBUG=1 env prints a per-stream record-type histogram.
 
 ## Build / test
-`bun cmd/get-deps.ts` — clones DjvuNet + DjVuLibre siblings, assembles testfiles/djvu.
+`bun cmd/get-deps.ts` — clones DjvuNet + DjVuLibre into deps/, assembles testfiles/djvu.
 `bun cmd/build.ts` — builds ref tools (once), the C library + test harness with clang.
 `bun cmd/tests.ts` — the test driver: ensures deps, builds, then verifies over
 every .djvu under testfiles/ (recursively).

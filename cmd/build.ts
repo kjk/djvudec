@@ -12,12 +12,12 @@
 import { $ } from "bun";
 import { existsSync, mkdirSync, rmSync, statSync } from "fs";
 import { DIST_C, DIST_H, ensureDist } from "./build-dist";
-import { getDeps } from "./get-deps";
+import { DJVULIBRE_DIR, getDeps } from "./get-deps";
 
 // Forward slashes: Bun's shell treats backslashes as escapes, which breaks the
 // *.cpp / *.o globs below (import.meta.dir is backslashed on Windows).
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
-const DJVULIBRE = `${ROOT}/../DjVuLibre`; // sibling checkout (see get-deps.ts)
+const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/"); // deps/ checkout (see get-deps.ts)
 const OUT_ROOT = `${ROOT}/out`;
 const REF = `${ROOT}/ref_build`;
 const LIBDJVU = `${REF}/libdjvu.lib`; // cached static lib (for djvu_test -bench)

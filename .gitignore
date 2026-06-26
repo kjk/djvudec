@@ -7,6 +7,8 @@ verify_diffs/
 *.pdb
 # reference tools are rebuilt from DjVuLibre by build.ts
 ref_build/
+# upstream reference checkouts (cloned by cmd/get-deps.ts)
+deps/
 # local test corpora (copied in, not part of the repo)
 testfiles/
 # verifier failure list (written by cmd/tests.ts)
