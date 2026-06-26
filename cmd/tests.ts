@@ -8,8 +8,9 @@
 // Pages that are pure JB2 masks (Sjbz, no BG44/FG44 background) must match
 // `ddjvu -format=pgm` byte-for-byte. Pages with an IW44 background or color are
 // compared as ppm. Text is compared against djvutxt (trailing separators
-// ignored). Renders use piped stdout (no temp PNMs); up to 8 pages per file run
-// in parallel. Text uses one `djvu_test -verify-text` per file (doc opened once)
+// ignored). Renders use one `djvu_test -verify-render` per file (in-memory bitmap
+// compare vs ddjvuapi; PNMs written to verify_diffs/ only on mismatch). Text uses
+// one `djvu_test -verify-text` per file (doc opened once)
 // with length-prefixed per-page djvutxt on stdin. Runs over every .djvu under testfiles/
 // recursively; set the DJVU_SPECS env var to point the scan at a different
 // directory. Files are tested in parallel across one worker per CPU; `-cpu N`
@@ -19,7 +20,7 @@
 // each failure is appended as soon as it is found.
 // `-failures path` tests only paths listed in that file (one per line, # comments).
 // `-clean` deletes out/ before building, forcing a full harness rebuild.
-import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
@@ -27,6 +28,7 @@ import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
 const RB = join(ROOT, "ref_build");
+const VERIFY_DIFFS = join(ROOT, "verify_diffs");
 let TEST = join(ROOT, "out", "msvc", "djvu_test_msvc.exe"); // set by build() in main()
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
@@ -53,24 +55,6 @@ function pageOffsets(data: Buffer): number[] {
     q += 8 + csz + (csz & 1);
   }
   return [];
-}
-
-// 'mask' (pure Sjbz), 'bg' (has an IW44/JPEG background), or 'other'.
-function pageKind(data: Buffer, off: number): "mask" | "bg" | "other" {
-  const end = off + 8 + data.readUInt32BE(off + 4);
-  let p = off + 12;
-  let bg = false,
-    sj = false;
-  while (p + 8 <= end) {
-    const cid = tag(data, p);
-    const csz = data.readUInt32BE(p + 4);
-    if (cid === "BG44" || cid === "FG44" || cid === "BGjp" || cid === "FGjp") bg = true;
-    if (cid === "Sjbz") sj = true;
-    p += 8 + csz + (csz & 1);
-  }
-  if (bg) return "bg";
-  if (sj) return "mask";
-  return "other";
 }
 
 // Whether any page FORM carries annotation (ANTa/ANTz) or text (TXTa/TXTz)
@@ -145,6 +129,50 @@ function parseVerifyText(name: string, out: Buffer): Pick<VerifyResult, "fText" 
   return { fText, tm, tmm, te, tbad };
 }
 
+function safeDirName(name: string): string {
+  return name.replace(/[<>:"/\\|?*]/g, "_");
+}
+
+// Parse `djvu_test -verify-render` tab-separated output.
+function parseVerifyRender(
+  name: string,
+  out: Buffer,
+): Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad"> {
+  const fRender: number[] = [];
+  const bad: string[] = [];
+  let m = 0,
+    mm = 0,
+    skip = 0;
+
+  for (const line of out.toString("latin1").split(/\r?\n/)) {
+    if (!line) continue;
+    const parts = line.split("\t");
+    const kind = parts[0];
+    const page = parseInt(parts[1], 10);
+    const status = parts[2];
+    if (kind === "render") {
+      if (status === "ok") m++;
+      else if (status === "skip") skip++;
+      else {
+        mm++;
+        fRender.push(page);
+        const refPath = parts[3] ?? "";
+        const minePath = parts[4] ?? "";
+        bad.push(
+          refPath && minePath
+            ? `${name} p${page} ref=${refPath} mine=${minePath}`
+            : `${name} p${page} (${status})`,
+        );
+      }
+    } else if (kind === "summary") {
+      m = parseInt(parts[4], 10) || m;
+      mm = parseInt(parts[5], 10) || mm;
+      skip = parseInt(parts[6], 10) || skip;
+    }
+  }
+  return { fRender, m, mm, skip, bad };
+}
+
 // Per-page djvutxt packed for -verify-text: u32-BE len + bytes per page.
 async function fetchRefText(f: string, nPages: number): Promise<Buffer> {
   const packed: Buffer[] = [];
@@ -165,53 +193,24 @@ async function fetchRefText(f: string, nPages: number): Promise<Buffer> {
   return Buffer.concat(packed);
 }
 
-const RENDER_BATCH = 8;
-
-// Piped ddjvu vs djvu_test -out - (no disk); pages batched in parallel.
+// In-memory render verify via djvu_test -verify-render (ddjvuapi oracle inside).
 async function verifyRender(
   f: string,
-  data: Buffer,
-  offs: number[],
   name: string,
 ): Promise<Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad">> {
-  const fRender: number[] = [];
-  const bad: string[] = [];
-  let m = 0,
-    mm = 0,
-    skip = 0;
-
-  for (let i = 0; i < offs.length; i += RENDER_BATCH) {
-    const slice = offs.slice(i, i + RENDER_BATCH);
-    const part = await Promise.all(
-      slice.map(async (off, j) => {
-        const page = i + j + 1;
-        const kind = pageKind(data, off);
-        if (kind === "other") return { skip: 1 as const };
-        const fmt = kind === "mask" ? "pgm" : "ppm";
-        const [ref, mine] = await Promise.all([
-          run([join(RB, "ddjvu.exe"), `-format=${fmt}`, `-page=${page}`, f, `-`]),
-          run([TEST, "-page", String(page), "-out", "-", f]),
-        ]);
-        if (ref.length && ref.equals(mine)) return { match: 1 as const };
-        return {
-          mismatch: 1 as const,
-          page,
-          rlen: ref.length,
-          mlen: mine.length,
-        };
-      }),
-    );
-    for (const r of part) {
-      if ("skip" in r) skip++;
-      else if ("match" in r) m++;
-      else {
-        mm++;
-        fRender.push(r.page);
-        bad.push(`${name} p${r.page} (ref=${r.rlen} mine=${r.mlen})`);
-      }
-    }
+  const diffDir = join(VERIFY_DIFFS, safeDirName(name));
+  mkdirSync(diffDir, { recursive: true });
+  const proc = Bun.spawn({
+    cmd: [TEST, "-verify-render", "-diffdir", diffDir, f],
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
+  const code = await proc.exited;
+  if (code !== 0 && code !== 1) {
+    throw new Error(`${name}: djvu_test -verify-render exited ${code}`);
   }
-  return { fRender, m, mm, skip, bad };
+  return parseVerifyRender(name, out);
 }
 
 async function verifyText(f: string, nPages: number, hasText: boolean, name: string) {
@@ -241,7 +240,7 @@ async function verifyFile(
 ): Promise<VerifyResult> {
   const name = basename(f);
   const [render, text] = await Promise.all([
-    verifyRender(f, data, offs, name),
+    verifyRender(f, name),
     verifyText(f, offs.length, hasText, name),
   ]);
   return { ...render, ...text };

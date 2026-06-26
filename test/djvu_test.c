@@ -11,15 +11,27 @@
 #include <stdlib.h>
 #include <string.h>
 #if defined(_WIN32)
+#include <direct.h>
 #include <fcntl.h>
 #include <io.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 /* timing / oracle helpers from bench_ddjvu.cpp (DjVuLibre, same clock) */
+typedef struct bench_render {
+    int width, height;
+    int bps;
+    int rowsize;
+    uint8_t *data;
+} bench_render;
+
 double bench_now_ms(void);
 double bench_ddjvu_page_ms(const char *path, int page0);
+int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
+                            bench_render *out);
+void bench_render_free(bench_render *img);
 void bench_ddjvu_reset(void);
 
 static void on_error(void *user, djvu_severity sev, const char *msg)
@@ -148,6 +160,113 @@ static char **read_ref_text_pages(const char *blob, size_t len, int npages)
     return pages;
 }
 
+typedef enum { PK_OTHER, PK_MASK, PK_BG } page_kind_t;
+
+static page_kind_t page_kind(djvu_doc *doc, int page0)
+{
+    uint32_t form_off = doc->pages[page0].form_off;
+    uint32_t sz;
+    int has_sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
+    int has_bg = djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL ||
+                 djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL) != NULL ||
+                 djvu_form_find_chunk(doc, form_off, "BGjp", &sz, NULL) != NULL ||
+                 djvu_form_find_chunk(doc, form_off, "FGjp", &sz, NULL) != NULL;
+    if (has_bg) return PK_BG;
+    if (has_sjbz) return PK_MASK;
+    return PK_OTHER;
+}
+
+static int image_equal(djvu_image *mine, const bench_render *ref)
+{
+    int y;
+    if (!mine || !ref || !ref->data) return 0;
+    if (mine->width != ref->width || mine->height != ref->height) return 0;
+    if ((int)mine->format != ref->bps) return 0;
+    for (y = 0; y < mine->height; y++) {
+        size_t row = (size_t)mine->width * (size_t)mine->format;
+        if (memcmp(mine->data + (size_t)y * (size_t)mine->stride,
+                   ref->data + (size_t)y * (size_t)ref->rowsize, row) != 0)
+            return 0;
+    }
+    return 1;
+}
+
+static void ensure_dir(const char *dir)
+{
+    if (!dir || !dir[0]) return;
+#if defined(_WIN32)
+    (void)_mkdir(dir);
+#else
+    (void)mkdir(dir, 0755);
+#endif
+}
+
+/* In-memory render verify vs ddjvuapi; write PNMs to diffdir only on mismatch. */
+static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdir)
+{
+    djvu_ctx *ctx = doc->ctx;
+    int npages = djvu_doc_page_count(doc);
+    int m = 0, mm = 0, skip = 0;
+    int i;
+
+    ensure_dir(diffdir);
+    for (i = 0; i < npages; i++) {
+        page_kind_t kind = page_kind(doc, i);
+        if (kind == PK_OTHER) {
+            skip++;
+            printf("render\t%d\tskip\n", i + 1);
+            continue;
+        }
+        {
+            int want_rgb = (kind == PK_BG);
+            const char *ext = want_rgb ? "ppm" : "pgm";
+            djvu_image *mine = djvu_page_render(doc, i, 1);
+            bench_render ref;
+            char refpath[1024], minepath[1024];
+
+            memset(&ref, 0, sizeof(ref));
+            refpath[0] = minepath[0] = 0;
+            if (!mine || bench_ddjvu_render_page(path, i, want_rgb, &ref) != 0) {
+                if (mine) djvu_image_destroy(ctx, mine);
+                bench_render_free(&ref);
+                mm++;
+                printf("render\t%d\terror\n", i + 1);
+                continue;
+            }
+            if (image_equal(mine, &ref)) {
+                m++;
+                printf("render\t%d\tok\n", i + 1);
+            } else {
+                mm++;
+                if (diffdir && diffdir[0]) {
+                    snprintf(refpath, sizeof(refpath), "%s/p%d_ref.%s",
+                             diffdir, i + 1, ext);
+                    snprintf(minepath, sizeof(minepath), "%s/p%d_mine.%s",
+                             diffdir, i + 1, ext);
+                    {
+                        djvu_image refimg;
+                        refimg.width = ref.width;
+                        refimg.height = ref.height;
+                        refimg.format = ref.bps == 3 ? DJVU_FORMAT_RGB24 : DJVU_FORMAT_GRAY8;
+                        refimg.stride = ref.rowsize;
+                        refimg.data = ref.data;
+                        write_pnm(refpath, &refimg);
+                    }
+                    write_pnm(minepath, mine);
+                    printf("render\t%d\tmismatch\t%s\t%s\n",
+                           i + 1, refpath, minepath);
+                } else {
+                    printf("render\t%d\tmismatch\n", i + 1);
+                }
+            }
+            bench_render_free(&ref);
+            djvu_image_destroy(ctx, mine);
+        }
+    }
+    printf("summary\t0\t0\t0\t%d\t%d\t%d\n", m, mm, skip);
+    return mm ? 1 : 0;
+}
+
 /* Text-only verify: one doc open; ref text on stdin (djvutxt multi-page blob). */
 static int run_verify_text(djvu_doc *doc, const char *ref_blob, size_t ref_len)
 {
@@ -219,7 +338,8 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
-    int do_verify_text = 0;
+    int do_verify_text = 0, do_verify_render = 0;
+    const char *diffdir = NULL;
     int i, rc = 0;
     uint8_t *data; size_t len;
     djvu_ctx *ctx; djvu_doc *doc;
@@ -243,6 +363,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
+        else if (!strcmp(argv[i], "-verify-render")) do_verify_render = 1;
+        else if (!strcmp(argv[i], "-diffdir") && i + 1 < argc) diffdir = argv[++i];
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
@@ -273,6 +395,14 @@ int main(int argc, char **argv)
     }
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) { fprintf(stderr, "cannot open document\n"); free(data); djvu_ctx_free(ctx); return 1; }
+
+    if (do_verify_render) {
+        rc = run_verify_render(doc, in, diffdir);
+        djvu_doc_close(doc);
+        djvu_ctx_free(ctx);
+        free(data);
+        return rc;
+    }
 
     if (do_verify_text) {
         char *ref_blob = NULL;

@@ -1,5 +1,7 @@
 # build outputs (harness objects + exes)
 out/
+# render mismatch dumps (verify_diffs/ from -verify-render)
+verify_diffs/
 *.lib
 *.exp
 *.pdb
