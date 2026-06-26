@@ -256,6 +256,14 @@ Notes:
   nearest-upsample) stenciled through the JB2 mask. At subsample=1 the mask is a
   hard binary stencil. Color composites only at subsample==1 currently;
   subsample>1 on a color page falls back to the gray mask (TODO: scale).
+- **Bitonal subsample>1** (`render_bitonal` in render.c): visits only ink pixels
+  (`djvu_bm_visit_ink`) and accumulates coverage per output cell, then maps
+  coverage→gray via a LUT. O(ink), not O(full-res): the old path built and
+  box-filtered a full-res 1-byte/pixel bitmap, ~5x slower than the subsample==1
+  stamp, which made high-dpi subsampled rendering pathologically slow. Coverage
+  matches ddjvu's reduced-size render (mean gray within ~0.02/255). The engine's
+  subsample pick uses ceil(dim/(s+1))≥target (not floor dim/target) so a 600-dpi
+  page at 100% zoom renders at subsample=2 (libdjvu's resolution), not full res.
 - **Gamma**: corr = target_gamma(2.2) / document_gamma (INFO gamma). LUT
   out=255·(in/255)^(1/corr), endpoints forced 0/255. Applied to color
   composites only (bitonal unaffected). Matches ddjvu.
@@ -279,10 +287,14 @@ Notes:
 ## Per-layer reference tools (distinguish my-bug vs ddjvu-quirk)
 - `test/iw44ref.cpp` — decode raw IW44 (PM44) via DjVuLibre IW44Image internals.
 - `test/jb2ref.cpp` — decode raw Sjbz, dump blits/mask via DjVuLibre internals.
-- `djvu_test.exe` flags: `-info -page N -out f -text -bzzdec -comps -bench`,
+- `djvu_test.exe` flags: `-info -page N -out f [-sub N] -text -bzzdec -comps
+  -bench -bench-sum -verify-into`,
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
   `-bench` times our render vs DjVuLibre `ddjvu_page_render` per page (see
-  `bun cmd/bench.ts`).
+  `bun cmd/bench.ts`); `-bench-sum` does the same for the SumatraPDF engine
+  render path (see `bun cmd/bench-sum.ts`). `-sub N` renders `-out` at subsample
+  N (for inspecting the subsampled raster). `-verify-into` checks
+  `djvu_page_render_into` is byte-identical to `djvu_page_render`.
 
 ## Methodology
 Reference-oracle verification: every codec layer is checked byte-exact against

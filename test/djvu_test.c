@@ -273,20 +273,23 @@ static int sum_normalize_rotation(int r)
     return r;
 }
 
-/* EngineDjvuDec::DjvuDecPickSubsample: largest subsample still covering target.
+/* EngineDjvuDec::DjvuDecPickSubsample: largest subsample whose decoded bitmap
+   still covers the target pixel size (so StretchBlt only shrinks, never
+   upscales). The coverage test is ceil(dim/(s+1)) >= target; plain floor
+   division (dim/target) is off by one when target doesn't divide dim -- e.g.
+   3597/1799 == 1 even though ceil(3597/2) == 1799 still covers 1799, which left
+   high-dpi pages rendering at full resolution (4x the pixels) at zoom=1.
    Compound (color) pages are forced to full resolution. */
 static int sum_pick_subsample(djvu_page_type t, int upW, int upH, int tdx, int tdy)
 {
-    int sx, sy, s;
+    int s;
     if (t == DJVU_PAGE_COMPOUND)
         return 1;
     if (upW <= 0 || upH <= 0 || tdx <= 0 || tdy <= 0)
         return 1;
-    sx = upW / tdx;
-    sy = upH / tdy;
-    s = sx < sy ? sx : sy;
-    if (s < 1)
-        s = 1;
+    s = 1;
+    while ((upW + s) / (s + 1) >= tdx && (upH + s) / (s + 1) >= tdy)
+        s++; /* ceil(upW/(s+1)) >= tdx && ceil(upH/(s+1)) >= tdy */
     if (s > upW)
         s = upW;
     if (s > upH)
@@ -871,7 +874,7 @@ static void print_outline(const djvu_outline_item *it, int depth)
 int main(int argc, char **argv)
 {
     const char *in = NULL, *out = NULL;
-    int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
+    int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1, out_sub = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
     int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0, do_verify_into = 0;
     const char *diffdir = NULL;
@@ -904,6 +907,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-dump-features")) do_dump_features = 1;
         else if (!strcmp(argv[i], "-diffdir") && i + 1 < argc) diffdir = argv[++i];
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-sub") && i + 1 < argc) out_sub = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
     }
@@ -1133,7 +1137,7 @@ int main(int argc, char **argv)
     }
 
     if (out) {
-        djvu_image *img = djvu_page_render(doc, page - 1, 1);
+        djvu_image *img = djvu_page_render(doc, page - 1, out_sub);
         if (img) {
             if (write_pnm(out, img) != 0) { fprintf(stderr, "cannot write %s\n", out); rc = 1; }
             djvu_image_destroy(ctx, img);

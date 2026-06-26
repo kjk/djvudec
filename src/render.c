@@ -140,6 +140,29 @@ static void bitonal_stamp_ink(void *user, int px, int py)
     c->dst[(size_t)ty * (size_t)c->w + (size_t)px] = 0;
 }
 
+typedef struct {
+    uint8_t *acc;   /* per output-cell ink coverage count (capped at 255) */
+    int sw, sh;     /* output (subsampled) dimensions */
+    int h;          /* full-res height (for bottom-up -> top-down flip) */
+    int sub;        /* subsample factor */
+} bitonal_acc_ctx;
+
+/* Accumulate one ink pixel into its subsampled output cell. */
+static void bitonal_accum_ink(void *user, int px, int py)
+{
+    bitonal_acc_ctx *c = (bitonal_acc_ctx *)user;
+    int ty, cx, cy;
+    size_t cell;
+
+    if (px < 0 || py < 0 || py >= c->h) return;
+    ty = c->h - 1 - py;
+    cx = px / c->sub;
+    cy = ty / c->sub;
+    if (cx >= c->sw || cy >= c->sh) return;
+    cell = (size_t)cy * c->sw + cx;
+    if (c->acc[cell] < 255) c->acc[cell]++;
+}
+
 /* Rasterize a decoded JB2 mask to top-down gray8 (ink=0, paper=255). */
 static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
 {
@@ -170,43 +193,35 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
         return out;
     }
 
-    /* subsample > 1: accumulate full-res mask, then box-filter down */
+    /* subsample > 1: visit only ink pixels (paper is skipped) and accumulate
+       coverage per output cell, then map coverage -> gray via a LUT. O(ink)
+       instead of O(full-res): the old path built and box-filtered a full-res
+       bitmap, which was ~5x slower than the subsample==1 stamp. */
     {
-        djvu_bitmap page;
-        int y, x;
+        uint8_t *acc;
+        bitonal_acc_ctx c;
+        unsigned char lut[256];
+        int sub2 = subsample * subsample;
+        size_t n = (size_t)sw * sh, k;
 
-        memset(&page, 0, sizeof(page));
-        if (djvu_bm_init(ctx, &page, img->height, img->width, 0) != 0) {
-            djvu_free(ctx, out->data);
-            djvu_free(ctx, out);
-            return NULL;
+        if (sub2 > 255) sub2 = 255; /* cap so a full cell maps to pure black */
+        acc = (uint8_t *)djvu_alloc(ctx, n);
+        if (!acc) { djvu_free(ctx, out->data); djvu_free(ctx, out); return NULL; }
+        memset(acc, 0, n);
+        for (k = 0; k < 256; k++) {
+            int cov = (int)k < sub2 ? (int)k : sub2;
+            lut[k] = (unsigned char)(255 - cov * 255 / sub2);
         }
+        c.acc = acc; c.sw = sw; c.sh = sh; c.h = img->height; c.sub = subsample;
         for (i = 0; i < img->nblits; i++) {
             jb2_blit *b = &img->blits[i];
             jb2_shape *s = djvu_jb2_get_shape(img, b->shapeno);
             if (s && djvu_bm_has_pixels(&s->bm))
-                djvu_bm_blit(&page, &s->bm, b->left, b->bottom, 1);
+                djvu_bm_visit_ink(&s->bm, b->left, b->bottom,
+                                  bitonal_accum_ink, &c);
         }
-        for (y = 0; y < sh; y++) {
-            uint8_t *dst = out->data + (size_t)y * sw;
-            for (x = 0; x < sw; x++) {
-                int cnt = 0, tot = 0, yy, xx;
-                for (yy = 0; yy < subsample; yy++) {
-                    int py = y * subsample + yy;
-                    int srow;
-                    if (py >= img->height) break;
-                    srow = djvu_bm_rowoffset(&page, img->height - 1 - py);
-                    for (xx = 0; xx < subsample; xx++) {
-                        int px = x * subsample + xx;
-                        if (px >= img->width) continue;
-                        tot++;
-                        if (page.data[srow + px]) cnt++;
-                    }
-                }
-                dst[x] = tot ? (uint8_t)(255 - (cnt * 255 / tot)) : 255;
-            }
-        }
-        djvu_bm_free(ctx, &page);
+        for (k = 0; k < n; k++) out->data[k] = lut[acc[k]];
+        djvu_free(ctx, acc);
     }
     return out;
 }
