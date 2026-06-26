@@ -232,12 +232,10 @@ void bench_render_free(bench_render *img)
     }
 }
 
-/* Render page `page0` (0-based) via ddjvuapi (ddjvu -format=pgm|ppm).
- * want_rgb: 0 -> GREY8 (pgm), 1 -> RGB24 (ppm). Returns 0 on success. */
-int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
-                            bench_render *out)
+/* Render one decoded page into *out (ddjvu -format=pgm|ppm). */
+static int bench_ddjvu_render_open_page_out(ddjvu_page_t *page, int want_rgb,
+                                            bench_render *out)
 {
-    ddjvu_page_t *page = 0;
     ddjvu_format_t *fmt = 0;
     ddjvu_rect_t prect, rrect;
     ddjvu_format_style_t style;
@@ -245,17 +243,11 @@ int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
     unsigned char *image = 0;
     int rc = -1;
 
-    if (!out)
+    if (!out || !page)
         return -1;
     out->width = out->height = out->bps = out->rowsize = 0;
     out->data = 0;
 
-    if (api_open_doc(path) != 0)
-        return -1;
-
-    page = ddjvu_page_create_by_pageno(g_api_doc, page0);
-    if (!page)
-        return -1;
     while (!ddjvu_page_decoding_done(page))
         api_handle(1);
     if (ddjvu_page_decoding_error(page))
@@ -263,6 +255,8 @@ int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
 
     iw = ddjvu_page_get_width(page);
     ih = ddjvu_page_get_height(page);
+    if (iw <= 0 || ih <= 0)
+        goto done;
     prect.x = prect.y = 0;
     prect.w = (unsigned int)iw;
     prect.h = (unsigned int)ih;
@@ -295,8 +289,57 @@ done:
     std::free(image);
     if (fmt)
         ddjvu_format_release(fmt);
+    return rc;
+}
+
+/* Render page `page0` (0-based) via ddjvuapi (ddjvu -format=pgm|ppm).
+ * want_rgb: 0 -> GREY8 (pgm), 1 -> RGB24 (ppm). Returns 0 on success.
+ * With DJVU_DDJVU_COLD set, opens and closes the document per page so
+ * multipage verify does not retain the whole DjVuLibre decode in RAM. */
+int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
+                            bench_render *out)
+{
+    ddjvu_document_t *cold_doc = 0;
+    ddjvu_page_t *page = 0;
+    int rc = -1;
+
+    if (!out)
+        return -1;
+    out->width = out->height = out->bps = out->rowsize = 0;
+    out->data = 0;
+
+    if (std::getenv("DJVU_DDJVU_COLD")) {
+        if (!g_api_ctx)
+            g_api_ctx = ddjvu_context_create("djvu_test");
+        if (!g_api_ctx)
+            return -1;
+        cold_doc = ddjvu_document_create_by_filename_utf8(g_api_ctx, path, 1);
+        if (!cold_doc)
+            return -1;
+        while (!ddjvu_document_decoding_done(cold_doc))
+            api_handle(1);
+        if (ddjvu_document_decoding_error(cold_doc))
+            goto done;
+        page = ddjvu_page_create_by_pageno(cold_doc, page0);
+        if (!page)
+            goto done;
+        rc = bench_ddjvu_render_open_page_out(page, want_rgb, out);
+        goto done;
+    }
+
+    if (api_open_doc(path) != 0)
+        return -1;
+
+    page = ddjvu_page_create_by_pageno(g_api_doc, page0);
+    if (!page)
+        return -1;
+    rc = bench_ddjvu_render_open_page_out(page, want_rgb, out);
+
+done:
     if (page)
         ddjvu_page_release(page);
+    if (cold_doc)
+        ddjvu_document_release(cold_doc);
     return rc;
 }
 

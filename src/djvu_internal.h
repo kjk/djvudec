@@ -99,9 +99,11 @@ struct djvu_doc {
     int n_jb2_inline;
 };
 
-/* Cached IW44 layers (read-only during render; freed in djvu_doc_close). */
+/* Cached IW44 layers (read-only during render; freed in djvu_doc_close).
+   With DJVU_LAZY_IW44 set at doc open, layers decode on first use per page. */
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
+void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
 
 /* Cached JB2 dictionaries (read-only during render; freed in djvu_doc_close). */
 jb2_image *djvu_doc_jb2_dict(djvu_doc *doc, const char *incl_id);

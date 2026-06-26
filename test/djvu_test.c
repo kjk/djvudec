@@ -450,11 +450,13 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
                 m++;
                 printf("render\t%d\tok\n", i + 1);
                 djvu_image_destroy(ctx, mine);
+                djvu_doc_drop_page_iw44(doc, i);
                 continue;
             }
             if (!mine || bench_ddjvu_render_page(path, i, want_rgb, &ref) != 0) {
                 if (mine) djvu_image_destroy(ctx, mine);
                 bench_render_free(&ref);
+                djvu_doc_drop_page_iw44(doc, i);
                 mm++;
                 printf("render\t%d\terror\n", i + 1);
                 continue;
@@ -488,9 +490,11 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             }
             bench_render_free(&ref);
             djvu_image_destroy(ctx, mine);
+            djvu_doc_drop_page_iw44(doc, i);
         }
         }
     }
+    bench_ddjvu_reset();
     printf("summary\t0\t0\t0\t%d\t%d\t%d\n", m, mm, skip);
     return mm ? 1 : 0;
 }
@@ -605,6 +609,17 @@ int main(int argc, char **argv)
 
     data = read_file(in, &len);
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
+
+    /* Verify keeps one page of IW44 + one ddjvuapi doc decode at a time. */
+    if (do_verify_render) {
+#if defined(_WIN32)
+        _putenv("DJVU_LAZY_IW44=1");
+        _putenv("DJVU_DDJVU_COLD=1");
+#else
+        setenv("DJVU_LAZY_IW44", "1", 0);
+        setenv("DJVU_DDJVU_COLD", "1", 0);
+#endif
+    }
 
     djvu_init();
     ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);

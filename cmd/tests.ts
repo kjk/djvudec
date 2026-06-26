@@ -9,7 +9,9 @@
 // `ddjvu -format=pgm` byte-for-byte. Pages with an IW44 background or color are
 // compared as ppm. Text is compared against djvutxt (trailing separators
 // ignored). Renders use one `djvu_test -verify-render` per file (in-memory bitmap
-// compare vs ddjvuapi; PNMs written to verify_diffs/ only on mismatch). Text uses
+// compare vs ddjvuapi; PNMs written to verify_diffs/ only on mismatch). Verify
+// decodes IW44 per page (lazy) and opens a fresh ddjvuapi document per page so
+// multipage books do not retain every layer in RAM. Text uses
 // one `djvu_test -verify-text` per file (doc opened once)
 // with length-prefixed per-page djvutxt on stdin. Runs over every .djvu under
 // testfiles/subset by default (`-full` uses testfiles/full); set DJVU_SPECS to
