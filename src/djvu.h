@@ -15,8 +15,11 @@ extern "C" {
 
 /* ----- allocator + diagnostics (jbig2dec style) ----- */
 
-typedef void *(*djvu_alloc_cb)(void *user, size_t size);
-typedef void  (*djvu_free_cb)(void *user, void *ptr);
+/* ctx identifies the djvu_ctx the allocation belongs to, so a caller can
+   account for allocations per context. It is NULL only for the bootstrap
+   allocation/free of the djvu_ctx struct itself (which has no context yet). */
+typedef void *(*djvu_alloc_cb)(void *user, void *ctx, size_t size);
+typedef void  (*djvu_free_cb)(void *user, void *ctx, void *ptr);
 
 typedef enum {
     DJVU_SEVERITY_DEBUG,

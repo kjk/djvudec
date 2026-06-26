@@ -7,11 +7,11 @@
 
 /* ---- allocator + diagnostics ---- */
 
-static void *default_alloc(void *user, size_t size) { (void)user; return malloc(size); }
-static void  default_free(void *user, void *ptr) { (void)user; free(ptr); }
+static void *default_alloc(void *user, void *ctx, size_t size) { (void)user; (void)ctx; return malloc(size); }
+static void  default_free(void *user, void *ctx, void *ptr) { (void)user; (void)ctx; free(ptr); }
 
-void *djvu_alloc(djvu_ctx *ctx, size_t size) { return ctx->alloc(ctx->user, size); }
-void  djvu_free(djvu_ctx *ctx, void *ptr) { if (ptr) ctx->free(ctx->user, ptr); }
+void *djvu_alloc(djvu_ctx *ctx, size_t size) { return ctx->alloc(ctx->user, ctx, size); }
+void  djvu_free(djvu_ctx *ctx, void *ptr) { if (ptr) ctx->free(ctx->user, ctx, ptr); }
 
 void djvu_errorf(djvu_ctx *ctx, djvu_severity sev, const char *fmt, ...)
 {
@@ -29,7 +29,8 @@ djvu_ctx *djvu_ctx_new(djvu_alloc_cb alloc, djvu_free_cb free_cb,
 {
     djvu_ctx *ctx;
     djvu_alloc_cb a = alloc ? alloc : default_alloc;
-    ctx = (djvu_ctx *)a(user, sizeof(djvu_ctx));
+    /* bootstrap: the ctx struct has no context yet, so pass NULL as ctx */
+    ctx = (djvu_ctx *)a(user, NULL, sizeof(djvu_ctx));
     if (!ctx) return NULL;
     ctx->alloc = a;
     ctx->free = free_cb ? free_cb : default_free;
@@ -44,7 +45,8 @@ djvu_ctx *djvu_ctx_new(djvu_alloc_cb alloc, djvu_free_cb free_cb,
 
 void djvu_ctx_free(djvu_ctx *ctx)
 {
-    if (ctx) ctx->free(ctx->user, ctx);
+    /* bootstrap free: match the NULL ctx tag used when the struct was allocated */
+    if (ctx) ctx->free(ctx->user, NULL, ctx);
 }
 
 void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable)

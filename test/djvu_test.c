@@ -46,6 +46,129 @@ void bench_ddjvu_reset(void);
 void bench_ddjvu_purge(void);
 void bench_ddjvu_mem_debug(FILE *out);
 
+/* ---- per-context memory accounting (djvu_alloc_cb / djvu_free_cb hooks) ----
+   Installed by -verify-render so each file's run reports total allocations and
+   peak live memory, confirms every allocation was freed, and aborts (exit 3) if
+   a single djvu_ctx's live memory exceeds 4 GB. Each allocation carries a small
+   header storing its size so frees can be attributed. The djvu_ctx arg lets us
+   keep separate tallies per context. Single-threaded (one thread per process). */
+#define MEM_HDR 16  /* preserves malloc's 16-byte alignment; holds the size */
+#define MEM_LIMIT_BYTES ((size_t)4 * 1024 * 1024 * 1024)
+#define MEM_MAX_CTX 64
+
+typedef struct {
+    void *ctx;
+    size_t total;        /* cumulative bytes ever allocated */
+    size_t live;         /* currently live bytes */
+    size_t peak;         /* peak live bytes */
+    long n_alloc, n_free;
+} mem_rec;
+
+static mem_rec g_mem[MEM_MAX_CTX];
+static int g_mem_n;
+
+static mem_rec *mem_find(void *ctx)
+{
+    int i;
+    for (i = 0; i < g_mem_n; i++)
+        if (g_mem[i].ctx == ctx) return &g_mem[i];
+    if (g_mem_n < MEM_MAX_CTX) {
+        mem_rec *r = &g_mem[g_mem_n++];
+        memset(r, 0, sizeof(*r));
+        r->ctx = ctx;
+        return r;
+    }
+    return NULL; /* table full (won't happen: tests use one ctx per process) */
+}
+
+/* "1.50 GB" / "234.00 MB" / "512.00 KB" / "42 B"; buf must hold >= 32 bytes. */
+static const char *human_bytes(size_t bytes, char *buf)
+{
+    double b = (double)bytes;
+    const char *u = "B";
+    if (b >= 1024.0) { b /= 1024.0; u = "KB"; }
+    if (b >= 1024.0) { b /= 1024.0; u = "MB"; }
+    if (b >= 1024.0) { b /= 1024.0; u = "GB"; }
+    snprintf(buf, 32, u[0] == 'B' ? "%.0f %s" : "%.2f %s", b, u);
+    return buf;
+}
+
+static void *mem_alloc(void *user, void *ctx, size_t size)
+{
+    uint8_t *p;
+    mem_rec *r;
+    (void)user;
+    p = (uint8_t *)malloc(size + MEM_HDR);
+    if (!p) return NULL;
+    *(size_t *)p = size;
+    r = mem_find(ctx);
+    if (r) {
+        r->total += size;
+        r->live += size;
+        if (r->live > r->peak) r->peak = r->live;
+        r->n_alloc++;
+        /* abort the moment a single context's live memory passes 4 GB */
+        if (ctx && r->live > MEM_LIMIT_BYTES) {
+            char a[32], b[32];
+            fprintf(stderr, "mem\tLIMIT\tctx=%p\tlive=%s\tlimit=%s\n", ctx,
+                    human_bytes(r->live, a), human_bytes(MEM_LIMIT_BYTES, b));
+            fflush(stderr);
+            exit(3);
+        }
+    }
+    return p + MEM_HDR;
+}
+
+static void mem_free(void *user, void *ctx, void *ptr)
+{
+    uint8_t *p;
+    size_t size;
+    mem_rec *r;
+    (void)user;
+    if (!ptr) return;
+    p = (uint8_t *)ptr - MEM_HDR;
+    size = *(size_t *)p;
+    r = mem_find(ctx);
+    if (r) { r->live -= size; r->n_free++; }
+    free(p);
+}
+
+/* After a file: human-readable per-context report (stderr) + a machine-readable
+   aggregate line (stdout, parsed by cmd/tests.ts). Returns a nonzero code if any
+   context leaked (live != 0, or alloc/free counts differ), else rc unchanged. */
+static int mem_finish(int rc)
+{
+    size_t total = 0, peak = 0, live = 0;
+    long na = 0, nf = 0;
+    int i, leak = 0;
+    char tb[32], pb[32];
+
+    for (i = 0; i < g_mem_n; i++) {
+        mem_rec *r = &g_mem[i];
+        fprintf(stderr,
+                "mem\tctx=%p\ttotal=%s\tpeak=%s\tallocs=%ld\tfrees=%ld\tlive=%zu\n",
+                r->ctx, human_bytes(r->total, tb), human_bytes(r->peak, pb),
+                r->n_alloc, r->n_free, r->live);
+        total += r->total;
+        if (r->peak > peak) peak = r->peak; /* contexts are sequential -> max */
+        live += r->live;
+        na += r->n_alloc;
+        nf += r->n_free;
+        if (r->live != 0 || r->n_alloc != r->n_free) leak = 1;
+    }
+    /* tab-separated for cmd/tests.ts: memstat <total> <peak> <allocs> <frees>
+       <live> (bytes). Distinct kind so it can't collide with the RSS "mem"
+       checkpoint lines. */
+    printf("memstat\t%zu\t%zu\t%ld\t%ld\t%zu\n", total, peak, na, nf, live);
+    fflush(stdout);
+    if (leak) {
+        fprintf(stderr, "mem\tLEAK\tlive=%zu\tallocs=%ld\tfrees=%ld\n", live, na, nf);
+        fflush(stderr);
+        return rc ? rc : 4;
+    }
+    return rc;
+}
+
 static void on_error(void *user, djvu_severity sev, const char *msg)
 {
     (void)user;
@@ -952,7 +1075,13 @@ int main(int argc, char **argv)
         djvu_test_ddjvu_cold = 1;
 
     djvu_init();
-    ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
+    /* -verify-render installs the accounting allocator (per-file memory report,
+       leak check, 4 GB-per-ctx abort); other modes use the default allocator so
+       e.g. -bench timing isn't perturbed. */
+    if (do_verify_render)
+        ctx = djvu_ctx_new(mem_alloc, mem_free, on_error, NULL);
+    else
+        ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
     if (do_verify_render)
         djvu_ctx_set_lazy_iw44(ctx, 1);
 
@@ -986,7 +1115,8 @@ int main(int argc, char **argv)
         djvu_doc_close(doc);
         djvu_ctx_free(ctx);
         free(data);
-        return rc;
+        /* report totals/peak + verify everything was freed (after ctx free) */
+        return mem_finish(rc);
     }
 
     if (do_verify_into) {

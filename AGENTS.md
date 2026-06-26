@@ -113,8 +113,17 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   default; `-clang` selects the clang harness. Files are tested **in parallel**,
   one worker per CPU (each worker uses private temp PNMs); `-cpu N` overrides the
   worker count. Per-file lines print in completion order (`[done/total] name …
-  — time — same|diff`). (This inverts the old relationship where build.ts
-  invoked verify.)
+  — time — same|diff — alloc <total>, peak <peak>`). (This inverts the old
+  relationship where build.ts invoked verify.)
+  **Memory accounting:** `-verify-render` installs tracking `djvu_alloc_cb` /
+  `djvu_free_cb` hooks (per `djvu_ctx`, via the callbacks' `ctx` arg) that tally
+  total allocations and peak live bytes per file, emit a `memstat` line on
+  stdout (and a human-readable per-ctx report on stderr), verify every
+  allocation was freed (a leak fails the file), and **exit 3 if any single
+  `djvu_ctx` exceeds 4 GB of live memory**. tests.ts shows `alloc/peak` per file
+  and flags `memory leak`. (`-bench` keeps the default allocator so timing is
+  unperturbed.) A separate older RSS/commit watchdog (`DJVU_VERIFY_MEM_MB`,
+  default 4096) also exits 3 on process-level runaway.
 - IMPORTANT: run these from the `djvu` dir. The ref-tool build
   `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
 - Reference tools are built static from `libdjvu/*.cpp` with
@@ -167,7 +176,10 @@ bun + TypeScript is the standard tooling for ad-hoc tooling here.
 
 ## C API (`src/djvu.h`) — jbig2dec flavor
 Opaque `djvu_ctx` / `djvu_doc`; caller-supplied `djvu_alloc_cb` / `free_cb` /
-`error_cb`. Call `djvu_init()` once before threads (idempotent; also at
+`error_cb`. The alloc/free callbacks take `(user, ctx, size|ptr)` — the `ctx`
+identifies the owning `djvu_ctx` so a caller can account per context (NULL only
+for the bootstrap alloc/free of the ctx struct itself). Call `djvu_init()` once
+before threads (idempotent; also at
 `djvu_doc_open`). Key calls: `djvu_doc_open(ctx,data,len)`, `djvu_doc_page_count`,
 `djvu_doc_page_info(doc,page,&info)`, `djvu_page_render(doc,page,subsample)`
 → `djvu_image{width,height,format(GRAY8=1/RGB24=3),stride,data}`,

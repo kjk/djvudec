@@ -148,7 +148,22 @@ type VerifyResult = {
   te: number;
   bad: string[];
   tbad: string[];
+  memTotal: number; // bytes ever allocated for the file (sum over page chunks)
+  memPeak: number; // peak live bytes for a single ctx (max over chunks)
+  memLeak: boolean; // a chunk reported unfreed allocations
 };
+
+// Human-readable byte count, e.g. 52279209 -> "49.86 MB".
+function humanBytes(n: number): string {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let b = n,
+    i = 0;
+  while (b >= 1024 && i < u.length - 1) {
+    b /= 1024;
+    i++;
+  }
+  return `${i === 0 ? b.toFixed(0) : b.toFixed(2)} ${u[i]}`;
+}
 
 // Parse `djvu_test -verify-text` tab-separated output.
 function parseVerifyText(name: string, out: Buffer): Pick<VerifyResult, "fText" | "tm" | "tmm" | "te" | "tbad"> {
@@ -189,12 +204,15 @@ function safeDirName(name: string): string {
 function parseVerifyRender(
   name: string,
   out: Buffer,
-): Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad"> {
+): Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad" | "memTotal" | "memPeak" | "memLeak"> {
   const fRender: number[] = [];
   const bad: string[] = [];
   let m = 0,
     mm = 0,
-    skip = 0;
+    skip = 0,
+    memTotal = 0,
+    memPeak = 0,
+    memLeak = false;
 
   for (const line of out.toString("latin1").split(/\r?\n/)) {
     if (!line) continue;
@@ -202,7 +220,12 @@ function parseVerifyRender(
     const kind = parts[0];
     const page = parseInt(parts[1], 10);
     const status = parts[2];
-    if (kind === "render") {
+    if (kind === "memstat") {
+      // memstat <total> <peak> <allocs> <frees> <live>
+      memTotal += parseInt(parts[1], 10) || 0;
+      memPeak = Math.max(memPeak, parseInt(parts[2], 10) || 0);
+      if ((parseInt(parts[5], 10) || 0) > 0) memLeak = true;
+    } else if (kind === "render") {
       if (status === "ok") m++;
       else if (status === "skip") skip++;
       else {
@@ -222,7 +245,7 @@ function parseVerifyRender(
       skip = parseInt(parts[6], 10) || skip;
     }
   }
-  return { fRender, m, mm, skip, bad };
+  return { fRender, m, mm, skip, bad, memTotal, memPeak, memLeak };
 }
 
 // Per-page djvutxt packed for -verify-text: u32-BE len + bytes per page.
@@ -260,6 +283,9 @@ async function verifyRender(
     mm: 0,
     skip: 0,
     bad: [] as string[],
+    memTotal: 0,
+    memPeak: 0,
+    memLeak: false,
   };
 
   for (let lo = 1; lo <= nPages; lo += VERIFY_PAGE_CHUNK) {
@@ -283,7 +309,10 @@ async function verifyRender(
         m: 0,
         mm: 1,
         skip: 0,
-        bad: [`${name}: djvu_test -verify-render p${lo}-${hi} hit DJVU_VERIFY_MEM_MB`],
+        bad: [`${name}: djvu_test -verify-render p${lo}-${hi} exceeded the memory limit (4 GB per ctx / DJVU_VERIFY_MEM_MB)`],
+        memTotal: 0,
+        memPeak: 0,
+        memLeak: false,
       };
     }
     if (code !== 0 && code !== 1) {
@@ -293,6 +322,9 @@ async function verifyRender(
         mm: 1,
         skip: 0,
         bad: [`${name}: djvu_test -verify-render p${lo}-${hi} exited ${code}`],
+        memTotal: 0,
+        memPeak: 0,
+        memLeak: false,
       };
     }
     const part = parseVerifyRender(name, out);
@@ -301,6 +333,9 @@ async function verifyRender(
     merged.skip += part.skip;
     merged.fRender.push(...part.fRender);
     merged.bad.push(...part.bad);
+    merged.memTotal += part.memTotal;
+    merged.memPeak = Math.max(merged.memPeak, part.memPeak);
+    merged.memLeak = merged.memLeak || part.memLeak;
   }
   return merged;
 }
@@ -476,15 +511,19 @@ async function main(): Promise<number> {
     const diffs: string[] = [];
     if (vr.fRender.length) diffs.push(`render diff p${vr.fRender.join(",p")}`);
     if (vr.fText.length) diffs.push(`text diff p${vr.fText.join(",p")}`);
+    if (vr.memLeak) diffs.push("memory leak");
     const status = diffs.length ? diffs.join(", ") : "same";
     if (diffs.length) {
       failedFiles.set(f, diffs);
       await appendFailure(f, diffs);
     }
     finished++;
+    const memNote = vr.memTotal
+      ? ` — alloc ${humanBytes(vr.memTotal)}, peak ${humanBytes(vr.memPeak)}`
+      : "";
     console.log(
       `[${finished}/${files.length}] ${basename(f)} (${feats.join(", ")}) — ` +
-        `${humanMs(performance.now() - t0)} — ${status}`,
+        `${humanMs(performance.now() - t0)} — ${status}${memNote}`,
     );
   }
 
