@@ -4,9 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Borrow or decode the JB2 shape dictionary for a page. Inline Djbz on the page
-   form is decoded per call (caller frees). INCL-referenced shared dicts are
-   cached at doc open; *owned is 0 for those (do not free). */
+/* Borrow or decode the JB2 shape dictionary for a page. Inline and INCL-referenced
+   Djbz dicts are cached at doc open; *owned is 0 for those (do not free). */
 static jb2_image *load_page_dict(djvu_doc *doc, uint32_t form_off, int *owned)
 {
     djvu_ctx *ctx = doc->ctx;
@@ -15,6 +14,8 @@ static jb2_image *load_page_dict(djvu_doc *doc, uint32_t form_off, int *owned)
     jb2_image *dict;
 
     if (owned) *owned = 0;
+    dict = djvu_doc_jb2_dict_inline(doc, form_off);
+    if (dict) return dict;
     djbz = djvu_form_find_chunk(doc, form_off, "Djbz", &sz, NULL);
     if (djbz) {
         if (owned) *owned = 1;

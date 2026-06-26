@@ -64,6 +64,13 @@ typedef struct {
     jb2_image *dict;     /* decoded Djbz (doc-owned; read-only during render) */
 } djvu_jb2_dict_entry;
 
+/* Cached inline Djbz (deduped by identical chunk bytes). */
+typedef struct {
+    const uint8_t *djbz; /* chunk body in doc->data (borrowed) */
+    uint32_t djbz_sz;
+    jb2_image *dict;     /* decoded once; shared by all matching pages */
+} djvu_jb2_inline_entry;
+
 /* A displayable page = a FORM:DJVU component in the document. */
 typedef struct {
     uint32_t form_off;   /* file offset of the "FORM" tag */
@@ -74,6 +81,7 @@ typedef struct {
     const char *title;   /* directory component title (borrowed), or NULL */
     iw_pixmap *iw_bg;    /* decoded BG44 (filled at doc open; doc-owned) */
     iw_pixmap *iw_fg;    /* decoded FG44 (filled at doc open; doc-owned) */
+    jb2_image *jb2_dict; /* borrowed inline Djbz cache entry (doc open; do not free) */
 } djvu_page_int;
 
 struct djvu_doc {
@@ -87,14 +95,17 @@ struct djvu_doc {
     djvu_component *comps;   /* all DIRM components, in directory order */
     djvu_jb2_dict_entry *jb2_dicts;
     int n_jb2_dicts;
+    djvu_jb2_inline_entry *jb2_inline;
+    int n_jb2_inline;
 };
 
 /* Cached IW44 layers (read-only during render; freed in djvu_doc_close). */
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
 
-/* Cached shared JB2 dictionaries (read-only during render; freed in djvu_doc_close). */
+/* Cached JB2 dictionaries (read-only during render; freed in djvu_doc_close). */
 jb2_image *djvu_doc_jb2_dict(djvu_doc *doc, const char *incl_id);
+jb2_image *djvu_doc_jb2_dict_inline(djvu_doc *doc, uint32_t form_off);
 jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off);
 
 /* Resolve an INCL component id to its FORM file offset; 0 if not found. */
