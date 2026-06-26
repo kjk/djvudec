@@ -11,6 +11,7 @@
 // build() returns the exe path. Verification lives in tests.ts.
 import { $ } from "bun";
 import { existsSync, mkdirSync, rmSync, statSync } from "fs";
+import { DIST_C, DIST_H, ensureDist } from "./build-dist";
 import { getDeps } from "./get-deps";
 
 // Forward slashes: Bun's shell treats backslashes as escapes, which breaks the
@@ -204,6 +205,110 @@ async function buildMsvc(): Promise<string> {
     await $`cl -nologo ${{ raw: objs.join(" ") }} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`.cwd(ROOT);
   }
   return exePath;
+}
+
+// Build djvu_test from dist/djvu.c (amalgamation) for -bench. Regenerates dist/
+// when src/ is newer. tests.ts uses build() (src/*.c) instead.
+async function buildBenchClang(): Promise<string> {
+  const dir = outDir(true);
+  const exe = exeName(true);
+  const exePath = `${dir}/${exe}`;
+  mkdirSync(dir, { recursive: true });
+
+  const internalH = `${ROOT}/src/djvu_internal.h`;
+  const lib = { src: DIST_C, obj: `${dir}/djvu.o`, label: "dist/djvu.c" };
+  const test = {
+    src: `${ROOT}/test/djvu_test.c`,
+    obj: `${dir}/djvu_test.o`,
+    label: "test/djvu_test.c",
+  };
+  const bench = {
+    src: `${ROOT}/test/bench_ddjvu.cpp`,
+    obj: `${dir}/bench_ddjvu_clang.o`,
+    label: "test/bench_ddjvu.cpp",
+  };
+
+  if (needsRebuild(lib.obj, lib.src, DIST_H)) {
+    await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/dist -c -o ${lib.obj} ${lib.src}`;
+  }
+  if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
+    await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/dist -I${ROOT}/src -c -o ${test.obj} ${test.src}`;
+  }
+  if (needsRebuild(bench.obj, bench.src)) {
+    await $`clang++ ${{ raw: DJVU_CXXFLAGS }} -c -o ${bench.obj} ${bench.src}`;
+  }
+
+  const objs = [lib.obj, test.obj, bench.obj];
+  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
+    await $`clang++ ${{ raw: objs.join(" ") }} ${LIBDJVU} -ladvapi32 -o ${exePath}`;
+  }
+  return exePath;
+}
+
+async function buildBenchMsvc(): Promise<string> {
+  const dir = outDir(false);
+  const exe = exeName(false);
+  const exePath = `${dir}/${exe}`;
+  mkdirSync(dir, { recursive: true });
+
+  const internalH = `${ROOT}/src/djvu_internal.h`;
+  const lib = { src: DIST_C, obj: `${dir}/djvu.obj`, label: "dist/djvu.c" };
+  const test = {
+    src: `${ROOT}/test/djvu_test.c`,
+    obj: `${dir}/djvu_test.obj`,
+    label: "test/djvu_test.c",
+  };
+  const bench = {
+    src: `${ROOT}/test/bench_ddjvu.cpp`,
+    obj: `${dir}/bench_ddjvu_msvc.obj`,
+    label: "test/bench_ddjvu.cpp",
+  };
+
+  const clLib = `${MSVC_CL_C} -Idist -Fo${dir}/ -c`;
+  const clTest = `${MSVC_CL_C} -Idist -Isrc -Fo${dir}/ -c`;
+  if (needsRebuild(lib.obj, lib.src, DIST_H)) {
+    await $`cl ${{ raw: clLib }} dist/djvu.c`.cwd(ROOT);
+  }
+  if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
+    await $`cl ${{ raw: clTest }} test/djvu_test.c`.cwd(ROOT);
+  }
+  if (needsRebuild(bench.obj, bench.src)) {
+    await $`cl ${{ raw: MSVC_CL_CXX }} ${{ raw: DJVU_DEFINES }} -Fo${bench.obj} -c test/bench_ddjvu.cpp`.cwd(ROOT);
+  }
+
+  const objs = [lib.obj, test.obj, bench.obj];
+  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
+    await $`cl -nologo ${{ raw: objs.join(" ") }} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`.cwd(ROOT);
+  }
+  return exePath;
+}
+
+export async function buildBench(useClang = defaultUseClang): Promise<string> {
+  await ensureDist();
+  await buildLibDjvu();
+  const name = exeName(useClang);
+  const exePath = `${outDir(useClang)}/${name}`;
+  const internalH = `${ROOT}/src/djvu_internal.h`;
+  const ext = useClang ? "o" : "obj";
+  const libObj = `${outDir(useClang)}/djvu.${ext}`;
+  const testObj = `${outDir(useClang)}/djvu_test.${ext}`;
+  const benchObj = `${outDir(useClang)}/bench_ddjvu_${useClang ? "clang.o" : "msvc.obj"}`;
+
+  const stale =
+    needsRebuild(libObj, DIST_C, DIST_H) ||
+    needsRebuild(testObj, `${ROOT}/test/djvu_test.c`, DIST_H, internalH) ||
+    needsRebuild(benchObj, `${ROOT}/test/bench_ddjvu.cpp`) ||
+    needsRebuild(exePath, LIBDJVU);
+
+  if (!stale && existsSync(exePath)) {
+    console.log(`${name} up to date (dist amalgamation)`);
+    return exePath;
+  }
+
+  console.log(`building ${name} from dist/ (${useClang ? "clang" : "msvc"})...`);
+  const exe = useClang ? await buildBenchClang() : await buildBenchMsvc();
+  console.log(`built ${name}`);
+  return exe;
 }
 
 // Build the C library + test harness. djvu_test links the DjVuLibre timing shim

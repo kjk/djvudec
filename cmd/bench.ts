@@ -2,8 +2,9 @@
 //
 //   bun cmd/bench.ts [file.djvu] [-clang] [-full]
 //
-// Builds djvu_test (DjVuLibre via test/bench_ddjvu.cpp), then runs
-// `djvu_test -bench` on the given file. Per page: 3 fresh doc opens (outside timer),
+// Regenerates dist/ when src/ is newer, builds djvu_test from dist/djvu.c
+// (DjVuLibre via test/bench_ddjvu.cpp), then runs `djvu_test -bench` on the
+// given file. Per page: 3 fresh doc opens (outside timer),
 // fastest of 3 timed renders; no cross-render cache. Full render (decode + composite
 // + rotation), 3 reps, fastest kept. At the end: whole-document session (open,
 // render every page, extract text + annotations per page, close), 3 reps, fastest
@@ -12,7 +13,7 @@
 import { existsSync, readdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { getDeps } from "./get-deps";
-import { buildRef, build, defaultUseClang } from "./build";
+import { buildRef, buildBench, defaultUseClang } from "./build";
 import { corpusDir } from "./corpus";
 
 const ROOT = dirname(import.meta.dir);
@@ -47,7 +48,7 @@ if (!file) {
 }
 
 await buildRef();
-const TEST = await build(useClang);
+const TEST = await buildBench(useClang);
 
 const r = Bun.spawnSync({ cmd: [TEST, "-bench", file], stdout: "inherit", stderr: "inherit" });
 process.exit(r.exitCode ?? 0);
