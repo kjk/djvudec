@@ -1,8 +1,9 @@
 // bench.ts -- benchmark our decoder against DjVuLibre ddjvuapi.
 //
-//   bun cmd/bench.ts [file.djvu] [-clang] [-full]
+//   bun cmd/bench.ts [file.djvu] [-clang] [-full] [-clean]
 //
-// Regenerates dist/ when src/ is newer, builds djvu_test from dist/djvu.c
+// Regenerates dist/ when src/ is newer (`-clean`: always regenerate dist/,
+// delete out/, full rebuild). Builds djvu_test from dist/djvu.c
 // (DjVuLibre via test/bench_ddjvu.cpp), then runs `djvu_test -bench` on the
 // given file. Per page: 3 fresh doc opens (outside timer),
 // fastest of 3 timed renders; no cross-render cache. Full render (decode + composite
@@ -13,7 +14,8 @@
 import { existsSync, readdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { getDeps } from "./get-deps";
-import { buildRef, buildBench, defaultUseClang } from "./build";
+import { buildDist } from "./build-dist";
+import { buildRef, buildBench, cleanBuildOutput, defaultUseClang } from "./build";
 import { corpusDir } from "./corpus";
 
 const ROOT = dirname(import.meta.dir);
@@ -30,7 +32,10 @@ function walkDjvu(dir: string): string[] {
 }
 
 const useClang = process.argv.includes("-clang") || defaultUseClang;
-const benchArgs = process.argv.slice(2).filter((a) => a !== "-clang" && a !== "-full");
+const doClean = process.argv.includes("-clean");
+const benchArgs = process.argv.slice(2).filter(
+  (a) => a !== "-clang" && a !== "-full" && a !== "-clean",
+);
 let file = benchArgs.find((a) => !a.startsWith("-"));
 if (!file) {
   await getDeps();
@@ -47,6 +52,12 @@ if (!file) {
   process.exit(1);
 }
 
+if (doClean) {
+  console.log("clean: regenerating dist/...");
+  await buildDist();
+  console.log("clean: removing out/...");
+  cleanBuildOutput();
+}
 await buildRef();
 const TEST = await buildBench(useClang);
 
