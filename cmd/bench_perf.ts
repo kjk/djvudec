@@ -6,20 +6,20 @@
 //   bun cmd/bench_perf.ts run before file.djvu   capture timings to stdout
 //   bun cmd/bench_perf.ts compare before.txt after.txt
 //
-// Each timing line: pN t1 t2 t3 (ms, from -bench-render). Comparison uses the
-// fastest of the three runs per page. With -layers, also:
-//   layer pN jb2 t1 t2 t3 iw44 t1 t2 t3 composite t1 t2 t3 rotate t1 t2 t3
+// Each timing line: pN t1 t2 (ms, from -bench-render). Comparison uses the
+// fastest of the two runs per page. With -layers, also:
+//   layer pN jb2 t1 t2 iw44 t1 t2 composite t1 t2 rotate t1 t2
 import { existsSync, readFileSync } from "fs";
 import { defaultUseClang } from "./build";
 import { benchTarget, libToolExePath } from "./build_lib";
 
-export type PageTimings = Map<number, [number, number, number]>;
+export type PageTimings = Map<number, [number, number]>;
 
 export type LayerName = "jb2" | "iw44" | "composite" | "rotate";
 
 export type PageLayerTimings = Map<
   number,
-  Record<LayerName, [number, number, number]>
+  Record<LayerName, [number, number]>
 >;
 
 export type BenchOpts = {
@@ -30,14 +30,13 @@ export type BenchOpts = {
 const LAYER_NAMES: LayerName[] = ["jb2", "iw44", "composite", "rotate"];
 
 export function parseBenchOutput(text: string): PageTimings {
-  const pages = new Map<number, [number, number, number]>();
+  const pages = new Map<number, [number, number]>();
   for (const line of text.split(/\r?\n/)) {
-    const m = line.match(/^p(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$/);
+    const m = line.match(/^p(\d+)\s+([\d.]+)\s+([\d.]+)\s*$/);
     if (!m) continue;
     pages.set(parseInt(m[1], 10), [
       parseFloat(m[2]),
       parseFloat(m[3]),
-      parseFloat(m[4]),
     ]);
   }
   return pages;
@@ -46,25 +45,25 @@ export function parseBenchOutput(text: string): PageTimings {
 export function parseLayerOutput(text: string): PageLayerTimings {
   const pages = new Map<
     number,
-    Record<LayerName, [number, number, number]>
+    Record<LayerName, [number, number]>
   >();
   for (const line of text.split(/\r?\n/)) {
     const m = line.match(
-      /^layer\s+p(\d+)\s+jb2\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+iw44\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+composite\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rotate\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$/,
+      /^layer\s+p(\d+)\s+jb2\s+([\d.]+)\s+([\d.]+)\s+iw44\s+([\d.]+)\s+([\d.]+)\s+composite\s+([\d.]+)\s+([\d.]+)\s+rotate\s+([\d.]+)\s+([\d.]+)\s*$/,
     );
     if (!m) continue;
     pages.set(parseInt(m[1], 10), {
-      jb2: [parseFloat(m[2]), parseFloat(m[3]), parseFloat(m[4])],
-      iw44: [parseFloat(m[5]), parseFloat(m[6]), parseFloat(m[7])],
-      composite: [parseFloat(m[8]), parseFloat(m[9]), parseFloat(m[10])],
-      rotate: [parseFloat(m[11]), parseFloat(m[12]), parseFloat(m[13])],
+      jb2: [parseFloat(m[2]), parseFloat(m[3])],
+      iw44: [parseFloat(m[4]), parseFloat(m[5])],
+      composite: [parseFloat(m[6]), parseFloat(m[7])],
+      rotate: [parseFloat(m[8]), parseFloat(m[9])],
     });
   }
   return pages;
 }
 
-function min3(t: [number, number, number]): number {
-  return Math.min(t[0], t[1], t[2]);
+function min2(t: [number, number]): number {
+  return Math.min(t[0], t[1]);
 }
 
 export function compareTimings(before: PageTimings, after: PageTimings): string {
@@ -83,8 +82,8 @@ export function compareTimings(before: PageTimings, after: PageTimings): string 
       lines.push(`p${p} missing in ${!b ? "before" : "after"}`);
       continue;
     }
-    const mb = min3(b);
-    const ma = min3(a);
+    const mb = min2(b);
+    const ma = min2(a);
     const delta = ma - mb;
     const pct = mb > 0 ? (delta / mb) * 100 : 0;
     lines.push(
@@ -131,8 +130,8 @@ export function compareLayerTimings(
     }
     const parts: string[] = [];
     for (const layer of LAYER_NAMES) {
-      const mb = min3(b[layer]);
-      const ma = min3(a[layer]);
+      const mb = min2(b[layer]);
+      const ma = min2(a[layer]);
       const delta = ma - mb;
       const pct = mb > 0 ? (delta / mb) * 100 : 0;
       parts.push(
@@ -225,7 +224,7 @@ async function main(): Promise<number> {
     const afterLayers = parseLayerOutput(afterText);
     if (beforeLayers.size > 0 || afterLayers.size > 0) {
       console.log(
-        "\n--- layer breakdown (fastest of 3 runs per stage; + = slower after) ---",
+        "\n--- layer breakdown (fastest of 2 runs per stage; + = slower after) ---",
       );
       console.log(compareLayerTimings(beforeLayers, afterLayers));
     }
@@ -277,14 +276,14 @@ async function main(): Promise<number> {
 
   const before = parseBenchOutput(beforeOut);
   const after = parseBenchOutput(afterOut);
-  console.log("\n--- comparison (fastest of 3 runs per page; + = slower after) ---");
+  console.log("\n--- comparison (fastest of 2 runs per page; + = slower after) ---");
   console.log(compareTimings(before, after));
 
   if (benchOpts.layers) {
     const beforeLayers = parseLayerOutput(beforeOut);
     const afterLayers = parseLayerOutput(afterOut);
     console.log(
-      "\n--- layer breakdown (fastest of 3 runs per stage; + = slower after) ---",
+      "\n--- layer breakdown (fastest of 2 runs per stage; + = slower after) ---",
     );
     console.log(compareLayerTimings(beforeLayers, afterLayers));
   }

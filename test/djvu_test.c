@@ -1315,7 +1315,7 @@ int main(int argc, char **argv)
     if (do_bench) {
         int n = djvu_doc_page_count(doc);
         int sum = (do_bench == 2); /* replicate SumatraPDF Engine* render path */
-        const int REPS = 3;   /* REPS fresh docs/page; time render only; keep fastest */
+        const int REPS = 2;   /* REPS fresh docs/page; time render only; keep fastest */
         djvu_doc_close(doc);
         doc = NULL;
         bench_ddjvu_reset();
@@ -1324,7 +1324,7 @@ int main(int argc, char **argv)
             printf("(bench-sum: warm render-to-buffer, zoom=1; decode at doc-open)\n");
         }
         for (i = 0; i < n; i++) {
-            double mine[3], lib[3];
+            double mine[2], lib[2];
             int mine_n = 0, lib_n = 0, r;
             for (r = 0; r < REPS; r++) {
                 double dt = sum ? bench_ours_page_sum_ms(ctx, data, len, i)

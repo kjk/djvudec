@@ -326,30 +326,31 @@ static int bench_render_page(djvu_doc *doc, int page0, int warm,
     return 0;
 }
 
-/* Three timed renders per page (djvudec only; for bench_before/after). */
+/* Two timed renders per page (djvudec only; for bench_before/after). */
 static int run_bench_render(djvu_doc *doc, int warm, int layers)
 {
     djvu_ctx *ctx = doc->ctx;
     int npages = djvu_doc_page_count(doc);
     int i, r;
+    const int reps = 2;
 
     for (i = 0; i < npages; i++) {
-        double t[3];
-        djvu_render_timings lt[3];
+        double t[2];
+        djvu_render_timings lt[2];
 
-        for (r = 0; r < 3; r++) {
+        for (r = 0; r < reps; r++) {
             if (bench_render_page(doc, i, warm, &t[r], layers ? &lt[r] : NULL) != 0)
                 return 1;
         }
-        printf("p%d %.2f %.2f %.2f\n", i + 1, t[0], t[1], t[2]);
+        printf("p%d %.2f %.2f\n", i + 1, t[0], t[1]);
         if (layers) {
-            printf("layer p%d jb2 %.2f %.2f %.2f iw44 %.2f %.2f %.2f "
-                   "composite %.2f %.2f %.2f rotate %.2f %.2f %.2f\n",
+            printf("layer p%d jb2 %.2f %.2f iw44 %.2f %.2f "
+                   "composite %.2f %.2f rotate %.2f %.2f\n",
                    i + 1,
-                   lt[0].jb2_ms, lt[1].jb2_ms, lt[2].jb2_ms,
-                   lt[0].iw44_ms, lt[1].iw44_ms, lt[2].iw44_ms,
-                   lt[0].composite_ms, lt[1].composite_ms, lt[2].composite_ms,
-                   lt[0].rotate_ms, lt[1].rotate_ms, lt[2].rotate_ms);
+                   lt[0].jb2_ms, lt[1].jb2_ms,
+                   lt[0].iw44_ms, lt[1].iw44_ms,
+                   lt[0].composite_ms, lt[1].composite_ms,
+                   lt[0].rotate_ms, lt[1].rotate_ms);
         }
     }
     (void)ctx;
@@ -404,7 +405,7 @@ static void usage(void)
         "Corpus / structure (internal introspection):\n"
         "  -comps             list DJVM components (incl/page/thumb/anno)\n"
         "  -dump-features     tab-separated feature + render-time dump\n"
-        "  -bench-render      time 3 renders/page (pN t1 t2 t3 ms; djvudec only)\n"
+        "  -bench-render      time 2 renders/page (pN t1 t2 ms; djvudec only)\n"
         "  -warm N            discard first N renders/page before timing (default 0)\n"
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
         "\n"

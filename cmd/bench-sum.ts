@@ -18,9 +18,9 @@
 //
 // Regenerates dist/ when src/ is newer (`-clean`: full rebuild). Builds
 // djvu_test from dist/djvu.c, then runs `djvu_test -bench-sum` on the file.
-// Per page: 3 fresh doc opens (outside timer), fastest of 3 timed renders.
+// Per page: 2 fresh doc opens (outside timer), fastest of 2 timed renders.
 // At the end: whole-document session (open, render every page, extract text +
-// links per page, close), 3 reps, fastest kept. With no file, picks a random
+// links per page, close), 2 reps, fastest kept. With no file, picks a random
 // .djvu from testfiles/subset (`-full` -> testfiles/full). Lines print
 // DjVuLibre ms, ours ms, delta (+ = ours slower).
 import { existsSync, readdirSync, statSync } from "fs";
