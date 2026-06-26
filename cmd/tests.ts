@@ -8,15 +8,18 @@
 // Pages that are pure JB2 masks (Sjbz, no BG44/FG44 background) must match
 // `ddjvu -format=pgm` byte-for-byte. Pages with an IW44 background or color are
 // compared as ppm. Text is compared against djvutxt (trailing separators
-// ignored). Runs over every .djvu under testfiles/ recursively; set the
-// DJVU_SPECS env var to point the scan at a different directory. Files are
-// tested in parallel across one worker per CPU; `-cpu N` overrides the count.
+// ignored). Renders use piped stdout (no temp PNMs); up to 8 pages per file run
+// in parallel. Text uses one `djvu_test -verify-text` per file (doc opened once)
+// with length-prefixed per-page djvutxt on stdin. Runs over every .djvu under testfiles/
+// recursively; set the DJVU_SPECS env var to point the scan at a different
+// directory. Files are tested in parallel across one worker per CPU; `-cpu N`
+// overrides the count.
 // `-rand N` limits the run to N randomly chosen files from the corpus.
 // `-failout path` writes failing file paths (default: failures.txt in repo root);
 // each failure is appended as soon as it is found.
 // `-failures path` tests only paths listed in that file (one per line, # comments).
-import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
-import { tmpdir, cpus } from "os";
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
 import { buildRef, build, defaultUseClang } from "./build";
@@ -24,7 +27,6 @@ import { buildRef, build, defaultUseClang } from "./build";
 const ROOT = dirname(import.meta.dir);
 const RB = join(ROOT, "ref_build");
 let TEST = join(ROOT, "djvu_test.exe"); // set to the built exe in main()
-const TMP = tmpdir();
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
 
@@ -93,38 +95,155 @@ function docFeatures(data: Buffer, offs: number[]): { anno: boolean; text: boole
 async function run(cmd: string[]): Promise<Buffer> {
   const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "ignore" });
   const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
-  await proc.exited;
+  const code = await proc.exited;
+  if (code !== 0) return Buffer.alloc(0);
   return out;
 }
-// Run a subprocess that writes to a file; we don't need its stdout.
-async function runToFile(cmd: string[]) {
-  const proc = Bun.spawn({ cmd, stdout: "ignore", stderr: "ignore" });
-  await proc.exited;
+
+type VerifyResult = {
+  fRender: number[];
+  fText: number[];
+  m: number;
+  mm: number;
+  skip: number;
+  tm: number;
+  tmm: number;
+  te: number;
+  bad: string[];
+  tbad: string[];
+};
+
+// Parse `djvu_test -verify-text` tab-separated output.
+function parseVerifyText(name: string, out: Buffer): Pick<VerifyResult, "fText" | "tm" | "tmm" | "te" | "tbad"> {
+  const fText: number[] = [];
+  const tbad: string[] = [];
+  let tm = 0,
+    tmm = 0,
+    te = 0;
+
+  for (const line of out.toString("latin1").split(/\r?\n/)) {
+    if (!line) continue;
+    const parts = line.split("\t");
+    const kind = parts[0];
+    const page = parseInt(parts[1], 10);
+    const status = parts[2];
+    if (kind === "text") {
+      if (status === "ok") tm++;
+      else if (status === "empty") te++;
+      else {
+        tmm++;
+        fText.push(page);
+        tbad.push(`${name} p${page}`);
+      }
+    } else if (kind === "summary") {
+      tm = parseInt(parts[4], 10) || tm;
+      tmm = parseInt(parts[5], 10) || tmm;
+      te = parseInt(parts[6], 10) || te;
+    }
+  }
+  return { fText, tm, tmm, te, tbad };
 }
 
-async function renderRef(f: string, page: number, out: string, fmt = "pgm") {
-  await runToFile([join(RB, "ddjvu.exe"), `-format=${fmt}`, `-page=${page}`, f, out]);
-}
-async function renderMine(f: string, page: number, out: string) {
-  if (existsSync(out)) rmSync(out);
-  await runToFile([TEST, "-page", String(page), "-out", out, f]);
+// Per-page djvutxt packed for -verify-text: u32-BE len + bytes per page.
+async function fetchRefText(f: string, nPages: number): Promise<Buffer> {
+  const packed: Buffer[] = [];
+  const batch = 16;
+  for (let start = 1; start <= nPages; start += batch) {
+    const end = Math.min(nPages, start + batch - 1);
+    const pages: number[] = [];
+    for (let p = start; p <= end; p++) pages.push(p);
+    const chunks = await Promise.all(
+      pages.map((p) => run([join(RB, "djvutxt.exe"), `--page=${p}`, f])),
+    );
+    for (const chunk of chunks) {
+      const hdr = Buffer.alloc(4);
+      hdr.writeUInt32BE(chunk.length, 0);
+      packed.push(hdr, chunk);
+    }
+  }
+  return Buffer.concat(packed);
 }
 
-// strip CR / form-feed and trailing whitespace (text normalization)
-function textNorm(b: Buffer): string {
-  return b
-    .toString("latin1")
-    .replace(/\r/g, "")
-    .replace(/\f/g, "")
-    .replace(/\s+$/, "");
-}
-const getTextRef = (f: string, page: number) =>
-  run([join(RB, "djvutxt.exe"), `--page=${page}`, f]);
-const getTextMine = (f: string, page: number) =>
-  run([TEST, "-page", String(page), "-text", f]);
+const RENDER_BATCH = 8;
 
-function readBytes(p: string): Buffer {
-  return existsSync(p) ? readFileSync(p) : Buffer.alloc(0);
+// Piped ddjvu vs djvu_test -out - (no disk); pages batched in parallel.
+async function verifyRender(
+  f: string,
+  data: Buffer,
+  offs: number[],
+  name: string,
+): Promise<Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad">> {
+  const fRender: number[] = [];
+  const bad: string[] = [];
+  let m = 0,
+    mm = 0,
+    skip = 0;
+
+  for (let i = 0; i < offs.length; i += RENDER_BATCH) {
+    const slice = offs.slice(i, i + RENDER_BATCH);
+    const part = await Promise.all(
+      slice.map(async (off, j) => {
+        const page = i + j + 1;
+        const kind = pageKind(data, off);
+        if (kind === "other") return { skip: 1 as const };
+        const fmt = kind === "mask" ? "pgm" : "ppm";
+        const [ref, mine] = await Promise.all([
+          run([join(RB, "ddjvu.exe"), `-format=${fmt}`, `-page=${page}`, f, `-`]),
+          run([TEST, "-page", String(page), "-out", "-", f]),
+        ]);
+        if (ref.length && ref.equals(mine)) return { match: 1 as const };
+        return {
+          mismatch: 1 as const,
+          page,
+          rlen: ref.length,
+          mlen: mine.length,
+        };
+      }),
+    );
+    for (const r of part) {
+      if ("skip" in r) skip++;
+      else if ("match" in r) m++;
+      else {
+        mm++;
+        fRender.push(r.page);
+        bad.push(`${name} p${r.page} (ref=${r.rlen} mine=${r.mlen})`);
+      }
+    }
+  }
+  return { fRender, m, mm, skip, bad };
+}
+
+async function verifyText(f: string, nPages: number, hasText: boolean, name: string) {
+  if (!hasText) {
+    return { fText: [] as number[], tm: 0, tmm: 0, te: nPages, tbad: [] as string[] };
+  }
+  const refText = await fetchRefText(f, nPages);
+  const proc = Bun.spawn({
+    cmd: [TEST, "-verify-text", f],
+    stdin: refText,
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
+  const code = await proc.exited;
+  if (code !== 0 && code !== 1) {
+    throw new Error(`${name}: djvu_test -verify-text exited ${code}`);
+  }
+  return parseVerifyText(name, out);
+}
+
+async function verifyFile(
+  f: string,
+  data: Buffer,
+  offs: number[],
+  hasText: boolean,
+): Promise<VerifyResult> {
+  const name = basename(f);
+  const [render, text] = await Promise.all([
+    verifyRender(f, data, offs, name),
+    verifyText(f, offs.length, hasText, name),
+  ]);
+  return { ...render, ...text };
 }
 
 // Every .djvu under dir, recursively (sorted by path).
@@ -167,12 +286,8 @@ function readFailureList(path: string): string[] {
 }
 
 async function main(): Promise<number> {
-  // Ensure the corpus + reference checkouts exist, then build everything.
   await getDeps();
-  // Verify against every .djvu under testfiles/ (recursively); DJVU_SPECS
-  // overrides the root to point at any other directory of samples.
   const SPECS = process.env.DJVU_SPECS ?? join(ROOT, "testfiles");
-  // -clang forces the clang harness; default is MSVC on Windows.
   const useClang = process.argv.includes("-clang") || defaultUseClang;
   await buildRef();
   TEST = await build(useClang);
@@ -185,7 +300,7 @@ async function main(): Promise<number> {
     te = 0;
   const bad: string[] = [];
   const tbad: string[] = [];
-  const failedFiles = new Map<string, string[]>(); // path -> diff summary lines
+  const failedFiles = new Map<string, string[]>();
 
   const failOutPath = argPath("-failout") ?? join(ROOT, "failures.txt");
   const failInPath = argPath("-failures");
@@ -205,7 +320,6 @@ async function main(): Promise<number> {
     totalFiles = files.length;
   }
 
-  // -rand N: test only N randomly chosen files from the corpus.
   const randArg = process.argv.indexOf("-rand");
   if (randArg >= 0) {
     const nRand = parseInt(process.argv[randArg + 1]);
@@ -221,7 +335,6 @@ async function main(): Promise<number> {
     }
   }
 
-  // -cpu N overrides the worker count (default: number of logical CPUs).
   const cpuArg = process.argv.indexOf("-cpu");
   const nWorkers = Math.max(
     1,
@@ -238,7 +351,6 @@ async function main(): Promise<number> {
 
   writeFileSync(failOutPath, "");
 
-  // Serialized append so parallel workers don't interleave writes.
   let appendChain = Promise.resolve();
   const appendFailure = (path: string, diffs: string[]) => {
     const block = path + "\n" + diffs.map((d) => `# ${d}`).join("\n") + "\n";
@@ -246,53 +358,27 @@ async function main(): Promise<number> {
     return appendChain;
   };
 
-  // Test one file: render+text every page, accumulate global counters, and
-  // print one line when done. ref/mine are this worker's private temp paths.
   let finished = 0;
-  async function testFile(f: string, ref: string, mine: string) {
+  async function testFile(f: string) {
     const t0 = performance.now();
     const data = readFileSync(f);
     const offs = pageOffsets(data);
-    const { anno, text } = docFeatures(data, offs);
+    const { anno, text: hasText } = docFeatures(data, offs);
     const feats = [`${offs.length} pages`];
     if (anno) feats.push("annots");
-    if (text) feats.push("text");
-    const fRender: number[] = []; // pages where our render differed
-    const fText: number[] = []; // pages where our text differed
-    for (let i = 0; i < offs.length; i++) {
-      const page = i + 1;
-      // render: pure-mask pages -> pgm (gray); bg/color pages -> ppm
-      const kind = pageKind(data, offs[i]);
-      if (kind === "other") {
-        skip++;
-      } else {
-        const fmt = kind === "mask" ? "pgm" : "ppm";
-        await renderRef(f, page, ref, fmt);
-        await renderMine(f, page, mine);
-        const a = readBytes(ref);
-        const b = readBytes(mine);
-        if (a.length && a.equals(b)) {
-          m++;
-        } else {
-          mm++;
-          fRender.push(page);
-          bad.push(`${basename(f)} p${page} ${kind} (ref=${a.length} mine=${b.length})`);
-        }
-      }
-      // text (all pages; ignores trailing page separator)
-      const rt = textNorm(await getTextRef(f, page));
-      const mt = textNorm(await getTextMine(f, page));
-      if (!rt && !mt) te++;
-      else if (rt === mt) tm++;
-      else {
-        tmm++;
-        fText.push(page);
-        tbad.push(`${basename(f)} p${page}`);
-      }
-    }
+    if (hasText) feats.push("text");
+    const vr = await verifyFile(f, data, offs, hasText);
+    m += vr.m;
+    mm += vr.mm;
+    skip += vr.skip;
+    tm += vr.tm;
+    tmm += vr.tmm;
+    te += vr.te;
+    bad.push(...vr.bad);
+    tbad.push(...vr.tbad);
     const diffs: string[] = [];
-    if (fRender.length) diffs.push(`render diff p${fRender.join(",p")}`);
-    if (fText.length) diffs.push(`text diff p${fText.join(",p")}`);
+    if (vr.fRender.length) diffs.push(`render diff p${vr.fRender.join(",p")}`);
+    if (vr.fText.length) diffs.push(`text diff p${vr.fText.join(",p")}`);
     const status = diffs.length ? diffs.join(", ") : "same";
     if (diffs.length) {
       failedFiles.set(f, diffs);
@@ -305,17 +391,13 @@ async function main(): Promise<number> {
     );
   }
 
-  // Worker pool: each worker pulls the next file off a shared cursor and runs it
-  // with its own temp files so concurrent renders don't clobber each other.
   let next = 0;
-  const worker = async (id: number) => {
-    const ref = join(TMP, `djref_${id}.pnm`);
-    const mine = join(TMP, `djmine_${id}.pnm`);
+  const worker = async () => {
     for (let idx = next++; idx < files.length; idx = next++) {
-      await testFile(files[idx], ref, mine);
+      await testFile(files[idx]);
     }
   };
-  await Promise.all(Array.from({ length: nWorkers }, (_, i) => worker(i)));
+  await Promise.all(Array.from({ length: nWorkers }, () => worker()));
 
   console.log(`render (mask=pgm, bg/color=ppm): MATCH=${m} MISMATCH=${mm}; skipped=${skip}`);
   for (const x of bad.slice(0, 50)) console.log("  render MISMATCH", x);

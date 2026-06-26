@@ -12,10 +12,36 @@
 #include "libdjvu/GURL.h"
 #include "libdjvu/GException.h"
 #include <chrono>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
 
 using namespace DJVU;
 
+/* Cached DjVuLibre document for repeated page renders (-verify). */
+static GP<DjVuDocument> g_bench_doc;
+static char g_bench_path[4096];
+
+static GP<DjVuDocument> bench_open_doc(const char *path)
+{
+    if (!g_bench_doc || std::strcmp(g_bench_path, path) != 0) {
+        GURL url = GURL::Filename::UTF8(path);
+        g_bench_doc = DjVuDocument::create_wait(url);
+        if (!g_bench_doc)
+            return 0;
+        std::strncpy(g_bench_path, path, sizeof(g_bench_path) - 1);
+        g_bench_path[sizeof(g_bench_path) - 1] = 0;
+    }
+    return g_bench_doc;
+}
+
 extern "C" {
+
+void bench_ddjvu_reset(void)
+{
+    g_bench_doc = 0;
+    g_bench_path[0] = 0;
+}
 
 /* Monotonic high-resolution timestamp in milliseconds (same clock both sides). */
 double bench_now_ms(void)
@@ -35,8 +61,7 @@ double bench_ddjvu_page_ms(const char *path, int page0)
     double ms = -1.0;
     G_TRY
     {
-        GURL url = GURL::Filename::UTF8(path);
-        GP<DjVuDocument> doc = DjVuDocument::create_wait(url);
+        GP<DjVuDocument> doc = bench_open_doc(path);
         if (doc) {
             double t0 = bench_now_ms();
             GP<DjVuImage> dimg = doc->get_page(page0, true);

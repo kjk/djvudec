@@ -10,10 +10,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
-/* timing helpers from bench_ddjvu.cpp (DjVuLibre decode, same clock) */
+/* timing / oracle helpers from bench_ddjvu.cpp (DjVuLibre, same clock) */
 double bench_now_ms(void);
 double bench_ddjvu_page_ms(const char *path, int page0);
+void bench_ddjvu_reset(void);
 
 static void on_error(void *user, djvu_severity sev, const char *msg)
 {
@@ -43,18 +50,145 @@ static uint8_t *read_file(const char *path, size_t *out_len)
 
 static int write_pnm(const char *path, djvu_image *img)
 {
-    FILE *f = fopen(path, "wb");
-    int y;
-    if (!f) return -1;
+    FILE *f;
+    if (path && !strcmp(path, "-")) {
+#if defined(_WIN32)
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        f = stdout;
+    } else {
+        f = fopen(path, "wb");
+        if (!f) return -1;
+    }
     if (img->format == DJVU_FORMAT_RGB24)
         fprintf(f, "P6\n%d %d\n255\n", img->width, img->height);
     else
         fprintf(f, "P5\n%d %d\n255\n", img->width, img->height);
-    for (y = 0; y < img->height; y++)
-        fwrite(img->data + (size_t)y * img->stride, 1,
-               (size_t)img->width * img->format, f);
-    fclose(f);
+    {
+        int y;
+        for (y = 0; y < img->height; y++)
+            fwrite(img->data + (size_t)y * img->stride, 1,
+                   (size_t)img->width * img->format, f);
+    }
+    if (f != stdout)
+        fclose(f);
     return 0;
+}
+
+/* tests.ts textNorm: strip CR/FF and trailing whitespace. */
+static char *text_normalize(const char *s)
+{
+    size_t n = s ? strlen(s) : 0;
+    char *d = (char *)malloc(n + 1);
+    size_t i, w = 0;
+    if (!d) return NULL;
+    for (i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == '\r' || c == '\f') continue;
+        d[w++] = c;
+    }
+    while (w > 0) {
+        char c = d[w - 1];
+        if (c != ' ' && c != '\t' && c != '\n') break;
+        w--;
+    }
+    d[w] = 0;
+    return d;
+}
+
+static char *read_all_stdin(size_t *out_len)
+{
+    size_t cap = 65536, n = 0;
+    char *buf = (char *)malloc(cap);
+    size_t r;
+    if (!buf) return NULL;
+    while ((r = fread(buf + n, 1, cap - n - 1, stdin)) > 0) {
+        n += r;
+        if (n + 1 >= cap) {
+            cap *= 2;
+            buf = (char *)realloc(buf, cap);
+            if (!buf) return NULL;
+        }
+    }
+    buf[n] = 0;
+    *out_len = n;
+    return buf;
+}
+
+/* tests.ts packs per-page djvutxt --page=N blobs: u32-BE length + bytes per page. */
+static char **read_ref_text_pages(const char *blob, size_t len, int npages)
+{
+    char **pages;
+    size_t pos = 0;
+    int p;
+    if (npages <= 0) return NULL;
+    pages = (char **)calloc((size_t)npages, sizeof(char *));
+    if (!pages) return NULL;
+    for (p = 0; p < npages; p++) {
+        uint32_t slen;
+        char *slice;
+        if (pos + 4 > len) break;
+        slen = ((uint32_t)(unsigned char)blob[pos] << 24) |
+               ((uint32_t)(unsigned char)blob[pos + 1] << 16) |
+               ((uint32_t)(unsigned char)blob[pos + 2] << 8) |
+               (uint32_t)(unsigned char)blob[pos + 3];
+        pos += 4;
+        if (pos + slen > len) break;
+        slice = (char *)malloc((size_t)slen + 1);
+        if (slice) {
+            if (slen) memcpy(slice, blob + pos, slen);
+            slice[slen] = 0;
+            pages[p] = text_normalize(slice);
+            free(slice);
+        }
+        pos += slen;
+    }
+    for (; p < npages; p++)
+        pages[p] = text_normalize("");
+    return pages;
+}
+
+/* Text-only verify: one doc open; ref text on stdin (djvutxt multi-page blob). */
+static int run_verify_text(djvu_doc *doc, const char *ref_blob, size_t ref_len)
+{
+    djvu_ctx *ctx = doc->ctx;
+    int npages = djvu_doc_page_count(doc);
+    char **ref_pages = NULL;
+    int tm = 0, tmm = 0, te = 0;
+    int i;
+
+    if (ref_blob)
+        ref_pages = read_ref_text_pages(ref_blob, ref_len, npages);
+
+    for (i = 0; i < npages; i++) {
+        char *mt = NULL, *rt = NULL, *mtn, *rtn;
+        if (ref_pages)
+            rt = ref_pages[i];
+        mt = djvu_page_text(doc, i);
+        mtn = text_normalize(mt ? mt : "");
+        rtn = text_normalize(rt ? rt : "");
+        if (mt) djvu_text_destroy(ctx, mt);
+        if (!rtn[0] && !mtn[0]) {
+            te++;
+            printf("text\t%d\tempty\n", i + 1);
+        } else if (!strcmp(rtn, mtn)) {
+            tm++;
+            printf("text\t%d\tok\n", i + 1);
+        } else {
+            tmm++;
+            printf("text\t%d\tmismatch\n", i + 1);
+        }
+        free(mtn);
+        free(rtn);
+    }
+
+    printf("summary\t0\t0\t0\t%d\t%d\t%d\n", tm, tmm, te);
+    if (ref_pages) {
+        for (i = 0; i < npages; i++)
+            free(ref_pages[i]);
+        free(ref_pages);
+    }
+    return tmm ? 1 : 0;
 }
 
 static void print_zone(const djvu_text_zone *z, int depth)
@@ -85,6 +219,7 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
+    int do_verify_text = 0;
     int i, rc = 0;
     uint8_t *data; size_t len;
     djvu_ctx *ctx; djvu_doc *doc;
@@ -107,6 +242,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-links")) do_links = 1;
         else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
+        else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
         else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
         else in = argv[i];
@@ -137,6 +273,26 @@ int main(int argc, char **argv)
     }
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) { fprintf(stderr, "cannot open document\n"); free(data); djvu_ctx_free(ctx); return 1; }
+
+    if (do_verify_text) {
+        char *ref_blob = NULL;
+        size_t ref_len = 0;
+#if defined(_WIN32)
+        if (!_isatty(_fileno(stdin))) {
+            _setmode(_fileno(stdin), _O_BINARY);
+            ref_blob = read_all_stdin(&ref_len);
+        }
+#else
+        if (!isatty(fileno(stdin)))
+            ref_blob = read_all_stdin(&ref_len);
+#endif
+        rc = run_verify_text(doc, ref_blob, ref_len);
+        free(ref_blob);
+        djvu_doc_close(doc);
+        djvu_ctx_free(ctx);
+        free(data);
+        return rc;
+    }
 
     if (do_iw) {
         if (do_iw == 3 || do_iw == 4) {
