@@ -346,6 +346,32 @@ static const char *page_kind_name(page_kind_t k)
     return "other";
 }
 
+/* Sort ascending (fastest first) for bench rep printing. */
+static void bench_sort_asc(double *t, int n)
+{
+    int i, j;
+    for (i = 0; i < n - 1; i++)
+        for (j = i + 1; j < n; j++)
+            if (t[j] < t[i]) {
+                double tmp = t[i];
+                t[i] = t[j];
+                t[j] = tmp;
+            }
+}
+
+static void bench_print_sorted_ms(const double *t, int n)
+{
+    int i;
+    if (n <= 0) {
+        printf("ERROR");
+        return;
+    }
+    printf("%.2f", t[0]);
+    for (i = 1; i < n; i++)
+        printf(" %.2f", t[i]);
+    printf(" ms");
+}
+
 /* Cold page render: fresh doc per rep; timer covers render only (open/close outside). */
 static double bench_ours_page_ms(djvu_ctx *ctx, const uint8_t *data, size_t len,
                                  int page0)
@@ -1298,31 +1324,45 @@ int main(int argc, char **argv)
             printf("(bench-sum: warm render-to-buffer, zoom=1; decode at doc-open)\n");
         }
         for (i = 0; i < n; i++) {
-            double mine = -1, lib = -1;
-            int ok = 1, r;
+            double mine[3], lib[3];
+            int mine_n = 0, lib_n = 0, r;
             for (r = 0; r < REPS; r++) {
                 double dt = sum ? bench_ours_page_sum_ms(ctx, data, len, i)
                                 : bench_ours_page_ms(ctx, data, len, i);
-                if (dt < 0)
-                    ok = 0;
-                else if (mine < 0 || dt < mine)
-                    mine = dt;
+                if (dt >= 0)
+                    mine[mine_n++] = dt;
                 {
                     double l = sum ? bench_ddjvu_page_sum_ms(in, i)
                                    : bench_ddjvu_page_ms(in, i);
-                    if (l >= 0 && (lib < 0 || l < lib))
-                        lib = l;
+                    if (l >= 0)
+                        lib[lib_n++] = l;
                 }
             }
-            if (lib < 0 || !ok) {
-                printf("page %d, djvulibre %s, ours %.2f ms%s\n", i + 1,
-                       lib < 0 ? "ERROR" : "ok", mine, ok ? "" : " (ours FAILED)");
+            bench_sort_asc(lib, lib_n);
+            bench_sort_asc(mine, mine_n);
+            if (lib_n <= 0 || mine_n <= 0) {
+                printf("page %d, djvulibre ", i + 1);
+                if (lib_n <= 0)
+                    printf("ERROR");
+                else
+                    bench_print_sorted_ms(lib, lib_n);
+                printf(", ours ");
+                if (mine_n <= 0)
+                    printf("ERROR");
+                else
+                    bench_print_sorted_ms(mine, mine_n);
+                printf("\n");
                 continue;
             }
-            double diff = mine - lib;            /* + => ours slower */
-            double pct = lib > 0 ? diff / lib * 100.0 : 0.0;
-            printf("page %d, djvulibre %.2f ms, ours %.2f ms, %+.2f ms, %+.1f%%\n",
-                   i + 1, lib, mine, diff, pct);
+            {
+                double diff = mine[0] - lib[0]; /* fastest reps; + => ours slower */
+                double pct = lib[0] > 0 ? diff / lib[0] * 100.0 : 0.0;
+                printf("page %d, djvulibre ", i + 1);
+                bench_print_sorted_ms(lib, lib_n);
+                printf(", ours ");
+                bench_print_sorted_ms(mine, mine_n);
+                printf(", %+.2f ms, %+.1f%%\n", diff, pct);
+            }
         }
         {
             double doc_mine = -1, doc_lib = -1;
