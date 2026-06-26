@@ -87,6 +87,22 @@ static djvu_image *render_blank(djvu_ctx *ctx, const djvu_page_info *pi, int sub
     return out;
 }
 
+typedef struct {
+    uint8_t *dst;
+    int w, h;
+} bitonal_stamp_ctx;
+
+/* Stamp one ink pixel into top-down gray8 (py is bottom-up page Y). */
+static void bitonal_stamp_ink(void *user, int px, int py)
+{
+    bitonal_stamp_ctx *c = (bitonal_stamp_ctx *)user;
+    int ty;
+
+    if (px < 0 || px >= c->w || py < 0 || py >= c->h) return;
+    ty = c->h - 1 - py;
+    c->dst[(size_t)ty * (size_t)c->w + (size_t)px] = 0;
+}
+
 /* Rasterize a decoded JB2 mask to top-down gray8 (ink=0, paper=255). */
 static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
 {
@@ -104,6 +120,20 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
     out->data = (uint8_t *)djvu_alloc(ctx, (size_t)sw * sh);
     if (!out->data) { djvu_free(ctx, out); return NULL; }
 
+    if (subsample == 1) {
+        bitonal_stamp_ctx stamp = { out->data, img->width, img->height };
+        memset(out->data, 255, (size_t)sw * sh);
+        for (i = 0; i < img->nblits; i++) {
+            jb2_blit *b = &img->blits[i];
+            jb2_shape *s = djvu_jb2_get_shape(img, b->shapeno);
+            if (s && djvu_bm_has_pixels(&s->bm))
+                djvu_bm_visit_ink(&s->bm, b->left, b->bottom,
+                                  bitonal_stamp_ink, &stamp);
+        }
+        return out;
+    }
+
+    /* subsample > 1: accumulate full-res mask, then box-filter down */
     {
         djvu_bitmap page;
         int y, x;
@@ -123,26 +153,20 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
         for (y = 0; y < sh; y++) {
             uint8_t *dst = out->data + (size_t)y * sw;
             for (x = 0; x < sw; x++) {
-                if (subsample == 1) {
-                    int py = img->height - 1 - y;
-                    int srow = djvu_bm_rowoffset(&page, py);
-                    dst[x] = page.data[srow + x] ? 0 : 255;
-                } else {
-                    int cnt = 0, tot = 0, yy, xx;
-                    for (yy = 0; yy < subsample; yy++) {
-                        int py = y * subsample + yy;
-                        int srow;
-                        if (py >= img->height) break;
-                        srow = djvu_bm_rowoffset(&page, img->height - 1 - py);
-                        for (xx = 0; xx < subsample; xx++) {
-                            int px = x * subsample + xx;
-                            if (px >= img->width) continue;
-                            tot++;
-                            if (page.data[srow + px]) cnt++;
-                        }
+                int cnt = 0, tot = 0, yy, xx;
+                for (yy = 0; yy < subsample; yy++) {
+                    int py = y * subsample + yy;
+                    int srow;
+                    if (py >= img->height) break;
+                    srow = djvu_bm_rowoffset(&page, img->height - 1 - py);
+                    for (xx = 0; xx < subsample; xx++) {
+                        int px = x * subsample + xx;
+                        if (px >= img->width) continue;
+                        tot++;
+                        if (page.data[srow + px]) cnt++;
                     }
-                    dst[x] = tot ? (uint8_t)(255 - (cnt * 255 / tot)) : 255;
                 }
+                dst[x] = tot ? (uint8_t)(255 - (cnt * 255 / tot)) : 255;
             }
         }
         djvu_bm_free(ctx, &page);
