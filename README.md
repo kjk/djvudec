@@ -4,7 +4,8 @@ This is a djvu format decoder, like [libdjvu](https://github.com/barak/djvulibre
 * smaller (in [SumatraPDF](https://www.sumatrapdfreader.org/), I saved 400 kB when I replaced libdjvu)
 * plain C, no dependencies (vs. C++)
 * simpler API
-* simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite.
+* simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite
+* mostly faster, according to benchmarks (`bun cmd/bench.ts`)
 * tested on thousands of .djvu files for bit-by-bit correctness to libdjvu
 
 ## API
