@@ -171,22 +171,27 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
 }
 
 static djvu_image *apply_page_rotation(djvu_ctx *ctx, djvu_doc *doc, int page_no,
-                                       djvu_image *img, int subsample)
+                                       djvu_image *img, int subsample,
+                                       djvu_render_timings *t)
 {
     djvu_page_info pi;
     int k;
     djvu_image *r;
+    double t0;
 
     if (!img || subsample != 1) return img;
     if (djvu_doc_page_info(doc, page_no, &pi) != 0 || pi.rotation == 0) return img;
     k = rotation_quarter_turns(pi.rotation);
     if (!k) return img;
+    if (t) t0 = djvu_bench_now_ms();
     r = image_rotate_cw(ctx, img, k);
+    if (t) t->rotate_ms += djvu_bench_now_ms() - t0;
     if (r) { djvu_image_destroy(ctx, img); return r; }
     return img;
 }
 
-djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
+djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
+                                   djvu_render_timings *t)
 {
     djvu_ctx *ctx;
     uint32_t form_off, sz;
@@ -195,9 +200,11 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
     int info_ok;
     jb2_image *dict = NULL, *mask = NULL;
     djvu_image *out = NULL;
+    double t0;
 
     if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
     if (subsample < 1) subsample = 1;
+    if (t) djvu_render_timings_clear(t);
     ctx = doc->ctx;
     form_off = doc->pages[page_no].form_off;
     type = djvu_page_get_type(doc, page_no);
@@ -207,8 +214,10 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
     if (type == DJVU_PAGE_BITONAL || type == DJVU_PAGE_COMPOUND) {
         const uint8_t *sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL);
         if (!sjbz) goto done;
+        if (t) t0 = djvu_bench_now_ms();
         dict = load_page_dict(doc, form_off);
         mask = djvu_jb2_decode(ctx, sjbz, sz, dict);
+        if (t) t->jb2_ms += djvu_bench_now_ms() - t0;
         if (!mask) goto done;
     }
 
@@ -216,7 +225,7 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
     if (!out && info_ok && subsample == 1 && !getenv("DJVU_NOCOMPOSE") &&
         (type == DJVU_PAGE_COMPOUND || type == DJVU_PAGE_PHOTO) &&
         djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL) {
-        out = djvu_compose_page(doc, page_no, mask, pi.width, pi.height);
+        out = djvu_compose_page(doc, page_no, mask, pi.width, pi.height, t);
         if (out) goto done;
     }
 
@@ -228,13 +237,21 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
         goto done;
     }
 
-    if (!out && mask)
+    if (!out && mask) {
+        if (t) t0 = djvu_bench_now_ms();
         out = render_bitonal(ctx, mask, subsample);
+        if (t) t->composite_ms += djvu_bench_now_ms() - t0;
+    }
 
 done:
     djvu_jb2_free(ctx, mask);
     djvu_jb2_free(ctx, dict);
-    return apply_page_rotation(ctx, doc, page_no, out, subsample);
+    return apply_page_rotation(ctx, doc, page_no, out, subsample, t);
+}
+
+djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
+{
+    return djvu_page_render_timed(doc, page_no, subsample, NULL);
 }
 
 void djvu_image_destroy(djvu_ctx *ctx, djvu_image *img)

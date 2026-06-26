@@ -70,7 +70,7 @@ static double page_gamma(djvu_doc *doc, uint32_t form_off)
 }
 
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
-                             int width, int height)
+                             int width, int height, djvu_render_timings *t)
 {
     djvu_ctx *ctx = doc->ctx;
     uint32_t form_off = doc->pages[page_no].form_off;
@@ -80,10 +80,15 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     short *colordata = NULL; int ncolor = 0;
     iw_pixmap *fgpm = NULL; djvu_cpix fgnat; int fgred = 0;
     int i;
+    double t0;
 
     memset(&bg, 0, sizeof(bg)); memset(&fgnat, 0, sizeof(fgnat));
+    if (t) t0 = djvu_bench_now_ms();
     if (djvu_compose_background(doc, form_off, width, height, &bg) != 0)
         return NULL;
+    if (t) t->iw44_ms += djvu_bench_now_ms() - t0;
+
+    if (t) t0 = djvu_bench_now_ms();
 
     fgbz = djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL);
     if (fgbz && sz >= 3) {
@@ -112,6 +117,8 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     }
 
     if (!pal) {
+        double tfg;
+        if (t) tfg = djvu_bench_now_ms();
         fg44chunk = djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL);
         if (fg44chunk) {
             int fw, fh;
@@ -129,6 +136,7 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
                 djvu_iw44_free(fgpm); fgpm = NULL;
             }
         }
+        if (t) t->iw44_ms += djvu_bench_now_ms() - tfg;
     }
 
     for (i = 0; mask && i < mask->nblits; i++) {
@@ -186,6 +194,8 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
             }
         } else { djvu_free(ctx, out); out = NULL; }
     }
+
+    if (t) t->composite_ms += djvu_bench_now_ms() - t0;
 
     djvu_free(ctx, pal); djvu_free(ctx, colordata);
     djvu_cpix_free(ctx, &fgnat); djvu_iw44_free(fgpm);

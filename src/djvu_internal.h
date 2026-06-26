@@ -9,6 +9,11 @@
 
 #include "djvu.h"
 #include <stdarg.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 /* ===================================================================== */
 /* core: context, document, chunk parsing, byte readers                  */
@@ -24,6 +29,22 @@ struct djvu_ctx {
 void *djvu_alloc(djvu_ctx *ctx, size_t size);
 void  djvu_free(djvu_ctx *ctx, void *ptr);
 void  djvu_errorf(djvu_ctx *ctx, djvu_severity sev, const char *fmt, ...);
+
+/* Monotonic clock for bench_render / -layers (ms). */
+static inline double djvu_bench_now_ms(void)
+{
+#if defined(_WIN32)
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER t;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart * 1000.0 / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+#endif
+}
 
 /* A component listed in the DJVM directory (DIRM). */
 typedef struct {
@@ -493,8 +514,26 @@ int  djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
 
 int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int height,
                             djvu_cpix *out);
+
+/* Per-stage render timings (bench -layers); milliseconds. */
+typedef struct {
+    double jb2_ms;
+    double iw44_ms;
+    double composite_ms;
+    double rotate_ms;
+} djvu_render_timings;
+
+static inline void djvu_render_timings_clear(djvu_render_timings *t)
+{
+    t->jb2_ms = t->iw44_ms = t->composite_ms = t->rotate_ms = 0.0;
+}
+
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
-                              int width, int height);
+                              int width, int height, djvu_render_timings *t);
+
+/* Like djvu_page_render; optional per-stage timings when t != NULL. */
+djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
+                                   djvu_render_timings *t);
 
 /* ===================================================================== */
 /* debug.c -- test-harness helpers (not part of the public API)           */

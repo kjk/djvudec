@@ -302,8 +302,31 @@ static int run_dump_features(djvu_doc *doc)
     return 0;
 }
 
+static int bench_render_page(djvu_doc *doc, int page0, int warm,
+                             double *total_ms, djvu_render_timings *layer)
+{
+    djvu_ctx *ctx = doc->ctx;
+    int w;
+    double t0;
+
+    for (w = 0; w < warm; w++) {
+        djvu_image *img = djvu_page_render_timed(doc, page0, 1, NULL);
+        if (!img) return 1;
+        djvu_image_destroy(ctx, img);
+    }
+
+    t0 = djvu_bench_now_ms();
+    {
+        djvu_image *img = djvu_page_render_timed(doc, page0, 1, layer);
+        if (!img) return 1;
+        djvu_image_destroy(ctx, img);
+    }
+    *total_ms = djvu_bench_now_ms() - t0;
+    return 0;
+}
+
 /* Three timed renders per page (djvudec only; for bench_before/after). */
-static int run_bench_render(djvu_doc *doc)
+static int run_bench_render(djvu_doc *doc, int warm, int layers)
 {
     djvu_ctx *ctx = doc->ctx;
     int npages = djvu_doc_page_count(doc);
@@ -311,15 +334,24 @@ static int run_bench_render(djvu_doc *doc)
 
     for (i = 0; i < npages; i++) {
         double t[3];
+        djvu_render_timings lt[3];
+
         for (r = 0; r < 3; r++) {
-            double t0 = now_ms();
-            djvu_image *img = djvu_page_render(doc, i, 1);
-            t[r] = now_ms() - t0;
-            if (!img) return 1;
-            djvu_image_destroy(ctx, img);
+            if (bench_render_page(doc, i, warm, &t[r], layers ? &lt[r] : NULL) != 0)
+                return 1;
         }
         printf("p%d %.2f %.2f %.2f\n", i + 1, t[0], t[1], t[2]);
+        if (layers) {
+            printf("layer p%d jb2 %.2f %.2f %.2f iw44 %.2f %.2f %.2f "
+                   "composite %.2f %.2f %.2f rotate %.2f %.2f %.2f\n",
+                   i + 1,
+                   lt[0].jb2_ms, lt[1].jb2_ms, lt[2].jb2_ms,
+                   lt[0].iw44_ms, lt[1].iw44_ms, lt[2].iw44_ms,
+                   lt[0].composite_ms, lt[1].composite_ms, lt[2].composite_ms,
+                   lt[0].rotate_ms, lt[1].rotate_ms, lt[2].rotate_ms);
+        }
     }
+    (void)ctx;
     return 0;
 }
 
@@ -336,6 +368,8 @@ typedef struct {
     int do_title;
     int do_dump_features;
     int do_bench_render;
+    int do_layers;
+    int bench_warm;
     int do_bzz;
     int do_iw;
     int do_all;
@@ -370,6 +404,8 @@ static void usage(void)
         "  -comps             list DJVM components (incl/page/thumb/anno)\n"
         "  -dump-features     tab-separated feature + render-time dump\n"
         "  -bench-render      time 3 renders/page (pN t1 t2 t3 ms; djvudec only)\n"
+        "  -warm N            discard first N renders/page before timing (default 0)\n"
+        "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
         "\n"
         "Codec layers (no full composite):\n"
         "  -bzzdec -out FILE   decode raw BZZ stream (no document open)\n"
@@ -407,6 +443,9 @@ static int parse_args(int argc, char **argv, opts_t *o)
         else if (!strcmp(argv[i], "-title")) o->do_title = 1;
         else if (!strcmp(argv[i], "-dump-features")) o->do_dump_features = 1;
         else if (!strcmp(argv[i], "-bench-render")) o->do_bench_render = 1;
+        else if (!strcmp(argv[i], "-layers")) o->do_layers = 1;
+        else if (!strcmp(argv[i], "-warm") && i + 1 < argc)
+            o->bench_warm = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-bzzdec")) o->do_bzz = 1;
         else if (!strcmp(argv[i], "-all")) o->do_all = 1;
         else if (!strcmp(argv[i], "-bg")) o->do_iw = 8;
@@ -582,7 +621,7 @@ int main(int argc, char **argv)
     }
 
     if (o.do_bench_render) {
-        rc = run_bench_render(doc);
+        rc = run_bench_render(doc, o.bench_warm, o.do_layers);
         goto done;
     }
 

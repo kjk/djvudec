@@ -70,8 +70,17 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
      `bun cmd/bench_perf.ts run before file.djvu > before.txt`,
      `bun cmd/bench_perf.ts run after file.djvu > after.txt`,
      `bun cmd/bench_perf.ts compare before.txt after.txt`.
-  Raw timing lines: `pN t1 t2 t3` (ms, `%.2f`). Same tool also answers
-  `bun cmd/build_dump.ts` / `djvudec_dump -bench-render`.
+  **Warmup:** `-warm N` discards the first N renders per page before timing
+  (cold cache dominates small files). Example:
+  `bun cmd/bench_perf.ts -warm 1 testfiles/subset/foo.djvu`.
+  **Layer breakdown:** `-layers` adds per-stage timings (JB2 decode, IW44,
+  composite, rotate) via `djvu_page_render_timed`. Raw lines:
+  `pN t1 t2 t3` (total ms) and
+  `layer pN jb2 t1 t2 t3 iw44 t1 t2 t3 composite t1 t2 t3 rotate t1 t2 t3`.
+  `bench_perf.ts` forwards `-warm`/`-layers` to the exe and, with `-layers`,
+  prints a before/after breakdown per stage (fastest of 3 per stage).
+  Same flags on `djvudec_dump`: `bun cmd/build_dump.ts` /
+  `djvudec_dump -bench-render -warm 1 -layers file.djvu`.
 - `bun cmd/tests.ts [-clang] [-cpu N]` — the **test driver**: ensures deps,
   calls `buildRef()`+`build()` from `build.ts` (build first, then verify), and
   compares against the oracle over `testfiles/djvu/*.djvu`. Builds with MSVC by
