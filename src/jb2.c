@@ -243,45 +243,6 @@ static int code_num(jb2_codec *c, int low, int high, int *ctxslot)
     return negative ? (-cutoff - 1) : cutoff;
 }
 
-/* ---------- context helpers (bitmap coding) ---------- */
-
-static int get_direct_context(djvu_bitmap *bm, int up2, int up1, int up0, int col)
-{
-    return (djvu_bm_get(bm, up2 + col - 1) << 9) | (djvu_bm_get(bm, up2 + col) << 8) |
-           (djvu_bm_get(bm, up2 + col + 1) << 7) | (djvu_bm_get(bm, up1 + col - 2) << 6) |
-           (djvu_bm_get(bm, up1 + col - 1) << 5) | (djvu_bm_get(bm, up1 + col) << 4) |
-           (djvu_bm_get(bm, up1 + col + 1) << 3) | (djvu_bm_get(bm, up1 + col + 2) << 2) |
-           (djvu_bm_get(bm, up0 + col - 2) << 1) | (djvu_bm_get(bm, up0 + col - 1));
-}
-
-static int shift_direct_context(djvu_bitmap *bm, int ctx, int next,
-                                int up2, int up1, int up0, int col)
-{
-    (void)up0;
-    return ((ctx << 1) & 0x37a) | (djvu_bm_get(bm, up1 + col + 2) << 2) |
-           (djvu_bm_get(bm, up2 + col + 1) << 7) | next;
-}
-
-static int get_cross_context(djvu_bitmap *bm, djvu_bitmap *cbm, int up1, int up0,
-                             int xup1, int xup0, int xdn1, int col)
-{
-    return (djvu_bm_get(bm, up1 + col - 1) << 10) | (djvu_bm_get(bm, up1 + col) << 9) |
-           (djvu_bm_get(bm, up1 + col + 1) << 8) | (djvu_bm_get(bm, up0 + col - 1) << 7) |
-           (djvu_bm_get(cbm, xup1 + col) << 6) | (djvu_bm_get(cbm, xup0 + col - 1) << 5) |
-           (djvu_bm_get(cbm, xup0 + col) << 4) | (djvu_bm_get(cbm, xup0 + col + 1) << 3) |
-           (djvu_bm_get(cbm, xdn1 + col - 1) << 2) | (djvu_bm_get(cbm, xdn1 + col) << 1) |
-           (djvu_bm_get(cbm, xdn1 + col + 1));
-}
-
-static int shift_cross_context(djvu_bitmap *bm, djvu_bitmap *cbm, int ctx, int n,
-                               int up1, int up0, int xup1, int xup0, int xdn1, int col)
-{
-    (void)up0;
-    return ((ctx << 1) & 0x636) | (djvu_bm_get(bm, up1 + col + 1) << 8) |
-           (djvu_bm_get(cbm, xup1 + col) << 6) | (djvu_bm_get(cbm, xup0 + col + 1) << 3) |
-           (djvu_bm_get(cbm, xdn1 + col + 1)) | (n << 7);
-}
-
 /* ---------- bitmap decoders ---------- */
 
 static void code_bitmap_directly(jb2_codec *c, djvu_bitmap *bm)
@@ -294,13 +255,13 @@ static void code_bitmap_directly(jb2_codec *c, djvu_bitmap *bm)
     up1 = djvu_bm_rowoffset(bm, dy + 1);
     up0 = djvu_bm_rowoffset(bm, dy);
     while (dy >= 0) {
-        int context = get_direct_context(bm, up2, up1, up0, 0);
+        int context = jb2_get_direct_context(bm, up2, up1, up0, 0);
         int dx = 0;
         while (dx < dw) {
             int n = code_bit_arr(c, c->bitdist, context);
             djvu_bm_set(bm, up0 + dx, n);
             dx++;
-            context = shift_direct_context(bm, context, n, up2, up1, up0, dx);
+            context = jb2_shift_direct_context(bm, context, n, up2, up1, up0, dx);
         }
         up2 = up1; up1 = up0; up0 = djvu_bm_rowoffset(bm, --dy);
     }
@@ -330,13 +291,13 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
     xdn1 = djvu_bm_rowoffset(cbm, cy - 1) + xd2c;
 
     while (dy >= 0) {
-        int context = get_cross_context(bm, cbm, up1, up0, xup1, xup0, xdn1, 0);
+        int context = jb2_get_cross_context(bm, cbm, up1, up0, xup1, xup0, xdn1, 0);
         int dx = 0;
         while (dx < dw) {
             int n = code_bit_arr(c, c->cbitdist, context);
             djvu_bm_set(bm, up0 + dx, n);
             dx++;
-            context = shift_cross_context(bm, cbm, context, n, up1, up0,
+            context = jb2_shift_cross_context(bm, cbm, context, n, up1, up0,
                                           xup1, xup0, xdn1, dx);
         }
         up1 = up0; up0 = djvu_bm_rowoffset(bm, --dy);
