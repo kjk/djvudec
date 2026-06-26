@@ -55,9 +55,10 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   NB: Bun's shell eats `\` in glob args, so `ROOT` is normalized to forward
   slashes; MSVC flags use `-` (a `/` synonym) to dodge the same path-mangling.
 - `bun cmd/bench.ts [file.djvu] [-clang] [-full]` — builds, then runs
-  `djvu_test -bench` to compare our per-page decode speed against DjVuLibre's
-  (decode+composite, same steady_clock both sides). With no file it picks a random
-  `.djvu` from `testfiles/subset` (`-full` → `testfiles/full`). Each line:
+  `djvu_test -bench` to compare our per-page render speed against DjVuLibre's
+  (`ddjvuapi` `page_render`: decode + composite + rotation; same `steady_clock`
+  both sides). With no file it picks a random `.djvu` from `testfiles/subset`
+  (`-full` → `testfiles/full`). Each line:
   `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%` (`+` = we're slower).
 - **Before/after render perf** (djvudec only, no DjVuLibre):
   1. `bun cmd/build_bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`
@@ -251,7 +252,8 @@ Notes:
 - `test/jb2ref.cpp` — decode raw Sjbz, dump blits/mask via DjVuLibre internals.
 - `djvu_test.exe` flags: `-info -page N -out f -text -bzzdec -comps -bench`,
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
-  `-bench` times our decode vs DjVuLibre's per page (see `bun cmd/bench.ts`).
+  `-bench` times our render vs DjVuLibre `ddjvu_page_render` per page (see
+  `bun cmd/bench.ts`).
 
 ## Methodology
 Reference-oracle verification: every codec layer is checked byte-exact against

@@ -1,40 +1,15 @@
 /* bench_ddjvu.cpp -- DjVuLibre oracle + timing shim for djvu_test.
  *
- * -bench uses DjVuDocument/DjVuImage (same high-level composite path).
- * -verify-render uses ddjvuapi page_render (same as ddjvu.exe PNM output). */
-#include "libdjvu/DjVuDocument.h"
-#include "libdjvu/DjVuImage.h"
-#include "libdjvu/GPixmap.h"
-#include "libdjvu/GBitmap.h"
-#include "libdjvu/GRect.h"
-#include "libdjvu/GURL.h"
-#include "libdjvu/GException.h"
+ * -bench times ddjvuapi page_render (decode + composite + rotation), matching
+ *   ddjvu.exe and our djvu_page_render output path.
+ * -verify-render uses the same ddjvuapi page_render for byte-exact compares. */
 #include "libdjvu/ddjvuapi.h"
 #include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
 
-using namespace DJVU;
-
-/* Cached DjVuLibre document for repeated page renders (-bench). */
-static GP<DjVuDocument> g_bench_doc;
-static char g_bench_path[4096];
-
-static GP<DjVuDocument> bench_open_doc(const char *path)
-{
-    if (!g_bench_doc || std::strcmp(g_bench_path, path) != 0) {
-        GURL url = GURL::Filename::UTF8(path);
-        g_bench_doc = DjVuDocument::create_wait(url);
-        if (!g_bench_doc)
-            return 0;
-        std::strncpy(g_bench_path, path, sizeof(g_bench_path) - 1);
-        g_bench_path[sizeof(g_bench_path) - 1] = 0;
-    }
-    return g_bench_doc;
-}
-
-/* Cached ddjvuapi document for -verify-render (matches ddjvu.exe). */
+/* Cached ddjvuapi document for -bench / -verify-render. */
 static ddjvu_context_t *g_api_ctx;
 static ddjvu_document_t *g_api_doc;
 static char g_api_path[4096];
@@ -86,8 +61,6 @@ extern "C" {
 
 void bench_ddjvu_reset(void)
 {
-    g_bench_doc = 0;
-    g_bench_path[0] = 0;
     if (g_api_doc) {
         ddjvu_document_release(g_api_doc);
         g_api_doc = 0;
@@ -103,31 +76,65 @@ double bench_now_ms(void)
         .count();
 }
 
+/* Time one full page render via ddjvuapi (page decode + composite + rotation). */
 double bench_ddjvu_page_ms(const char *path, int page0)
 {
+    ddjvu_page_t *page = 0;
+    ddjvu_format_t *fmt = 0;
+    ddjvu_rect_t prect, rrect;
+    ddjvu_format_style_t style;
+    int iw, ih, rowsize, want_rgb;
+    unsigned char *image = 0;
     double ms = -1.0;
-    G_TRY
-    {
-        GP<DjVuDocument> doc = bench_open_doc(path);
-        if (doc) {
-            double t0 = bench_now_ms();
-            GP<DjVuImage> dimg = doc->get_page(page0, true);
-            if (dimg) {
-                GRect rect(0, 0, dimg->get_width(), dimg->get_height());
-                if (dimg->is_legal_bilevel())
-                    (void)dimg->get_bitmap(rect, 1);
-                else
-                    (void)dimg->get_pixmap(rect, 1, 0);
-                ms = bench_now_ms() - t0;
-            }
-        }
-    }
-    G_CATCH(ex)
-    {
-        (void)ex;
-        ms = -1.0;
-    }
-    G_ENDCATCH;
+    double t0;
+
+    if (api_open_doc(path) != 0)
+        return -1.0;
+
+    t0 = bench_now_ms();
+
+    page = ddjvu_page_create_by_pageno(g_api_doc, page0);
+    if (!page)
+        goto done;
+    while (!ddjvu_page_decoding_done(page))
+        api_handle(1);
+    if (ddjvu_page_decoding_error(page))
+        goto done;
+
+    iw = ddjvu_page_get_width(page);
+    ih = ddjvu_page_get_height(page);
+    if (iw <= 0 || ih <= 0)
+        goto done;
+
+    prect.x = prect.y = 0;
+    prect.w = (unsigned int)iw;
+    prect.h = (unsigned int)ih;
+    rrect = prect;
+
+    want_rgb = (ddjvu_page_get_type(page) == DDJVU_PAGETYPE_BITONAL) ? 0 : 1;
+    style = want_rgb ? DDJVU_FORMAT_RGB24 : DDJVU_FORMAT_GREY8;
+    fmt = ddjvu_format_create(style, 0, 0);
+    if (!fmt)
+        goto done;
+    ddjvu_format_set_row_order(fmt, 1);
+
+    rowsize = want_rgb ? iw * 3 : iw;
+    image = (unsigned char *)std::malloc((size_t)rowsize * (size_t)ih);
+    if (!image)
+        goto done;
+
+    if (!ddjvu_page_render(page, DDJVU_RENDER_COLOR, &prect, &rrect, fmt,
+                           rowsize, (char *)image))
+        std::memset(image, 0xff, (size_t)rowsize * (size_t)ih);
+
+    ms = bench_now_ms() - t0;
+
+done:
+    std::free(image);
+    if (fmt)
+        ddjvu_format_release(fmt);
+    if (page)
+        ddjvu_page_release(page);
     return ms;
 }
 

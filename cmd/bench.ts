@@ -1,12 +1,11 @@
-// bench.ts -- benchmark our page decoder against DjVuLibre's.
+// bench.ts -- benchmark our page render against DjVuLibre ddjvu_page_render.
 //
 //   bun cmd/bench.ts [file.djvu] [-clang] [-full]
 //
-// Builds djvu_test (which links DjVuLibre via the bench shim), then runs
-// `djvu_test -bench` on the given file. With no file, picks a random .djvu from
-// testfiles/subset (recursively; `-full` uses testfiles/full). -clang uses the
-// clang harness (default: MSVC on Windows). Per page it prints DjVuLibre time,
-// our time, the absolute delta (+ = we're slower), and the percentage delta.
+// Builds djvu_test (DjVuLibre via test/bench_ddjvu.cpp), then runs
+// `djvu_test -bench` on the given file. Both sides time full render (decode +
+// composite + rotation). With no file, picks a random .djvu from testfiles/subset
+// (`-full` → testfiles/full). Per page: DjVuLibre ms, ours ms, delta (+ = slower).
 import { existsSync, readdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { getDeps } from "./get-deps";
