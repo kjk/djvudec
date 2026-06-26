@@ -25,7 +25,8 @@
 // `-clean` deletes out/ before building, forcing a full harness rebuild.
 // After each djvu_test_* subprocess exits, Windows FFI enumerates processes; if
 // any djvu_test_* process exceeds 8 GB RAM, all are killed and the offending
-// file is printed before exit.
+// file is printed before exit. Long books are verified in VERIFY_PAGE_CHUNK-page
+// subprocesses; render and text verify run sequentially per file.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
@@ -39,6 +40,10 @@ const RB = join(ROOT, "ref_build");
 const VERIFY_DIFFS = join(ROOT, "verify_diffs");
 let TEST = join(ROOT, "out", "msvc", "djvu_test_msvc.exe"); // set by build() in main()
 const pidToFile = new Map<number, string>();
+
+// Fresh djvu_test subprocess every N pages so CRT/libdjvu working set does not
+// climb on long multipage -verify-render runs (e.g. 360-page books).
+const VERIFY_PAGE_CHUNK = 16;
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
 
@@ -244,27 +249,60 @@ async function fetchRefText(f: string, nPages: number): Promise<Buffer> {
 async function verifyRender(
   f: string,
   name: string,
+  nPages: number,
 ): Promise<Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad">> {
   const diffDir = join(VERIFY_DIFFS, safeDirName(name));
   mkdirSync(diffDir, { recursive: true });
-  const proc = Bun.spawn({
-    cmd: [TEST, "-verify-render", "-diffdir", diffDir, f],
-    stdout: "pipe",
-    stderr: "ignore",
-  });
-  trackDjvuTestProc(proc, f, pidToFile);
-  const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
-  const code = await awaitDjvuTestProc(proc, pidToFile);
-  if (code !== 0 && code !== 1) {
-    return {
-      fRender: [] as number[],
-      m: 0,
-      mm: 1,
-      skip: 0,
-      bad: [`${name}: djvu_test -verify-render exited ${code}`],
-    };
+
+  const merged = {
+    fRender: [] as number[],
+    m: 0,
+    mm: 0,
+    skip: 0,
+    bad: [] as string[],
+  };
+
+  for (let lo = 1; lo <= nPages; lo += VERIFY_PAGE_CHUNK) {
+    const hi = Math.min(nPages, lo + VERIFY_PAGE_CHUNK - 1);
+    const proc = Bun.spawn({
+      cmd: [TEST, "-verify-render", "-diffdir", diffDir, f],
+      stdout: "pipe",
+      stderr: "ignore",
+      env: {
+        ...process.env,
+        DJVU_VERIFY_LO: String(lo),
+        DJVU_VERIFY_HI: String(hi),
+      },
+    });
+    trackDjvuTestProc(proc, f, pidToFile);
+    const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
+    const code = await awaitDjvuTestProc(proc, pidToFile);
+    if (code === 3) {
+      return {
+        fRender: [] as number[],
+        m: 0,
+        mm: 1,
+        skip: 0,
+        bad: [`${name}: djvu_test -verify-render p${lo}-${hi} hit DJVU_VERIFY_MEM_MB`],
+      };
+    }
+    if (code !== 0 && code !== 1) {
+      return {
+        fRender: [] as number[],
+        m: 0,
+        mm: 1,
+        skip: 0,
+        bad: [`${name}: djvu_test -verify-render p${lo}-${hi} exited ${code}`],
+      };
+    }
+    const part = parseVerifyRender(name, out);
+    merged.m += part.m;
+    merged.mm += part.mm;
+    merged.skip += part.skip;
+    merged.fRender.push(...part.fRender);
+    merged.bad.push(...part.bad);
   }
-  return parseVerifyRender(name, out);
+  return merged;
 }
 
 async function verifyText(f: string, nPages: number, hasText: boolean, name: string) {
@@ -299,10 +337,8 @@ async function verifyFile(
   hasText: boolean,
 ): Promise<VerifyResult> {
   const name = basename(f);
-  const [render, text] = await Promise.all([
-    verifyRender(f, name),
-    verifyText(f, nPages, hasText, name),
-  ]);
+  const render = await verifyRender(f, name, nPages);
+  const text = await verifyText(f, nPages, hasText, name);
   return { ...render, ...text };
 }
 

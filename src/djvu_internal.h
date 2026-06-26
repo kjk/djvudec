@@ -9,6 +9,7 @@
 
 #include "djvu.h"
 #include <stdarg.h>
+#include <stdio.h>
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -588,5 +589,8 @@ djvu_image *djvu_debug_render_iw_gray(djvu_doc *doc, int page_no, int kind);
 djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane);
 djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no);
 int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);
+
+/* Per-page verify memory snapshot (stderr; test harness only). */
+void djvu_debug_verify_mem(djvu_doc *doc, int page_no, const char *stage, FILE *out);
 
 #endif /* DJVU_INTERNAL_H */

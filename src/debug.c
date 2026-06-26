@@ -153,3 +153,26 @@ int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path)
     fclose(f);
     return 0;
 }
+
+void djvu_debug_verify_mem(djvu_doc *doc, int page_no, const char *stage, FILE *out)
+{
+    int iw_bg = 0, iw_fg = 0, jb2_pg = 0, i;
+    size_t doc_len = 0;
+
+    if (!out) return;
+    if (!doc) {
+        fprintf(out, "mem_dbg\t%d\t%s\tnodoc\n", page_no, stage ? stage : "");
+        return;
+    }
+    doc_len = doc->len;
+    for (i = 0; i < doc->npages; i++) {
+        if (doc->pages[i].iw_bg) iw_bg++;
+        if (doc->pages[i].iw_fg) iw_fg++;
+        if (doc->pages[i].jb2_dict) jb2_pg++;
+    }
+    fprintf(out,
+            "mem_dbg\t%d\t%s\tnpages=%d doc_bytes=%zu iw_bg=%d iw_fg=%d "
+            "jb2_inline=%d jb2_dicts=%d jb2_page_ref=%d\n",
+            page_no, stage ? stage : "", doc->npages, doc_len, iw_bg, iw_fg,
+            doc->n_jb2_inline, doc->n_jb2_dicts, jb2_pg);
+}

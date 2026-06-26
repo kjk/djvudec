@@ -14,6 +14,10 @@
 #include <direct.h>
 #include <fcntl.h>
 #include <io.h>
+#include <malloc.h>
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -34,6 +38,8 @@ int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
                             bench_render *out);
 void bench_render_free(bench_render *img);
 void bench_ddjvu_reset(void);
+void bench_ddjvu_purge(void);
+void bench_ddjvu_mem_debug(FILE *out);
 
 static void on_error(void *user, djvu_severity sev, const char *msg)
 {
@@ -411,6 +417,68 @@ static void ensure_dir(const char *dir)
 #endif
 }
 
+#if defined(_WIN32)
+static int verify_mem_counters(size_t *ws_bytes, size_t *commit_bytes)
+{
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (!ws_bytes || !commit_bytes)
+        return 0;
+    *ws_bytes = *commit_bytes = 0;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        *ws_bytes = (size_t)pmc.WorkingSetSize;
+        *commit_bytes = (size_t)pmc.PagefileUsage;
+        return 1;
+    }
+    return 0;
+}
+#else
+static int verify_mem_counters(size_t *ws_bytes, size_t *commit_bytes)
+{
+    if (ws_bytes) *ws_bytes = 0;
+    if (commit_bytes) *commit_bytes = 0;
+    return 0;
+}
+#endif
+
+/* Log RSS/commit + decoder/oracle state; stop when either exceeds DJVU_VERIFY_MEM_MB. */
+static int verify_mem_checkpoint(djvu_doc *doc, int page1, const char *stage)
+{
+    const char *lim_s = getenv("DJVU_VERIFY_MEM_MB");
+    size_t limit_mb = lim_s ? (size_t)atoi(lim_s) : 4096;
+    size_t ws = 0, commit = 0;
+    size_t ws_mb, commit_mb;
+
+    verify_mem_counters(&ws, &commit);
+    ws_mb = ws / (1024 * 1024);
+    commit_mb = commit / (1024 * 1024);
+
+    if (limit_mb) {
+        fprintf(stderr, "mem\t%d\t%s\tws_mb=%zu\tcommit_mb=%zu",
+                page1, stage, ws_mb, commit_mb);
+        bench_ddjvu_mem_debug(stderr);
+        fprintf(stderr, "\n");
+        djvu_debug_verify_mem(doc, page1, stage, stderr);
+        fflush(stderr);
+    }
+    if (limit_mb && (ws_mb >= limit_mb || commit_mb >= limit_mb)) {
+        fprintf(stderr,
+                "mem\t%d\tLIMIT\tws_mb=%zu\tcommit_mb=%zu\tlimit_mb=%zu\n",
+                page1, ws_mb, commit_mb, limit_mb);
+        fflush(stderr);
+        return -1;
+    }
+    return 0;
+}
+
+/* Trim process working set after each verify page (MSVC heap + pipe flush). */
+static void verify_page_finish(void)
+{
+#if defined(_WIN32)
+    _heapmin();
+#endif
+    fflush(stdout);
+}
+
 /* In-memory render verify vs ddjvuapi; write PNMs to diffdir only on mismatch. */
 static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdir)
 {
@@ -427,11 +495,16 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         if (lo < 1) lo = 1;
         if (hi > npages) hi = npages;
         ensure_dir(diffdir);
+        if (verify_mem_checkpoint(doc, lo, "chunk_start") < 0)
+            goto mem_limit;
         for (i = lo - 1; i < hi; i++) {
         page_kind_t kind = page_kind(doc, i);
         if (kind == PK_OTHER) {
             skip++;
             printf("render\t%d\tskip\n", i + 1);
+            if (verify_mem_checkpoint(doc, i + 1, "skip") < 0)
+                goto mem_limit;
+            verify_page_finish();
             continue;
         }
         {
@@ -441,16 +514,22 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             bench_render ref;
 
             memset(&ref, 0, sizeof(ref));
+            if (verify_mem_checkpoint(doc, i + 1, "after_ours_render") < 0)
+                goto mem_limit;
             if (getenv("DJVU_VERIFY_OURS_ONLY")) {
                 if (!mine) {
                     mm++;
                     printf("render\t%d\terror\n", i + 1);
+                    verify_page_finish();
                     continue;
                 }
                 m++;
                 printf("render\t%d\tok\n", i + 1);
                 djvu_image_destroy(ctx, mine);
                 djvu_doc_drop_page_iw44(doc, i);
+                if (verify_mem_checkpoint(doc, i + 1, "after_page_free") < 0)
+                    goto mem_limit;
+                verify_page_finish();
                 continue;
             }
             if (!mine || bench_ddjvu_render_page(path, i, want_rgb, &ref) != 0) {
@@ -459,8 +538,11 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
                 djvu_doc_drop_page_iw44(doc, i);
                 mm++;
                 printf("render\t%d\terror\n", i + 1);
+                verify_page_finish();
                 continue;
             }
+            if (verify_mem_checkpoint(doc, i + 1, "after_ddjvu_render") < 0)
+                goto mem_limit;
             if (image_equal(mine, &ref)) {
                 m++;
                 printf("render\t%d\tok\n", i + 1);
@@ -491,12 +573,19 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             bench_render_free(&ref);
             djvu_image_destroy(ctx, mine);
             djvu_doc_drop_page_iw44(doc, i);
+            if (verify_mem_checkpoint(doc, i + 1, "after_page_free") < 0)
+                goto mem_limit;
+            verify_page_finish();
         }
         }
     }
-    bench_ddjvu_reset();
+    bench_ddjvu_purge();
     printf("summary\t0\t0\t0\t%d\t%d\t%d\n", m, mm, skip);
     return mm ? 1 : 0;
+mem_limit:
+    bench_ddjvu_purge();
+    printf("summary\t0\t0\t0\t%d\t%d\t%d\n", m, mm, skip);
+    return 3;
 }
 
 /* Text-only verify: one doc open; ref text on stdin (djvutxt multi-page blob). */
@@ -610,7 +699,8 @@ int main(int argc, char **argv)
     data = read_file(in, &len);
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
 
-    /* Verify keeps one page of IW44 + one ddjvuapi doc decode at a time. */
+    /* Verify: lazy IW44/JB2 in our decoder; one ddjvuapi doc per subprocess chunk
+     * (tests.ts restarts every DJVU_VERIFY_* pages); bench_ddjvu_purge at end. */
     if (do_verify_render) {
 #if defined(_WIN32)
         _putenv("DJVU_LAZY_IW44=1");

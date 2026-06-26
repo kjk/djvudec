@@ -646,9 +646,10 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
             page_load_info(doc, &doc->pages[i]);
     }
     djvu_scaler_init();
-    if (!getenv("DJVU_LAZY_IW44"))
+    if (!getenv("DJVU_LAZY_IW44")) {
         djvu_doc_preload_iw44(doc);
-    djvu_doc_preload_jb2_dicts(doc);
+        djvu_doc_preload_jb2_dicts(doc);
+    }
     return doc;
 }
 
