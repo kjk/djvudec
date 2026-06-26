@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <cstdio>
 
+extern "C" int djvu_test_ddjvu_cold;
+
 /* Cached ddjvuapi document for -verify-render (bench opens fresh each rep). */
 static ddjvu_context_t *g_api_ctx;
 static ddjvu_document_t *g_api_doc;
@@ -31,7 +33,7 @@ static int api_open_doc(const char *path)
 {
     if (!g_api_ctx) {
         g_api_ctx = ddjvu_context_create("djvu_test");
-        if (g_api_ctx && std::getenv("DJVU_DDJVU_COLD"))
+        if (g_api_ctx && djvu_test_ddjvu_cold)
             ddjvu_cache_set_size(g_api_ctx, 0);
     }
     if (!g_api_ctx)

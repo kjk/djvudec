@@ -43,6 +43,11 @@ djvu_ctx *djvu_ctx_new(djvu_alloc_cb alloc, djvu_free_cb free_cb,
                        djvu_error_cb error, void *user);
 void djvu_ctx_free(djvu_ctx *ctx);
 
+/* Per-context decode options (defaults off/zero). Set before djvu_doc_open. */
+void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable);
+void djvu_ctx_set_no_compose(djvu_ctx *ctx, int enable);
+void djvu_ctx_set_iw_max_chunks(djvu_ctx *ctx, int max_chunks);
+
 /* ----- documents ----- */
 
 /* Open a document over an in-memory buffer (NOT copied; must remain valid

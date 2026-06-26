@@ -35,12 +35,30 @@ djvu_ctx *djvu_ctx_new(djvu_alloc_cb alloc, djvu_free_cb free_cb,
     ctx->free = free_cb ? free_cb : default_free;
     ctx->error = error;
     ctx->user = user;
+    ctx->lazy_iw44 = 0;
+    ctx->no_compose = 0;
+    ctx->iw_max_chunks = 0;
     return ctx;
 }
 
 void djvu_ctx_free(djvu_ctx *ctx)
 {
     if (ctx) ctx->free(ctx->user, ctx);
+}
+
+void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable)
+{
+    if (ctx) ctx->lazy_iw44 = enable ? 1 : 0;
+}
+
+void djvu_ctx_set_no_compose(djvu_ctx *ctx, int enable)
+{
+    if (ctx) ctx->no_compose = enable ? 1 : 0;
+}
+
+void djvu_ctx_set_iw_max_chunks(djvu_ctx *ctx, int max_chunks)
+{
+    if (ctx) ctx->iw_max_chunks = max_chunks < 0 ? 0 : max_chunks;
 }
 
 /* ---- INFO chunk ---- */
@@ -230,7 +248,6 @@ static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
                              iw_pixmap **slot)
 {
     uint32_t sz;
-    const char *mc;
     int maxc;
     iw_pixmap *pm;
 
@@ -238,8 +255,7 @@ static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
         return;
     pm = djvu_iw44_new(doc->ctx);
     if (!pm) return;
-    mc = getenv("DJVU_IW_MAXCHUNKS");
-    maxc = mc ? atoi(mc) : 0;
+    maxc = doc->ctx->iw_max_chunks;
     if (djvu_iw44_decode_form(doc, pg->form_off, id, pm, maxc) != 0) {
         djvu_iw44_free(pm);
         djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
@@ -666,7 +682,7 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
             page_load_info(doc, &doc->pages[i]);
     }
     djvu_scaler_init();
-    if (!getenv("DJVU_LAZY_IW44")) {
+    if (!doc->ctx->lazy_iw44) {
         djvu_doc_preload_iw44(doc);
         djvu_doc_preload_jb2_dicts(doc);
     }

@@ -227,7 +227,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     }
 
     /* Full-res color composite when BG44 is present (compose_background requires it). */
-    if (!out && info_ok && subsample == 1 && !getenv("DJVU_NOCOMPOSE") &&
+    if (!out && info_ok && subsample == 1 && !ctx->no_compose &&
         (type == DJVU_PAGE_COMPOUND || type == DJVU_PAGE_PHOTO) &&
         djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL) {
         out = djvu_compose_page(doc, page_no, mask, pi.width, pi.height, t);

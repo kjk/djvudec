@@ -25,6 +25,9 @@ struct djvu_ctx {
     djvu_free_cb  free;
     djvu_error_cb error;
     void *user;
+    int lazy_iw44;     /* defer IW44/JB2 preload until explicit preload or use */
+    int no_compose;    /* skip color composite in render */
+    int iw_max_chunks; /* cap IW44 chunks per layer (0 = unlimited) */
 };
 
 void *djvu_alloc(djvu_ctx *ctx, size_t size);
@@ -101,7 +104,7 @@ struct djvu_doc {
 };
 
 /* Cached IW44 layers (read-only during render; freed in djvu_doc_close).
-   With DJVU_LAZY_IW44 set at doc open, layers decode on first use per page. */
+   With ctx->lazy_iw44 at doc open, layers decode on first use per page. */
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
 void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);

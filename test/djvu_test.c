@@ -23,6 +23,9 @@
 #include <unistd.h>
 #endif
 
+/* Disable DjVuLibre ddjvuapi document cache (-verify-render cold oracle). */
+int djvu_test_ddjvu_cold = 0;
+
 /* timing / oracle helpers from bench_ddjvu.cpp (DjVuLibre, same clock) */
 typedef struct bench_render {
     int width, height;
@@ -495,7 +498,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         if (lo < 1) lo = 1;
         if (hi > npages) hi = npages;
         ensure_dir(diffdir);
-        if (getenv("DJVU_LAZY_IW44")) {
+        if (doc->ctx->lazy_iw44) {
             djvu_doc_preload_jb2_range(doc, lo - 1, hi - 1);
             djvu_doc_preload_iw44_range(doc, lo - 1, hi - 1);
         }
@@ -704,18 +707,13 @@ int main(int argc, char **argv)
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
 
     /* Verify: lazy decode per chunk (tests.ts sets DJVU_VERIFY_LO/HI); cold ddjvu oracle. */
-    if (do_verify_render) {
-#if defined(_WIN32)
-        _putenv("DJVU_LAZY_IW44=1");
-        _putenv("DJVU_DDJVU_COLD=1");
-#else
-        setenv("DJVU_LAZY_IW44", "1", 0);
-        setenv("DJVU_DDJVU_COLD", "1", 0);
-#endif
-    }
+    if (do_verify_render)
+        djvu_test_ddjvu_cold = 1;
 
     djvu_init();
     ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
+    if (do_verify_render)
+        djvu_ctx_set_lazy_iw44(ctx, 1);
 
     if (do_bzz) {
         /* decode a raw BZZ stream and write to -out (or stdout) */

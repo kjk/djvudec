@@ -130,8 +130,7 @@ int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path)
     if (!doc || page_no < 0 || page_no >= doc->npages) return -1;
     form_off = doc->pages[page_no].form_off;
     {
-        const char *mc = getenv("DJVU_IW_MAXCHUNKS");
-        int maxc = mc ? atoi(mc) : 1000;
+        int maxc = doc->ctx->iw_max_chunks > 0 ? doc->ctx->iw_max_chunks : 1000;
         while ((chunk = djvu_form_find_chunk(doc, form_off, id, &sz, &start)) != NULL && n < 64) {
             if (n >= maxc) break;
             chunks[n] = chunk; sizes[n] = sz; n++;
