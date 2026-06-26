@@ -18,15 +18,16 @@
 // `-failout path` writes failing file paths (default: failures.txt in repo root);
 // each failure is appended as soon as it is found.
 // `-failures path` tests only paths listed in that file (one per line, # comments).
+// `-clean` deletes out/ before building, forcing a full harness rebuild.
 import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
-import { buildRef, build, defaultUseClang } from "./build";
+import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
 const RB = join(ROOT, "ref_build");
-let TEST = join(ROOT, "out", "djvu_test_msvc.exe"); // set by build() in main()
+let TEST = join(ROOT, "out", "msvc", "djvu_test_msvc.exe"); // set by build() in main()
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
 
@@ -289,6 +290,7 @@ async function main(): Promise<number> {
   await getDeps();
   const SPECS = process.env.DJVU_SPECS ?? join(ROOT, "testfiles");
   const useClang = process.argv.includes("-clang") || defaultUseClang;
+  if (process.argv.includes("-clean")) cleanBuildOutput();
   await buildRef();
   TEST = await build(useClang);
 
