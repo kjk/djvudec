@@ -419,8 +419,15 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
     int m = 0, mm = 0, skip = 0;
     int i;
 
-    ensure_dir(diffdir);
-    for (i = 0; i < npages; i++) {
+    {
+        const char *lo_s = getenv("DJVU_VERIFY_LO");
+        const char *hi_s = getenv("DJVU_VERIFY_HI");
+        int lo = lo_s ? atoi(lo_s) : 1;
+        int hi = hi_s ? atoi(hi_s) : npages;
+        if (lo < 1) lo = 1;
+        if (hi > npages) hi = npages;
+        ensure_dir(diffdir);
+        for (i = lo - 1; i < hi; i++) {
         page_kind_t kind = page_kind(doc, i);
         if (kind == PK_OTHER) {
             skip++;
@@ -432,10 +439,19 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             const char *ext = want_rgb ? "ppm" : "pgm";
             djvu_image *mine = djvu_page_render(doc, i, 1);
             bench_render ref;
-            char refpath[1024], minepath[1024];
 
             memset(&ref, 0, sizeof(ref));
-            refpath[0] = minepath[0] = 0;
+            if (getenv("DJVU_VERIFY_OURS_ONLY")) {
+                if (!mine) {
+                    mm++;
+                    printf("render\t%d\terror\n", i + 1);
+                    continue;
+                }
+                m++;
+                printf("render\t%d\tok\n", i + 1);
+                djvu_image_destroy(ctx, mine);
+                continue;
+            }
             if (!mine || bench_ddjvu_render_page(path, i, want_rgb, &ref) != 0) {
                 if (mine) djvu_image_destroy(ctx, mine);
                 bench_render_free(&ref);
@@ -449,6 +465,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             } else {
                 mm++;
                 if (diffdir && diffdir[0]) {
+                    char refpath[1024], minepath[1024];
                     snprintf(refpath, sizeof(refpath), "%s/p%d_ref.%s",
                              diffdir, i + 1, ext);
                     snprintf(minepath, sizeof(minepath), "%s/p%d_mine.%s",
@@ -471,6 +488,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             }
             bench_render_free(&ref);
             djvu_image_destroy(ctx, mine);
+        }
         }
     }
     printf("summary\t0\t0\t0\t%d\t%d\t%d\n", m, mm, skip);

@@ -7,10 +7,12 @@
 #define BZZ_MAXBLOCK 4096   /* in KiB */
 #define BZZ_FREQMAX  4
 #define BZZ_CTXIDS   3
+/* Deepest MTF branch: ctxoff 196 + decode_binary(7) index 127 => 323. */
+#define BZZ_CXT_SIZE 384
 
 typedef struct {
     djvu_zp zp;
-    djvu_zp_ctx cxt[300];
+    djvu_zp_ctx cxt[BZZ_CXT_SIZE];
     uint8_t *block;       /* current decoded block buffer */
     int block_cap;
     int *pos;             /* BWT position buffer */
@@ -186,15 +188,17 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
 uint8_t *djvu_bzz_decode_all(djvu_ctx *ctx, const uint8_t *data, size_t len,
                              size_t *out_len)
 {
-    bzz_dec d;
+    bzz_dec *d;
     uint8_t *out = NULL;
     size_t out_cap = 0, out_size = 0;
 
-    memset(&d, 0, sizeof(d));
-    djvu_zp_init(&d.zp, data, len);
+    d = (bzz_dec *)djvu_alloc(ctx, sizeof(bzz_dec));
+    if (!d) return NULL;
+    memset(d, 0, sizeof(*d));
+    djvu_zp_init(&d->zp, data, len);
 
     for (;;) {
-        int n = bzz_decode_block(&d, ctx);
+        int n = bzz_decode_block(d, ctx);
         if (n < 0) { djvu_free(ctx, out); out = NULL; out_size = 0; break; }
         if (n == 0) break;   /* EOF block */
         if (out_size + (size_t)n + 1 > out_cap) {
@@ -206,12 +210,13 @@ uint8_t *djvu_bzz_decode_all(djvu_ctx *ctx, const uint8_t *data, size_t len,
             if (out) { memcpy(no, out, out_size); djvu_free(ctx, out); }
             out = no; out_cap = ncap;
         }
-        memcpy(out + out_size, d.block, (size_t)n);
+        memcpy(out + out_size, d->block, (size_t)n);
         out_size += (size_t)n;
     }
 
-    djvu_free(ctx, d.block);
-    djvu_free(ctx, d.pos);
+    djvu_free(ctx, d->block);
+    djvu_free(ctx, d->pos);
+    djvu_free(ctx, d);
     if (out) {
         out[out_size] = 0;
         if (out_len) *out_len = out_size;

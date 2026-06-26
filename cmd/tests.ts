@@ -247,7 +247,13 @@ async function verifyRender(
   const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
   const code = await proc.exited;
   if (code !== 0 && code !== 1) {
-    throw new Error(`${name}: djvu_test -verify-render exited ${code}`);
+    return {
+      fRender: [] as number[],
+      m: 0,
+      mm: 1,
+      skip: 0,
+      bad: [`${name}: djvu_test -verify-render exited ${code}`],
+    };
   }
   return parseVerifyRender(name, out);
 }
@@ -266,7 +272,13 @@ async function verifyText(f: string, nPages: number, hasText: boolean, name: str
   const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
   const code = await proc.exited;
   if (code !== 0 && code !== 1) {
-    throw new Error(`${name}: djvu_test -verify-text exited ${code}`);
+    return {
+      fText: [] as number[],
+      tm: 0,
+      tmm: 1,
+      te: 0,
+      tbad: [`${name}: djvu_test -verify-text exited ${code}`],
+    };
   }
   return parseVerifyText(name, out);
 }

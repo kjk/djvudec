@@ -700,6 +700,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
 
 static void codec_free(jb2_codec *c)
 {
+    if (!c) return;
     djvu_free(c->ctx, c->bitcells);
     djvu_free(c->ctx, c->leftcell);
     djvu_free(c->ctx, c->rightcell);
@@ -711,28 +712,31 @@ static void codec_free(jb2_codec *c)
 static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len,
                                   jb2_image *dict, int is_image)
 {
-    jb2_codec c;
+    jb2_codec *c;
     jb2_image *jim = jb2_image_new(ctx);
     int rectype;
     if (!jim) return NULL;
 
-    memset(&c, 0, sizeof(c));
-    c.ctx = ctx;
-    c.zdict = dict;
-    /* index 0 of cell arrays is reserved (sentinel) */
-    ensure_cells(&c, 1);
-    c.ncells = 1;
+    c = (jb2_codec *)djvu_alloc(ctx, sizeof(jb2_codec));
+    if (!c) { djvu_jb2_free(ctx, jim); return NULL; }
 
-    djvu_zp_init(&c.zp, data, len);
+    memset(c, 0, sizeof(*c));
+    c->ctx = ctx;
+    c->zdict = dict;
+    /* index 0 of cell arrays is reserved (sentinel) */
+    ensure_cells(c, 1);
+    c->ncells = 1;
+
+    djvu_zp_init(&c->zp, data, len);
 
     rectype = REC_StartOfData;
     {
         int hist[12]; int k; int dbg = getenv("DJVU_JB2_DEBUG") != NULL;
         for (k = 0; k < 12; k++) hist[k] = 0;
         do {
-            rectype = code_record(&c, jim, is_image);
+            rectype = code_record(c, jim, is_image);
             if (rectype >= 0 && rectype < 12) hist[rectype]++;
-            if (c.error) break;
+            if (c->error) break;
         } while (rectype != REC_EndOfData);
         if (dbg) {
             fprintf(stderr, "JB2 rectypes: SOD=%d NM=%d NMlib=%d NMimg=%d MR=%d "
@@ -779,9 +783,10 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
         }
     }
 
-    if (c.error || !c.got_start_record) {
+    if (c->error || !c->got_start_record) {
         djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "JB2: decode failed");
-        codec_free(&c);
+        codec_free(c);
+        djvu_free(ctx, c);
         djvu_jb2_free(ctx, jim);
         return NULL;
     }
@@ -790,7 +795,8 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
         for (si = 0; si < jim->nshapes; si++)
             djvu_bm_compress(ctx, &jim->shapes[si].bm);
     }
-    codec_free(&c);
+    codec_free(c);
+    djvu_free(ctx, c);
     return jim;
 }
 
