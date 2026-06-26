@@ -526,6 +526,38 @@ static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t 
     return ok ? ms : -1.0;
 }
 
+/* Tight loop for macOS `sample` profiling: one doc open, repeated sum renders. */
+static int profile_sum_page(djvu_ctx *ctx, const uint8_t *data, size_t len, int page0)
+{
+    djvu_doc *doc;
+    djvu_page_type ptype;
+    int subsample, n;
+    size_t cap;
+    uint8_t *dst;
+
+    doc = djvu_doc_open(ctx, data, len);
+    if (!doc)
+        return 1;
+    n = djvu_doc_page_count(doc);
+    if (page0 < 0 || page0 >= n) {
+        fprintf(stderr, "profile-sum: page %d out of range (1..%d)\n", page0 + 1, n);
+        djvu_doc_close(doc);
+        return 1;
+    }
+    subsample = sum_page_subsample(doc, page0, &ptype);
+    cap = sum_dst_capacity(doc, page0);
+    dst = cap ? (uint8_t *)malloc(cap) : NULL;
+    if (!dst) {
+        djvu_doc_close(doc);
+        return 1;
+    }
+    fprintf(stderr, "profile-sum: ready page=%d subsample=%d\n", page0 + 1, subsample);
+    fflush(stderr);
+    for (;;)
+        sum_render_into(doc, page0, subsample, dst);
+    /* not reached */
+}
+
 /* One cold session, sum render: open + render all pages + text + links + close. */
 static double bench_ours_doc_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
 {
@@ -1103,6 +1135,7 @@ int main(int argc, char **argv)
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1, out_sub = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
     int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0, do_verify_into = 0;
+    int do_profile_sum = 0;
     const char *diffdir = NULL;
     int i, rc = 0;
     uint8_t *data; size_t len;
@@ -1127,6 +1160,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-bench-sum")) do_bench = 2; /* SumatraPDF Engine* render path */
+        else if (!strcmp(argv[i], "-profile-sum")) do_profile_sum = 1;
         else if (!strcmp(argv[i], "-verify-into")) do_verify_into = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
         else if (!strcmp(argv[i], "-verify-render")) do_verify_render = 1;
@@ -1159,6 +1193,14 @@ int main(int argc, char **argv)
         ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
     if (do_verify_render)
         djvu_ctx_set_lazy_iw44(ctx, 1);
+
+    if (do_profile_sum) {
+        djvu_ctx_set_bgr(ctx, 1);
+        rc = profile_sum_page(ctx, data, len, page - 1);
+        djvu_ctx_free(ctx);
+        free(data);
+        return rc;
+    }
 
     if (do_bzz) {
         /* decode a raw BZZ stream and write to -out (or stdout) */

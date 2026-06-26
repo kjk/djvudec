@@ -4,31 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Borrow or decode the JB2 shape dictionary for a page. Inline and INCL-referenced
-   Djbz dicts are cached at doc open; *owned is 0 for those (do not free). */
-static jb2_image *load_page_dict(djvu_doc *doc, uint32_t form_off, int *owned)
-{
-    djvu_ctx *ctx = doc->ctx;
-    uint32_t sz;
-    const uint8_t *djbz;
-    jb2_image *dict;
-
-    if (owned) *owned = 0;
-    dict = djvu_doc_jb2_dict_inline(doc, form_off);
-    if (dict) return dict;
-    djbz = djvu_form_find_chunk(doc, form_off, "Djbz", &sz, NULL);
-    if (djbz) {
-        if (owned) *owned = 1;
-        return djvu_jb2_decode_dict(ctx, djbz, sz);
-    }
-    dict = djvu_doc_jb2_dict_for_form(doc, form_off);
-    if (dict) return dict;
-    djbz = djvu_form_find_incl_chunk(doc, form_off, "Djbz", &sz);
-    if (!djbz) return NULL;
-    if (owned) *owned = 1;
-    return djvu_jb2_decode_dict(ctx, djbz, sz);
-}
-
 /* INFO rotation flag -> clockwise quarter-turn count (90->3, 180->2, 270->1). */
 static int rotation_quarter_turns(int rotation)
 {
@@ -255,8 +230,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     djvu_page_type type;
     djvu_page_info pi;
     int info_ok;
-    jb2_image *dict = NULL, *mask = NULL;
-    int dict_owned = 0;
+    jb2_image *mask = NULL;
     djvu_image *out = NULL;
     double t0;
 
@@ -268,13 +242,12 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     type = djvu_page_get_type(doc, page_no);
     info_ok = (djvu_doc_page_info(doc, page_no, &pi) == 0);
 
-    /* Decode the JB2 mask when the page has one. */
+    /* JB2 mask: cached at doc open (lazy fill on first use when lazy_iw44). */
     if (type == DJVU_PAGE_BITONAL || type == DJVU_PAGE_COMPOUND) {
-        const uint8_t *sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL);
-        if (!sjbz) goto done;
+        if (!djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL))
+            goto done;
         if (t) t0 = djvu_bench_now_ms();
-        dict = load_page_dict(doc, form_off, &dict_owned);
-        mask = djvu_jb2_decode(ctx, sjbz, sz, dict);
+        mask = djvu_doc_jb2_mask(doc, page_no);
         if (t) t->jb2_ms += djvu_bench_now_ms() - t0;
         if (!mask) goto done;
     }
@@ -302,8 +275,6 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     }
 
 done:
-    djvu_jb2_free(ctx, mask);
-    if (dict_owned) djvu_jb2_free(ctx, dict);
     return apply_page_rotation(ctx, doc, page_no, out, subsample, t);
 }
 
@@ -404,23 +375,14 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
     if (color && k == 0) {
         uint32_t form_off = doc->pages[page_no].form_off;
         uint32_t sz;
-        const uint8_t *sjbz;
-        jb2_image *dict = NULL, *mask = NULL;
-        int owned = 0;
+        jb2_image *mask = NULL;
 
-        sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL);
-        if (sjbz) {
-            dict = load_page_dict(doc, form_off, &owned);
-            mask = djvu_jb2_decode(ctx, sjbz, sz, dict);
-            if (!mask) {
-                if (owned) djvu_jb2_free(ctx, dict);
+        if (djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL)) {
+            mask = djvu_doc_jb2_mask(doc, page_no);
+            if (!mask)
                 return -1;
-            }
         }
-        rc = djvu_compose_page_into(doc, page_no, mask, w, h, dst, stride);
-        djvu_jb2_free(ctx, mask);
-        if (owned) djvu_jb2_free(ctx, dict);
-        return rc;
+        return djvu_compose_page_into(doc, page_no, mask, w, h, dst, stride);
     }
 
     /* Fallback: render normally (handles gray, rotation, subsampling) then copy

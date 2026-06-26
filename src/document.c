@@ -252,6 +252,14 @@ static void free_page_iw44(djvu_page_int *pg)
     if (pg->iw_fg) { djvu_iw44_free(pg->iw_fg); pg->iw_fg = NULL; }
 }
 
+static void free_page_jb2_mask(djvu_ctx *ctx, djvu_page_int *pg)
+{
+    if (pg->jb2_mask) {
+        djvu_jb2_free(ctx, pg->jb2_mask);
+        pg->jb2_mask = NULL;
+    }
+}
+
 static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
                              iw_pixmap **slot)
 {
@@ -475,6 +483,56 @@ void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0)
     }
 }
 
+static void preload_jb2_mask(djvu_doc *doc, djvu_page_int *pg)
+{
+    uint32_t sz;
+    const uint8_t *sjbz;
+    jb2_image *dict, *mask;
+
+    if (!doc || !pg || pg->jb2_mask) return;
+    sjbz = djvu_form_find_chunk(doc, pg->form_off, "Sjbz", &sz, NULL);
+    if (!sjbz) return;
+    dict = pg->jb2_dict;
+    if (!dict)
+        dict = djvu_doc_jb2_dict_for_form(doc, pg->form_off);
+    mask = djvu_jb2_decode(doc->ctx, sjbz, sz, dict);
+    if (!mask) {
+        djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
+                    "JB2 mask preload failed (form %u)", pg->form_off);
+        return;
+    }
+    pg->jb2_mask = mask;
+}
+
+static void djvu_doc_preload_jb2_masks(djvu_doc *doc)
+{
+    if (!doc) return;
+    djvu_doc_preload_jb2_masks_range(doc, 0, doc->npages - 1);
+}
+
+void djvu_doc_preload_jb2_masks_range(djvu_doc *doc, int lo0, int hi0)
+{
+    int i;
+
+    if (!doc) return;
+    if (lo0 < 0) lo0 = 0;
+    if (hi0 >= doc->npages) hi0 = doc->npages - 1;
+    if (lo0 > hi0) return;
+    for (i = lo0; i <= hi0; i++)
+        preload_jb2_mask(doc, &doc->pages[i]);
+}
+
+jb2_image *djvu_doc_jb2_mask(djvu_doc *doc, int page_no)
+{
+    djvu_page_int *pg;
+
+    if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
+    pg = &doc->pages[page_no];
+    if (!pg->jb2_mask)
+        preload_jb2_mask(doc, pg);
+    return pg->jb2_mask;
+}
+
 static void free_jb2_inline_cache(djvu_ctx *ctx, djvu_doc *doc)
 {
     int i;
@@ -693,6 +751,7 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
     if (!doc->ctx->lazy_iw44) {
         djvu_doc_preload_iw44(doc);
         djvu_doc_preload_jb2_dicts(doc);
+        djvu_doc_preload_jb2_masks(doc);
     }
     return doc;
 }
@@ -711,8 +770,10 @@ void djvu_doc_close(djvu_doc *doc)
     free_jb2_dict_cache(doc->ctx, doc);
     free_jb2_inline_cache(doc->ctx, doc);
     if (doc->pages) {
-        for (i = 0; i < doc->npages; i++)
+        for (i = 0; i < doc->npages; i++) {
+            free_page_jb2_mask(doc->ctx, &doc->pages[i]);
             free_page_iw44(&doc->pages[i]);
+        }
         djvu_free(doc->ctx, doc->pages);
     }
     djvu_free(doc->ctx, doc);
