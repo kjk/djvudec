@@ -9,6 +9,8 @@
 ref_build/
 # local test corpora (copied in, not part of the repo)
 testfiles/
+# verifier failure list (written by cmd/tests.ts)
+failures.txt
 # scratch render/text outputs
 *.pnm
 *.pgm

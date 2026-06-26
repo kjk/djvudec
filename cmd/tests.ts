@@ -12,7 +12,10 @@
 // DJVU_SPECS env var to point the scan at a different directory. Files are
 // tested in parallel across one worker per CPU; `-cpu N` overrides the count.
 // `-rand N` limits the run to N randomly chosen files from the corpus.
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "fs";
+// `-failout path` writes failing file paths (default: failures.txt in repo root);
+// each failure is appended as soon as it is found.
+// `-failures path` tests only paths listed in that file (one per line, # comments).
+import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir, cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
@@ -150,6 +153,19 @@ function humanMs(ms: number): string {
   return parts.join(" ");
 }
 
+function argPath(flag: string): string | null {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : null;
+}
+
+// Paths from a failures list (full paths, one per line; # starts a comment).
+function readFailureList(path: string): string[] {
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/#.*$/, "").trim())
+    .filter((l) => l.length > 0);
+}
+
 async function main(): Promise<number> {
   // Ensure the corpus + reference checkouts exist, then build everything.
   await getDeps();
@@ -169,9 +185,25 @@ async function main(): Promise<number> {
     te = 0;
   const bad: string[] = [];
   const tbad: string[] = [];
+  const failedFiles = new Map<string, string[]>(); // path -> diff summary lines
 
-  let files = walkDjvu(SPECS).sort();
-  const totalFiles = files.length;
+  const failOutPath = argPath("-failout") ?? join(ROOT, "failures.txt");
+  const failInPath = argPath("-failures");
+
+  let files: string[];
+  let totalFiles: number;
+  if (failInPath) {
+    if (!existsSync(failInPath)) {
+      console.error(`failures list not found: ${failInPath}`);
+      return 1;
+    }
+    files = readFailureList(failInPath);
+    totalFiles = files.length;
+    console.log(`testing ${files.length} files from ${failInPath}`);
+  } else {
+    files = walkDjvu(SPECS).sort();
+    totalFiles = files.length;
+  }
 
   // -rand N: test only N randomly chosen files from the corpus.
   const randArg = process.argv.indexOf("-rand");
@@ -203,6 +235,16 @@ async function main(): Promise<number> {
       ? ` (${files.length} random of ${totalFiles})`
       : "";
   console.log(`testing ${files.length} files${randNote} with ${nWorkers} workers`);
+
+  writeFileSync(failOutPath, "");
+
+  // Serialized append so parallel workers don't interleave writes.
+  let appendChain = Promise.resolve();
+  const appendFailure = (path: string, diffs: string[]) => {
+    const block = path + "\n" + diffs.map((d) => `# ${d}`).join("\n") + "\n";
+    appendChain = appendChain.then(() => appendFileSync(failOutPath, block));
+    return appendChain;
+  };
 
   // Test one file: render+text every page, accumulate global counters, and
   // print one line when done. ref/mine are this worker's private temp paths.
@@ -252,8 +294,10 @@ async function main(): Promise<number> {
     if (fRender.length) diffs.push(`render diff p${fRender.join(",p")}`);
     if (fText.length) diffs.push(`text diff p${fText.join(",p")}`);
     const status = diffs.length ? diffs.join(", ") : "same";
-    // count this file as finished, then print its line (one atomic line, since
-    // workers run concurrently and would otherwise interleave)
+    if (diffs.length) {
+      failedFiles.set(f, diffs);
+      await appendFailure(f, diffs);
+    }
     finished++;
     console.log(
       `[${finished}/${files.length}] ${basename(f)} (${feats.join(", ")}) — ` +
@@ -277,6 +321,13 @@ async function main(): Promise<number> {
   for (const x of bad.slice(0, 50)) console.log("  render MISMATCH", x);
   console.log(`text: MATCH=${tm} MISMATCH=${tmm}; both-empty=${te}`);
   for (const x of tbad.slice(0, 50)) console.log("  text MISMATCH", x);
+
+  await appendChain;
+  if (failedFiles.size)
+    console.log(`${failedFiles.size} failing file(s) in ${failOutPath}`);
+  else
+    console.log(`no failures (${failOutPath} cleared)`);
+
   return mm || tmm ? 1 : 0;
 }
 
