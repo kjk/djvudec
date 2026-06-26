@@ -33,47 +33,84 @@ let TEST = join(ROOT, "out", "msvc", "djvu_test_msvc.exe"); // set by build() in
 
 const tag = (d: Buffer, p: number) => d.toString("latin1", p, p + 4);
 
-// File offsets of every displayable page FORM (FORM:DJVU).
+// File offsets of every displayable page FORM (FORM:DJVU) in a bundled DJVM.
+// Matches DIRM layout in document.c (flag byte, u16 count, bundled u32 offsets).
 function pageOffsets(data: Buffer): number[] {
   let p = tag(data, 0) === "AT&T" ? 4 : 0;
-  if (tag(data, p) !== "FORM") return [];
+  if (p + 12 > data.length || tag(data, p) !== "FORM") return [];
   if (tag(data, p + 8) === "DJVU") return [p];
-  const end = p + 8 + data.readUInt32BE(p + 4);
+  const end = Math.min(p + 8 + data.readUInt32BE(p + 4), data.length);
   let q = p + 12;
   while (q + 8 <= end) {
     const cid = tag(data, q);
     const csz = data.readUInt32BE(q + 4);
+    const chunkEnd = q + 8 + csz;
+    if (chunkEnd > end) break;
     if (cid === "DIRM") {
       const d = q + 8;
+      const dirmEnd = Math.min(chunkEnd, data.length);
+      if (d + 3 > dirmEnd) return [];
+      const bundled = (data[d] >> 7) & 1;
       const cnt = data.readUInt16BE(d + 1);
+      if (cnt <= 0 || cnt > 100000) return [];
+      if (!bundled) return []; /* indirect/shared bundle: use -info for page count */
+      const offBase = d + 3;
+      if (offBase + cnt * 4 > dirmEnd || offBase + cnt * 4 > data.length) return [];
       const offs: number[] = [];
-      for (let i = 0; i < cnt; i++) offs.push(data.readUInt32BE(d + 3 + i * 4));
-      return offs.filter(
-        (o) => tag(data, o) === "FORM" && tag(data, o + 8) === "DJVU",
-      );
+      for (let i = 0; i < cnt; i++) {
+        const o = data.readUInt32BE(offBase + i * 4);
+        if (o + 12 <= data.length && tag(data, o) === "FORM" && tag(data, o + 8) === "DJVU")
+          offs.push(o);
+      }
+      return offs;
     }
-    q += 8 + csz + (csz & 1);
+    q = chunkEnd + (csz & 1);
   }
   return [];
 }
 
-// Whether any page FORM carries annotation (ANTa/ANTz) or text (TXTa/TXTz)
-// chunks -- a quick hint for the progress line.
+// Whether page FORMs carry annotation or text chunks (progress-line hint).
 function docFeatures(data: Buffer, offs: number[]): { anno: boolean; text: boolean } {
   let anno = false,
     text = false;
   for (const off of offs) {
-    const end = off + 8 + data.readUInt32BE(off + 4);
+    if (off + 12 > data.length) continue;
+    const end = Math.min(off + 8 + data.readUInt32BE(off + 4), data.length);
     let p = off + 12;
     while (p + 8 <= end) {
       const cid = tag(data, p);
       const csz = data.readUInt32BE(p + 4);
+      const chunkEnd = p + 8 + csz;
+      if (chunkEnd > end) break;
       if (cid === "ANTa" || cid === "ANTz") anno = true;
       if (cid === "TXTa" || cid === "TXTz") text = true;
-      p += 8 + csz + (csz & 1);
+      p = chunkEnd + (csz & 1);
     }
   }
   return { anno, text };
+}
+
+// Fallback when DIRM offsets are not inline (indirect bundle, parse failure).
+function scanChunkTags(data: Buffer): { anno: boolean; text: boolean } {
+  let anno = false,
+    text = false;
+  for (let i = 0; i + 4 <= data.length; i++) {
+    const cid = tag(data, i);
+    if (cid === "ANTa" || cid === "ANTz") anno = true;
+    if (cid === "TXTa" || cid === "TXTz") text = true;
+  }
+  return { anno, text };
+}
+
+async function fileMeta(
+  f: string,
+  data: Buffer,
+): Promise<{ nPages: number; anno: boolean; text: boolean }> {
+  const offs = pageOffsets(data);
+  if (offs.length > 0) return { nPages: offs.length, ...docFeatures(data, offs) };
+  const out = await run([TEST, "-info", f]);
+  const pages = parseInt(out.toString("latin1").match(/pages: (\d+)/)?.[1] ?? "0", 10);
+  return { nPages: pages, ...scanChunkTags(data) };
 }
 
 // Run a subprocess and capture stdout (async, so files can run concurrently).
@@ -234,14 +271,13 @@ async function verifyText(f: string, nPages: number, hasText: boolean, name: str
 
 async function verifyFile(
   f: string,
-  data: Buffer,
-  offs: number[],
+  nPages: number,
   hasText: boolean,
 ): Promise<VerifyResult> {
   const name = basename(f);
   const [render, text] = await Promise.all([
     verifyRender(f, name),
-    verifyText(f, offs.length, hasText, name),
+    verifyText(f, nPages, hasText, name),
   ]);
   return { ...render, ...text };
 }
@@ -363,12 +399,11 @@ async function main(): Promise<number> {
   async function testFile(f: string) {
     const t0 = performance.now();
     const data = readFileSync(f);
-    const offs = pageOffsets(data);
-    const { anno, text: hasText } = docFeatures(data, offs);
-    const feats = [`${offs.length} pages`];
+    const { nPages, anno, text: hasText } = await fileMeta(f, data);
+    const feats = [`${nPages} pages`];
     if (anno) feats.push("annots");
     if (hasText) feats.push("text");
-    const vr = await verifyFile(f, data, offs, hasText);
+    const vr = await verifyFile(f, nPages, hasText);
     m += vr.m;
     mm += vr.mm;
     skip += vr.skip;
