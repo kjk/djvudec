@@ -160,11 +160,6 @@ static int code_bit_cell(jb2_codec *c, int cell)
 {
     return djvu_zp_decode(&c->zp, &c->bitcells[cell]);
 }
-static int code_bit_arr(jb2_codec *c, uint8_t *arr, int off)
-{
-    return djvu_zp_decode(&c->zp, &arr[off]);
-}
-
 static void ensure_cells(jb2_codec *c, int need)
 {
     if (need <= c->cap_cells) return;
@@ -245,66 +240,115 @@ static int code_num(jb2_codec *c, int low, int high, int *ctxslot)
 
 /* ---------- bitmap decoders ---------- */
 
+/* Decode one JB2 bitmap pixel; hoisted a/fence stay in registers across the row. */
+static inline int jb2_zp_decode_pixel(djvu_zp *zp, uint32_t *a, uint32_t *fence,
+                                      uint8_t *ctx)
+{
+    uint32_t z = *a + zp->p[*ctx];
+    if (z <= *fence) {
+        *a = z;
+        return *ctx & 1;
+    }
+    zp->a = *a;
+    z = zp_decode_sub(zp, ctx, z);
+    *a = zp->a;
+    *fence = zp->fence;
+    return z;
+}
+
 static void code_bitmap_directly(jb2_codec *c, djvu_bitmap *bm)
 {
-    int dw, dy;
-    uint8_t *up2, *up1, *up0;
+    int dw, dy, bpr, h;
+    uint8_t *row_base, *guard, *up2, *up1, *up0;
+    djvu_zp *zp;
+    uint8_t *bd;
+    uint32_t a, fence;
+
     djvu_bm_set_min_border(c->ctx, bm, 3);
     dw = bm->width;
-    dy = bm->height - 1;
-    up2 = djvu_bm_rowptr(bm, dy + 2);
-    up1 = djvu_bm_rowptr(bm, dy + 1);
-    up0 = djvu_bm_rowptr(bm, dy);
+    h = bm->height;
+    dy = h - 1;
+    bpr = bm->bytes_per_row;
+    row_base = bm->data + bm->border;
+    guard = bm->guard + bm->border;
+    zp = &c->zp;
+    bd = c->bitdist;
+    a = zp->a;
+    fence = zp->fence;
+    up2 = (dy + 2 < h) ? row_base + (dy + 2) * bpr : guard;
+    up1 = (dy + 1 < h) ? row_base + (dy + 1) * bpr : guard;
+    up0 = row_base + dy * bpr;
     while (dy >= 0) {
         int context = jb2_get_direct_context(up2, up1, up0, 0);
         int dx = 0;
         while (dx < dw) {
-            int n = code_bit_arr(c, c->bitdist, context);
-            up0[dx] = (uint8_t)n;
-            dx++;
+            int n = jb2_zp_decode_pixel(zp, &a, &fence, &bd[context]);
+            up0[dx++] = (uint8_t)n;
             context = jb2_shift_direct_context(context, n, up2, up1, dx);
         }
-        up2 = up1; up1 = up0; up0 = djvu_bm_rowptr(bm, --dy);
+        dy--;
+        up2 = up1;
+        up1 = up0;
+        up0 = (dy >= 0) ? row_base + dy * bpr : guard;
     }
+    zp->a = a;
 }
 
 static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, int libno)
 {
-    int cw = cbm->width, dw = bm->width, dh = bm->height;
+    int cw = cbm->width, dw = bm->width, dh = bm->height, ch = cbm->height;
     int xmin = c->libinfo[libno * 4 + 0];
     int xmax = c->libinfo[libno * 4 + 2];
     int ymin = c->libinfo[libno * 4 + 1];
     int ymax = c->libinfo[libno * 4 + 3];
     int xd2c = ((1 + (dw >> 1)) - dw) - ((((1 + xmax) - xmin) >> 1) - xmax);
     int yd2c = ((1 + (dh >> 1)) - dh) - ((((1 + ymax) - ymin) >> 1) - ymax);
-    int dy, cy;
+    int dy, cy, bm_bpr, cbm_bpr;
+    uint8_t *bm_base, *cbm_base, *bm_guard, *cbm_guard;
     uint8_t *up1, *up0, *xup1, *xup0, *xdn1;
+    djvu_zp *zp;
+    uint8_t *bd;
+    uint32_t a, fence;
 
     djvu_bm_set_min_border(c->ctx, bm, 2);
     djvu_bm_set_min_border(c->ctx, cbm, 2 - xd2c);
     djvu_bm_set_min_border(c->ctx, cbm, (2 + dw + xd2c) - cw);
 
+    bm_bpr = bm->bytes_per_row;
+    cbm_bpr = cbm->bytes_per_row;
+    bm_base = bm->data + bm->border;
+    cbm_base = cbm->data + cbm->border;
+    bm_guard = bm->guard + bm->border;
+    cbm_guard = cbm->guard + cbm->border;
+    zp = &c->zp;
+    bd = c->cbitdist;
+    a = zp->a;
+    fence = zp->fence;
     dy = dh - 1;
     cy = dy + yd2c;
-    up1 = djvu_bm_rowptr(bm, dy + 1);
-    up0 = djvu_bm_rowptr(bm, dy);
-    xup1 = djvu_bm_rowptr(cbm, cy + 1) + xd2c;
-    xup0 = djvu_bm_rowptr(cbm, cy) + xd2c;
-    xdn1 = djvu_bm_rowptr(cbm, cy - 1) + xd2c;
+    up1 = (dy + 1 < dh) ? bm_base + (dy + 1) * bm_bpr : bm_guard;
+    up0 = bm_base + dy * bm_bpr;
+    xup1 = (cy + 1 < ch) ? cbm_base + (cy + 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
+    xup0 = (cy < ch) ? cbm_base + cy * cbm_bpr + xd2c : cbm_guard + xd2c;
+    xdn1 = (cy - 1 >= 0) ? cbm_base + (cy - 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
 
     while (dy >= 0) {
         int context = jb2_get_cross_context(up1, up0, xup1, xup0, xdn1, 0);
         int dx = 0;
         while (dx < dw) {
-            int n = code_bit_arr(c, c->cbitdist, context);
-            up0[dx] = (uint8_t)n;
-            dx++;
+            int n = jb2_zp_decode_pixel(zp, &a, &fence, &bd[context]);
+            up0[dx++] = (uint8_t)n;
             context = jb2_shift_cross_context(context, n, up1, xup1, xup0, xdn1, dx);
         }
-        up1 = up0; up0 = djvu_bm_rowptr(bm, --dy);
-        xup1 = xup0; xup0 = xdn1;
-        xdn1 = djvu_bm_rowptr(cbm, (--cy) - 1) + xd2c;
+        dy--;
+        up1 = up0;
+        up0 = (dy >= 0) ? bm_base + dy * bm_bpr : bm_guard;
+        cy--;
+        xup1 = xup0;
+        xup0 = xdn1;
+        xdn1 = (cy - 1 >= 0) ? cbm_base + (cy - 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
     }
+    zp->a = a;
 }
 
 /* ---------- library bookkeeping ---------- */
@@ -644,7 +688,6 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
             blit.shapeno = shapeno;
             img_add_blit(jim, blit);
         }
-        djvu_bm_compress(c->ctx, &jim->shapes[jim->nshapes - 1].bm);
     } else if (rectype == REC_MatchedCopy) {
         img_add_blit(jim, blit);
     }
@@ -741,6 +784,11 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
         codec_free(&c);
         djvu_jb2_free(ctx, jim);
         return NULL;
+    }
+    {
+        int si;
+        for (si = 0; si < jim->nshapes; si++)
+            djvu_bm_compress(ctx, &jim->shapes[si].bm);
     }
     codec_free(&c);
     return jim;
