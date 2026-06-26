@@ -68,8 +68,9 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
     subsample (compound pages forced to full res), query `djvu_page_render_info`
     then `djvu_page_render_into` a destination buffer with `djvu_ctx_set_bgr`
     on — color is composited straight into the buffer in BGR order, with no
-    intermediate `djvu_image` and no separate convert/copy pass; rotate when
-    subsample>1.
+    intermediate `djvu_image` and no separate convert/copy pass. The decoder
+    applies the page's intrinsic rotation itself at every subsample (tiled
+    transpose), so the engine no longer rotates separately.
   - libdjvu → `EngineDjVu::RenderPage` (src/EngineDjVu.cpp): one
     `ddjvu_page_render` into a **BGR24** buffer at the mediabox size (page scaled
     to fileDPI=300), letting ddjvu scale during decode.
@@ -260,7 +261,10 @@ Notes:
   composites only (bitonal unaffected). Matches ddjvu.
 - **Rotation**: INFO flag → 90/180/270. ddjvu rotates output upright (dims swap
   for 90/270). My mapping: 90→k=3, 180→k=2, 270→k=1 clockwise quarter-turns,
-  applied at end of render.
+  applied at end of render at **every subsample** (`image_rotate_cw` in
+  render.c). The rotate is tiled with an incremental source pointer (hoisted
+  k/bytes-per-pixel branches) — a naive transpose of a multi-MB page costs tens
+  of ms; this keeps it to a few ms (90/270, cache-bound) / memcpy-speed (180).
 - **Blank pages**: INFO-only components render as solid white at INFO dims.
 - **Pure-photo pages** (BG44-only, no mask): composite with NULL mask
   (background only).

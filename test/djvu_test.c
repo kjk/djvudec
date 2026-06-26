@@ -257,11 +257,13 @@ static double bench_ours_doc_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
  * Renders at zoom=1, user-rotation=0. Mirrors the engine's non-GDI work: pick
  * an integer subsample, query the output geometry, then render straight into a
  * destination buffer (djvu_page_render_into -- the engine's DIB), so there is
- * no separate format-convert/copy pass. Rotate for subsample>1. The GDI
- * StretchBlt/DIB allocation is excluded by design (the dst buffer stands in for
- * the DIB and is allocated outside the timer). */
+ * no separate format-convert/copy pass. The decoder now applies intrinsic page
+ * rotation itself (at every subsample, via a tiled transpose), so there is no
+ * engine-side rotate either. The GDI StretchBlt/DIB allocation is excluded by
+ * design (the dst buffer stands in for the DIB and is allocated outside the
+ * timer). */
 
-static volatile uint8_t sum_sink; /* defeat dead-code elimination of the rotate */
+static volatile uint8_t sum_sink; /* defeat dead-code elimination of the render */
 
 static int sum_normalize_rotation(int r)
 {
@@ -292,47 +294,17 @@ static int sum_pick_subsample(djvu_page_type t, int upW, int upH, int tdx, int t
     return s;
 }
 
-/* Replicate the engine's CPU rotation for subsample>1 (decode output is not
-   intrinsically rotated then). Allocates a rotated buffer to capture the cost. */
-static int sum_rotate(const uint8_t *src, int w, int h, int comp, int rot)
-{
-    int ndx = (rot == 180) ? w : h;
-    uint8_t *out;
-    int x, y;
-    if (rot == 0)
-        return 0;
-    out = (uint8_t *)malloc((size_t)w * h * comp);
-    if (!out)
-        return -1;
-    for (y = 0; y < h; y++) {
-        for (x = 0; x < w; x++) {
-            int nx, ny;
-            if (rot == 90) { nx = h - 1 - y; ny = x; }
-            else if (rot == 180) { nx = w - 1 - x; ny = h - 1 - y; }
-            else { nx = y; ny = w - 1 - x; } /* 270 */
-            memcpy(out + ((size_t)ny * ndx + nx) * comp,
-                   src + ((size_t)y * w + x) * comp, (size_t)comp);
-        }
-    }
-    sum_sink ^= out[0];
-    free(out);
-    return 0;
-}
-
-/* Compute the engine's subsample/rotation for a page (cached at engine load
-   time, so done outside the render timer here). */
-static void sum_page_params(djvu_doc *doc, int page0, djvu_page_type *ptype,
-                            int *subsample, int *rotateAfter)
+/* Compute the engine's subsample for a page (cached at engine load time, so
+   done outside the render timer here). Intrinsic rotation is now applied by the
+   decoder at every subsample, so the engine no longer rotates separately. */
+static int sum_page_subsample(djvu_doc *doc, int page0, djvu_page_type *ptype)
 {
     djvu_page_info info;
     int dpi, rot, upW, upH, fullW, fullH;
     memset(&info, 0, sizeof info);
     *ptype = djvu_page_get_type(doc, page0);
-    if (djvu_doc_page_info(doc, page0, &info) != 0) {
-        *subsample = 1;
-        *rotateAfter = 0;
-        return;
-    }
+    if (djvu_doc_page_info(doc, page0, &info) != 0)
+        return 1;
     dpi = info.dpi;
     if (dpi < 25 || dpi > 6000)
         dpi = 300;
@@ -346,15 +318,13 @@ static void sum_page_params(djvu_doc *doc, int page0, djvu_page_type *ptype,
     }
     fullW = (int)(upW * 300.0 / dpi + 0.5);
     fullH = (int)(upH * 300.0 / dpi + 0.5);
-    *subsample = sum_pick_subsample(*ptype, upW, upH, fullW, fullH);
-    *rotateAfter = (*subsample > 1) ? sum_normalize_rotation(rot) : 0;
+    return sum_pick_subsample(*ptype, upW, upH, fullW, fullH);
 }
 
 /* Render a page the way the updated EngineDjvuDec does: query geometry, then
-   render straight into dst (no convert pass), then rotate if subsample>1.
-   dst (>= worst-case size) is provided by the caller. Returns 0 on success. */
-static int sum_render_into(djvu_doc *doc, int page0, int subsample, int rotateAfter,
-                           uint8_t *dst)
+   render straight into dst (no convert pass; the decoder also applies intrinsic
+   rotation). dst (>= worst-case size) is provided by the caller. */
+static int sum_render_into(djvu_doc *doc, int page0, int subsample, uint8_t *dst)
 {
     djvu_render_info ri;
     int comp, stride;
@@ -364,8 +334,6 @@ static int sum_render_into(djvu_doc *doc, int page0, int subsample, int rotateAf
     stride = ri.width * comp;
     if (djvu_page_render_into(doc, page0, subsample, dst, stride) != 0)
         return -1;
-    if (rotateAfter != 0)
-        return sum_rotate(dst, ri.width, ri.height, comp, rotateAfter);
     sum_sink ^= dst[0];
     return 0;
 }
@@ -386,7 +354,7 @@ static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t 
 {
     djvu_doc *doc;
     djvu_page_type ptype;
-    int subsample, rotateAfter, ok;
+    int subsample, ok;
     size_t cap;
     uint8_t *dst;
     double t0, ms;
@@ -394,7 +362,7 @@ static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t 
     doc = djvu_doc_open(ctx, data, len);
     if (!doc)
         return -1.0;
-    sum_page_params(doc, page0, &ptype, &subsample, &rotateAfter);
+    subsample = sum_page_subsample(doc, page0, &ptype);
     cap = sum_dst_capacity(doc, page0);
     dst = cap ? (uint8_t *)malloc(cap) : NULL;
     if (!dst) {
@@ -403,7 +371,7 @@ static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t 
     }
 
     t0 = bench_now_ms();
-    ok = sum_render_into(doc, page0, subsample, rotateAfter, dst) == 0;
+    ok = sum_render_into(doc, page0, subsample, dst) == 0;
     ms = bench_now_ms() - t0;
     free(dst);
     djvu_doc_close(doc);
@@ -424,12 +392,12 @@ static double bench_ours_doc_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t l
     n = djvu_doc_page_count(doc);
     for (i = 0; i < n; i++) {
         djvu_page_type ptype;
-        int subsample, rotateAfter;
+        int subsample;
         size_t cap = sum_dst_capacity(doc, i);
         uint8_t *dst = cap ? (uint8_t *)malloc(cap) : NULL;
-        sum_page_params(doc, i, &ptype, &subsample, &rotateAfter);
+        subsample = sum_page_subsample(doc, i, &ptype);
         if (dst) {
-            sum_render_into(doc, i, subsample, rotateAfter, dst);
+            sum_render_into(doc, i, subsample, dst);
             free(dst);
         }
         {

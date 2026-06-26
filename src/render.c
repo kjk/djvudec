@@ -39,28 +39,65 @@ static int rotation_quarter_turns(int rotation)
 }
 
 /* Rotate a top-down image clockwise by k quarter-turns (k=1,2,3). Returns a
-   new image; frees nothing. */
+   new image; frees nothing.
+   For 90/270 the source is read column-wise; a naive scan both thrashes cache
+   (one line per pixel) and re-derives a multiply per pixel. We tile the
+   destination into small squares (keeps the source block resident) and walk the
+   source with an incremental pointer (no per-pixel index math), with the k and
+   bytes/pixel branches hoisted out of the inner loop. This turns a ~30 ms
+   pathological transpose on a multi-MB page into a few ms. */
+#define ROT_TILE 32
 static djvu_image *image_rotate_cw(djvu_ctx *ctx, djvu_image *src, int k)
 {
     int comp = (int)src->format;   /* 1 or 3 bytes/pixel */
     int sw = src->width, sh = src->height;
     int dw = (k == 2) ? sw : sh;
     int dh = (k == 2) ? sh : sw;
+    size_t srow = (size_t)sw * comp;
+    const uint8_t *S;
     djvu_image *d = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
-    int x, y, c;
+    int bx, by, x, y;
     if (!d) return NULL;
     d->width = dw; d->height = dh; d->format = src->format; d->stride = dw * comp;
     d->data = (uint8_t *)djvu_alloc(ctx, (size_t)dw * dh * comp);
     if (!d->data) { djvu_free(ctx, d); return NULL; }
-    for (y = 0; y < dh; y++) {
-        for (x = 0; x < dw; x++) {
-            int sx, sy;
-            if (k == 1) { sx = y; sy = sh - 1 - x; }          /* 90 CW */
-            else if (k == 2) { sx = sw - 1 - x; sy = sh - 1 - y; } /* 180 */
-            else { sx = sw - 1 - y; sy = x; }                  /* 270 CW */
-            for (c = 0; c < comp; c++)
-                d->data[((size_t)y * dw + x) * comp + c] =
-                    src->data[((size_t)sy * sw + sx) * comp + c];
+    S = src->data;
+    for (by = 0; by < dh; by += ROT_TILE) {
+        int ymax = by + ROT_TILE < dh ? by + ROT_TILE : dh;
+        for (bx = 0; bx < dw; bx += ROT_TILE) {
+            int xmax = bx + ROT_TILE < dw ? bx + ROT_TILE : dw;
+            for (y = by; y < ymax; y++) {
+                uint8_t *dp = d->data + ((size_t)y * dw + bx) * comp;
+                const uint8_t *sp;
+                if (k == 1) { /* 90 CW: sx=y, sy=sh-1-x -> step -srow */
+                    sp = S + ((size_t)(sh - 1 - bx) * sw + y) * comp;
+                    if (comp == 1)
+                        for (x = bx; x < xmax; x++) { *dp++ = *sp; sp -= srow; }
+                    else
+                        for (x = bx; x < xmax; x++) {
+                            dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2];
+                            dp += 3; sp -= srow;
+                        }
+                } else if (k == 3) { /* 270 CW: sx=sw-1-y, sy=x -> step +srow */
+                    sp = S + ((size_t)bx * sw + (sw - 1 - y)) * comp;
+                    if (comp == 1)
+                        for (x = bx; x < xmax; x++) { *dp++ = *sp; sp += srow; }
+                    else
+                        for (x = bx; x < xmax; x++) {
+                            dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2];
+                            dp += 3; sp += srow;
+                        }
+                } else { /* 180: sx=sw-1-x, sy=sh-1-y -> step -comp */
+                    sp = S + ((size_t)(sh - 1 - y) * sw + (sw - 1 - bx)) * comp;
+                    if (comp == 1)
+                        for (x = bx; x < xmax; x++) { *dp++ = *sp--; }
+                    else
+                        for (x = bx; x < xmax; x++) {
+                            dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2];
+                            dp += 3; sp -= 3;
+                        }
+                }
+            }
         }
     }
     return d;
@@ -183,7 +220,8 @@ static djvu_image *apply_page_rotation(djvu_ctx *ctx, djvu_doc *doc, int page_no
     djvu_image *r;
     double t0;
 
-    if (!img || subsample != 1) return img;
+    (void)subsample; /* rotation applies at every subsample (tiled, cheap) */
+    if (!img) return img;
     if (djvu_doc_page_info(doc, page_no, &pi) != 0 || pi.rotation == 0) return img;
     k = rotation_quarter_turns(pi.rotation);
     if (!k) return img;
@@ -296,7 +334,7 @@ static int render_plan(djvu_doc *doc, int page_no, int subsample,
         return -1; /* e.g. a photo page at subsample>1 renders nothing */
     }
 
-    k = (subsample == 1) ? rotation_quarter_turns(pi.rotation) : 0;
+    k = rotation_quarter_turns(pi.rotation); /* applied at every subsample */
     if (k == 1 || k == 3) { int tmp = w; w = h; h = tmp; } /* 90/270 swap dims */
 
     *pw = w; *ph = h; *pfmt = fmt; *pcolor = color; *protation = pi.rotation;
@@ -344,7 +382,7 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
         return -1;
     if (subsample < 1) subsample = 1;
     ctx = doc->ctx;
-    k = (subsample == 1) ? rotation_quarter_turns(rotation) : 0;
+    k = rotation_quarter_turns(rotation); /* applied at every subsample */
 
     /* Zero-copy color path: compose straight into dst when no rotation is
        needed (w,h are then the unrotated page dims). */
