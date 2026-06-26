@@ -328,9 +328,13 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
     cy = dy + yd2c;
     up1 = (dy + 1 < dh) ? bm_base + (dy + 1) * bm_bpr : bm_guard;
     up0 = bm_base + dy * bm_bpr;
-    xup1 = (cy + 1 < ch) ? cbm_base + (cy + 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
-    xup0 = (cy < ch) ? cbm_base + cy * cbm_bpr + xd2c : cbm_guard + xd2c;
-    xdn1 = (cy - 1 >= 0) ? cbm_base + (cy - 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
+    /* cy = dy + yd2c can fall outside [0, ch) on EITHER side when the reference
+       shape differs in size, so every cross-bitmap row needs both bounds checked
+       (rows out of range read the zero guard). The bm bitmap above only needs the
+       upper check because its dy stays within [0, dh). */
+    xup1 = (cy + 1 >= 0 && cy + 1 < ch) ? cbm_base + (cy + 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
+    xup0 = (cy >= 0 && cy < ch) ? cbm_base + cy * cbm_bpr + xd2c : cbm_guard + xd2c;
+    xdn1 = (cy - 1 >= 0 && cy - 1 < ch) ? cbm_base + (cy - 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
 
     while (dy >= 0) {
         int context = jb2_get_cross_context(up1, up0, xup1, xup0, xdn1, 0);
@@ -346,7 +350,7 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
         cy--;
         xup1 = xup0;
         xup0 = xdn1;
-        xdn1 = (cy - 1 >= 0) ? cbm_base + (cy - 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
+        xdn1 = (cy - 1 >= 0 && cy - 1 < ch) ? cbm_base + (cy - 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
     }
     zp->a = a;
 }
