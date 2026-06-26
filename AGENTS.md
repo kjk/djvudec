@@ -122,7 +122,7 @@ internals. Our output is arguably more correct. Do not "fix" it.
   touching `src/` so the amalgamation still compiles; build artifacts are
   gitignored. This works because no two `.c` files share a file-local (`static`)
   symbol name — keep it that way or the single-unit build breaks.
-- **`dist/djvu.c` is never committed by agents.** The user regenerates and
+- **`dist/djvu.c` and `dist/djvu.h` are never committed by agents.** The user regenerates and
   commits it manually when they want to publish/update the single-file drop.
   Do not `git add` or include `dist/djvu.c` in commits unless the user
   explicitly asks. (`dist/djvu.h` may still be committed with API changes.)
