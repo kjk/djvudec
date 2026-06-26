@@ -302,6 +302,27 @@ static int run_dump_features(djvu_doc *doc)
     return 0;
 }
 
+/* Three timed renders per page (djvudec only; for bench_before/after). */
+static int run_bench_render(djvu_doc *doc)
+{
+    djvu_ctx *ctx = doc->ctx;
+    int npages = djvu_doc_page_count(doc);
+    int i, r;
+
+    for (i = 0; i < npages; i++) {
+        double t[3];
+        for (r = 0; r < 3; r++) {
+            double t0 = now_ms();
+            djvu_image *img = djvu_page_render(doc, i, 1);
+            t[r] = now_ms() - t0;
+            if (!img) return 1;
+            djvu_image_destroy(ctx, img);
+        }
+        printf("p%d %.2f %.2f %.2f\n", i + 1, t[0], t[1], t[2]);
+    }
+    return 0;
+}
+
 typedef struct {
     int do_help;
     int do_info;
@@ -314,6 +335,7 @@ typedef struct {
     int do_id;
     int do_title;
     int do_dump_features;
+    int do_bench_render;
     int do_bzz;
     int do_iw;
     int do_all;
@@ -347,6 +369,7 @@ static void usage(void)
         "Corpus / structure (internal introspection):\n"
         "  -comps             list DJVM components (incl/page/thumb/anno)\n"
         "  -dump-features     tab-separated feature + render-time dump\n"
+        "  -bench-render      time 3 renders/page (pN t1 t2 t3 ms; djvudec only)\n"
         "\n"
         "Codec layers (no full composite):\n"
         "  -bzzdec -out FILE   decode raw BZZ stream (no document open)\n"
@@ -383,6 +406,7 @@ static int parse_args(int argc, char **argv, opts_t *o)
         else if (!strcmp(argv[i], "-id")) o->do_id = 1;
         else if (!strcmp(argv[i], "-title")) o->do_title = 1;
         else if (!strcmp(argv[i], "-dump-features")) o->do_dump_features = 1;
+        else if (!strcmp(argv[i], "-bench-render")) o->do_bench_render = 1;
         else if (!strcmp(argv[i], "-bzzdec")) o->do_bzz = 1;
         else if (!strcmp(argv[i], "-all")) o->do_all = 1;
         else if (!strcmp(argv[i], "-bg")) o->do_iw = 8;
@@ -557,6 +581,11 @@ int main(int argc, char **argv)
         goto done;
     }
 
+    if (o.do_bench_render) {
+        rc = run_bench_render(doc);
+        goto done;
+    }
+
     if (o.resolve) {
         int p = djvu_doc_page_by_name(doc, o.resolve);
         printf("%s -> page %d\n", o.resolve, p >= 0 ? p + 1 : -1);
@@ -566,7 +595,7 @@ int main(int argc, char **argv)
 
     if (o.do_info || (!o.do_text && !o.do_zones && !o.do_outline && !o.do_links &&
                       !o.do_type && !o.do_id && !o.do_title && !o.out && !o.do_iw &&
-                      !o.resolve))
+                      !o.resolve && !o.do_bench_render))
         run_info(doc);
 
     if (o.do_outline) {

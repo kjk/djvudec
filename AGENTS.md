@@ -54,11 +54,24 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   so the MSVC harness compiles with `-MT` to match (a `/MD` mismatch is LNK2038).
   NB: Bun's shell eats `\` in glob args, so `ROOT` is normalized to forward
   slashes; MSVC flags use `-` (a `/` synonym) to dodge the same path-mangling.
-- `bun cmd/bench.ts [file.djvu] [-clang]` — builds, then runs `djvu_test -bench` to
-  compare our per-page decode speed against DjVuLibre's (decode+composite, same
-  steady_clock both sides). With no file it picks a random `.djvu` from
-  `testfiles/`. Each line: `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%`
-  (`+` = we're slower).
+- `bun cmd/bench.ts [file.djvu] [-clang] [-full]` — builds, then runs
+  `djvu_test -bench` to compare our per-page decode speed against DjVuLibre's
+  (decode+composite, same steady_clock both sides). With no file it picks a random
+  `.djvu` from `testfiles/subset` (`-full` → `testfiles/full`). Each line:
+  `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%` (`+` = we're slower).
+- **Before/after render perf** (djvudec only, no DjVuLibre):
+  1. `bun cmd/build_bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`
+  2. Edit `src/` (or regenerate `dist/djvu.c` if benchmarking the amalgamation)
+  3. `bun cmd/build_bench.ts after -clean` — build `out/bench_after/…/bench_after.exe`
+  4. `bun cmd/bench_perf.ts path/to/file.djvu` — runs both binaries with
+     `-bench-render` (3 timed renders per page) and prints a per-page summary
+     using the fastest of the three runs: `pN t_before => t_after, Δ ms, Δ%`
+     (`+` = slower after). Optional capture/compare:
+     `bun cmd/bench_perf.ts run before file.djvu > before.txt`,
+     `bun cmd/bench_perf.ts run after file.djvu > after.txt`,
+     `bun cmd/bench_perf.ts compare before.txt after.txt`.
+  Raw timing lines: `pN t1 t2 t3` (ms, `%.2f`). Same tool also answers
+  `bun cmd/build_dump.ts` / `djvudec_dump -bench-render`.
 - `bun cmd/tests.ts [-clang] [-cpu N]` — the **test driver**: ensures deps,
   calls `buildRef()`+`build()` from `build.ts` (build first, then verify), and
   compares against the oracle over `testfiles/djvu/*.djvu`. Builds with MSVC by
