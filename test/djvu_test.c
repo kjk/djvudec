@@ -588,6 +588,7 @@ int main(int argc, char **argv)
     data = read_file(in, &len);
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
 
+    djvu_init();
     ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
 
     if (do_bzz) {

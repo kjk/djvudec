@@ -2,8 +2,15 @@
 
 ## Contract
 
+Call `djvu_init()` once from the main thread before spawning workers or
+opening documents from multiple threads. It is idempotent and also runs inside
+`djvu_doc_open`, but an explicit early call avoids a data race on the scaler
+lookup table if decode starts concurrently before the first `djvu_doc_open`
+finishes.
+
 | Phase | Thread safety |
 |-------|----------------|
+| `djvu_init` | Call once, main thread, before concurrent decode |
 | `djvu_ctx_new` / `djvu_ctx_free` | Single-threaded |
 | `djvu_doc_open` / `djvu_doc_close` | Single-threaded (mutates doc caches) |
 | All other APIs on an open `djvu_doc` | Intended safe for concurrent read-only use |
@@ -29,7 +36,7 @@ At open time the library:
 
 - Parses DIRM / page table (read-only `doc->data` thereafter).
 - Preloads **INFO** for every page (`has_info`, dimensions, rotation).
-- Initializes the scaler bilinear lookup table (`djvu_scaler_init`).
+- Initializes the scaler bilinear lookup table (`djvu_init` / `djvu_scaler_init`).
 - Decodes and caches **IW44** BG44/FG44 per page (`pages[i].iw_bg/iw_fg`).
 - Decodes and caches shared **Djbz** dictionaries (`jb2_dicts[]`, inline dedup,
   `pages[i].jb2_dict` borrows).
@@ -53,7 +60,7 @@ These caches are read-only during render/text/annotation access.
 
 | Location | Issue | Mitigation |
 |----------|-------|------------|
-| `scaler.c` `s_interp[]` | Was lazy-init on first scale (data race) | `djvu_scaler_init()` at doc open |
+| `scaler.c` `s_interp[]` | Lazy-init on first scale (data race) | Call `djvu_init()` at startup; also at doc open |
 | `zptable.c` / `zpcodec.c` | Const decode tables after link | Safe (read-only) |
 | `getenv("DJVU_*")` in debug hooks | Not synchronized; debug only | Do not set env vars during concurrent decode |
 

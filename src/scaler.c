@@ -23,9 +23,14 @@ static void prepare_interp(void)
     s_interp_ready = 1;
 }
 
-void djvu_scaler_init(void)
+void djvu_init(void)
 {
     prepare_interp();
+}
+
+void djvu_scaler_init(void)
+{
+    djvu_init();
 }
 
 static int imini(int a, int b) { return a < b ? a : b; }

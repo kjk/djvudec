@@ -1,7 +1,7 @@
 /* djvudec_thread.c -- concurrent stress test for read-only djvu_doc APIs.
  *
- * Opens a .djvu once, then runs randomized page operations from N worker
- * threads. See thread-safety.md.
+ * Calls djvu_init() once, opens a .djvu, then runs randomized page operations
+ * from N worker threads. See thread-safety.md.
  *
  *   djvudec_thread [-cpu N] [-nops N] file.djvu
  *
@@ -219,6 +219,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    djvu_init();
     ctx = djvu_ctx_new(NULL, NULL, NULL, NULL);
     if (!ctx) goto done;
 

@@ -220,7 +220,7 @@ static int load_djvm(djvu_doc *doc, uint32_t dirm_data, uint32_t dirm_size)
 
 /* ---- IW44 cache (eager decode at doc open; immutable during render) ---- */
 
-static void free_page_iw44(djvu_ctx *ctx, djvu_page_int *pg)
+static void free_page_iw44(djvu_page_int *pg)
 {
     if (pg->iw_bg) { djvu_iw44_free(pg->iw_bg); pg->iw_bg = NULL; }
     if (pg->iw_fg) { djvu_iw44_free(pg->iw_fg); pg->iw_fg = NULL; }
@@ -650,7 +650,7 @@ void djvu_doc_close(djvu_doc *doc)
     free_jb2_inline_cache(doc->ctx, doc);
     if (doc->pages) {
         for (i = 0; i < doc->npages; i++)
-            free_page_iw44(doc->ctx, &doc->pages[i]);
+            free_page_iw44(&doc->pages[i]);
         djvu_free(doc->ctx, doc->pages);
     }
     djvu_free(doc->ctx, doc);

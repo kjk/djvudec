@@ -142,7 +142,8 @@ bun + TypeScript is the standard tooling for ad-hoc tooling here.
 
 ## C API (`src/djvu.h`) — jbig2dec flavor
 Opaque `djvu_ctx` / `djvu_doc`; caller-supplied `djvu_alloc_cb` / `free_cb` /
-`error_cb`. Key calls: `djvu_doc_open(ctx,data,len)`, `djvu_doc_page_count`,
+`error_cb`. Call `djvu_init()` once before threads (idempotent; also at
+`djvu_doc_open`). Key calls: `djvu_doc_open(ctx,data,len)`, `djvu_doc_page_count`,
 `djvu_doc_page_info(doc,page,&info)`, `djvu_page_render(doc,page,subsample)`
 → `djvu_image{width,height,format(GRAY8=1/RGB24=3),stride,data}`,
 `djvu_page_text`, plus destroy functions.

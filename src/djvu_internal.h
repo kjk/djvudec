@@ -399,14 +399,6 @@ static inline int djvu_bm_rowoffset(const djvu_bitmap *bm, int row) {
     return row * bm->bytes_per_row + bm->border;
 }
 
-/* Row pointer at column 0; OOR rows map to bm->guard (zeroed, DjVuLibre zerobuffer). */
-static inline uint8_t *djvu_bm_rowptr(const djvu_bitmap *bm, int row)
-{
-    if (row < 0 || row >= bm->height)
-        return bm->guard + bm->border;
-    return bm->data + (size_t)row * (size_t)bm->bytes_per_row + (size_t)bm->border;
-}
-
 /* JB2 bitmap-coding context (unchecked column reads; border/guard rows are zero). */
 static inline int jb2_get_direct_context(const uint8_t *up2, const uint8_t *up1,
                                            const uint8_t *up0, int col)
@@ -554,7 +546,7 @@ void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);
 int  djvu_compute_red(int w, int h, int rw, int rh);
 int  djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
                      int outw, int outh, int red);
-/* Idempotent; call once before concurrent renders (lazy table in scaler.c). */
+/* Internal; djvu_doc_open calls this (same as public djvu_init). */
 void djvu_scaler_init(void);
 
 /* ===================================================================== */

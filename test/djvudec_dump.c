@@ -1,6 +1,7 @@
 /* djvudec_dump.c -- inspect .djvu files using the djvudec library only.
  *
- * Public API (djvu.h) examples: -info, -text, -zones, -outline, -links, -type,
+ * Public API (djvu.h) examples: djvu_init, -info, -text, -zones, -outline,
+ * -links, -type,
  * -id, -title, -resolve, -out (render). Codec/layer introspection uses
  * djvu_internal.h helpers (-comps, -dump-features, -bzzdec, -iw*, -bg).
  *
@@ -587,6 +588,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    djvu_init();
     ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
     if (!ctx) { free(data); return 1; }
 
