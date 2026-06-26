@@ -37,6 +37,8 @@ typedef struct bench_render {
 double bench_now_ms(void);
 double bench_ddjvu_page_ms(const char *path, int page0);
 double bench_ddjvu_doc_ms(const char *path);
+double bench_ddjvu_page_sum_ms(const char *path, int page0);
+double bench_ddjvu_doc_sum_ms(const char *path);
 int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
                             bench_render *out);
 void bench_render_free(bench_render *img);
@@ -235,6 +237,210 @@ static double bench_ours_doc_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
         djvu_image *img = djvu_page_render(doc, i, 1);
         if (img)
             djvu_image_destroy(ctx, img);
+        {
+            char *t = djvu_page_text(doc, i);
+            if (t)
+                djvu_text_destroy(ctx, t);
+        }
+        {
+            djvu_page_links *L = djvu_page_get_links(doc, i);
+            if (L)
+                djvu_page_links_destroy(ctx, L);
+        }
+    }
+    djvu_doc_close(doc);
+    ms = bench_now_ms() - t0;
+    return ms;
+}
+
+/* --- bench-sum: replicate SumatraPDF EngineDjvuDec::RenderPage (our path) ---
+ * Renders at zoom=1, user-rotation=0. Mirrors the engine's non-GDI work:
+ * pick an integer subsample, decode, convert RGB->BGR (or copy gray8), and
+ * rotate for subsample>1. The GDI StretchBlt/DIB step is excluded by design. */
+
+static volatile uint8_t sum_sink; /* defeat dead-code elimination of the convert */
+
+static int sum_normalize_rotation(int r)
+{
+    r = r % 360;
+    if (r < 0)
+        r += 360;
+    return r;
+}
+
+/* EngineDjvuDec::DjvuDecPickSubsample: largest subsample still covering target.
+   Compound (color) pages are forced to full resolution. */
+static int sum_pick_subsample(djvu_page_type t, int upW, int upH, int tdx, int tdy)
+{
+    int sx, sy, s;
+    if (t == DJVU_PAGE_COMPOUND)
+        return 1;
+    if (upW <= 0 || upH <= 0 || tdx <= 0 || tdy <= 0)
+        return 1;
+    sx = upW / tdx;
+    sy = upH / tdy;
+    s = sx < sy ? sx : sy;
+    if (s < 1)
+        s = 1;
+    if (s > upW)
+        s = upW;
+    if (s > upH)
+        s = upH;
+    return s;
+}
+
+/* Replicate EngineDjvuDec's RGB->BGR convert (or gray8 copy) + optional CPU
+   rotation into freshly-malloc'd buffers. Returns 0 on success. */
+static int sum_convert_rotate(djvu_image *img, djvu_page_type ptype, int rotateAfter)
+{
+    int dx = img->width, dy = img->height;
+    int isBitonal = (ptype == DJVU_PAGE_BITONAL) || (img->format == DJVU_FORMAT_GRAY8);
+    int gray = isBitonal && img->format == DJVU_FORMAT_GRAY8;
+    int comp = gray ? 1 : 3;
+    uint8_t *buf;
+    int x, y;
+
+    if (gray) {
+        buf = (uint8_t *)malloc((size_t)dx * dy);
+        if (!buf)
+            return -1;
+        for (y = 0; y < dy; y++)
+            memcpy(buf + (size_t)y * dx, img->data + (size_t)y * img->stride, (size_t)dx);
+    } else {
+        buf = (uint8_t *)malloc((size_t)dx * dy * 3);
+        if (!buf)
+            return -1;
+        for (y = 0; y < dy; y++) {
+            const uint8_t *src = img->data + (size_t)y * img->stride;
+            uint8_t *dst = buf + (size_t)y * dx * 3;
+            if (img->format == DJVU_FORMAT_GRAY8) {
+                for (x = 0; x < dx; x++) {
+                    uint8_t v = src[x];
+                    dst[x * 3 + 0] = v;
+                    dst[x * 3 + 1] = v;
+                    dst[x * 3 + 2] = v;
+                }
+            } else {
+                for (x = 0; x < dx; x++) {
+                    dst[x * 3 + 0] = src[x * 3 + 2]; /* B */
+                    dst[x * 3 + 1] = src[x * 3 + 1]; /* G */
+                    dst[x * 3 + 2] = src[x * 3 + 0]; /* R */
+                }
+            }
+        }
+    }
+
+    if (rotateAfter != 0) {
+        int ndx = (rotateAfter == 180) ? dx : dy;
+        uint8_t *rot = (uint8_t *)malloc((size_t)dx * dy * comp);
+        if (!rot) {
+            free(buf);
+            return -1;
+        }
+        for (y = 0; y < dy; y++) {
+            for (x = 0; x < dx; x++) {
+                int nx, ny;
+                if (rotateAfter == 90) {
+                    nx = dy - 1 - y;
+                    ny = x;
+                } else if (rotateAfter == 180) {
+                    nx = dx - 1 - x;
+                    ny = dy - 1 - y;
+                } else { /* 270 */
+                    nx = y;
+                    ny = dx - 1 - x;
+                }
+                memcpy(rot + ((size_t)ny * ndx + nx) * comp,
+                       buf + ((size_t)y * dx + x) * comp, (size_t)comp);
+            }
+        }
+        sum_sink ^= rot[0];
+        free(rot);
+    } else {
+        sum_sink ^= buf[0];
+    }
+    free(buf);
+    return 0;
+}
+
+/* Compute the engine's subsample/rotation for a page (cached at engine load
+   time, so done outside the render timer here). */
+static void sum_page_params(djvu_doc *doc, int page0, djvu_page_type *ptype,
+                            int *subsample, int *rotateAfter)
+{
+    djvu_page_info info;
+    int dpi, rot, upW, upH, fullW, fullH;
+    memset(&info, 0, sizeof info);
+    *ptype = djvu_page_get_type(doc, page0);
+    if (djvu_doc_page_info(doc, page0, &info) != 0) {
+        *subsample = 1;
+        *rotateAfter = 0;
+        return;
+    }
+    dpi = info.dpi;
+    if (dpi < 25 || dpi > 6000)
+        dpi = 300;
+    rot = sum_normalize_rotation(info.rotation);
+    upW = info.width;
+    upH = info.height;
+    if (rot == 90 || rot == 270) {
+        int t = upW;
+        upW = upH;
+        upH = t;
+    }
+    fullW = (int)(upW * 300.0 / dpi + 0.5);
+    fullH = (int)(upH * 300.0 / dpi + 0.5);
+    *subsample = sum_pick_subsample(*ptype, upW, upH, fullW, fullH);
+    *rotateAfter = (*subsample > 1) ? sum_normalize_rotation(rot) : 0;
+}
+
+/* Cold sum page render: fresh doc per rep; timer covers render + convert. */
+static double bench_ours_page_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t len,
+                                     int page0)
+{
+    djvu_doc *doc;
+    djvu_page_type ptype;
+    int subsample, rotateAfter, ok;
+    double t0, ms;
+    djvu_image *img;
+
+    doc = djvu_doc_open(ctx, data, len);
+    if (!doc)
+        return -1.0;
+    sum_page_params(doc, page0, &ptype, &subsample, &rotateAfter);
+
+    t0 = bench_now_ms();
+    img = djvu_page_render(doc, page0, subsample);
+    ok = img && sum_convert_rotate(img, ptype, rotateAfter) == 0;
+    ms = bench_now_ms() - t0;
+    if (img)
+        djvu_image_destroy(ctx, img);
+    djvu_doc_close(doc);
+    return ok ? ms : -1.0;
+}
+
+/* One cold session, sum render: open + render all pages + text + links + close. */
+static double bench_ours_doc_sum_ms(djvu_ctx *ctx, const uint8_t *data, size_t len)
+{
+    djvu_doc *doc;
+    int n, i;
+    double t0, ms;
+
+    t0 = bench_now_ms();
+    doc = djvu_doc_open(ctx, data, len);
+    if (!doc)
+        return -1.0;
+    n = djvu_doc_page_count(doc);
+    for (i = 0; i < n; i++) {
+        djvu_page_type ptype;
+        int subsample, rotateAfter;
+        djvu_image *img;
+        sum_page_params(doc, i, &ptype, &subsample, &rotateAfter);
+        img = djvu_page_render(doc, i, subsample);
+        if (img) {
+            sum_convert_rotate(img, ptype, rotateAfter);
+            djvu_image_destroy(ctx, img);
+        }
         {
             char *t = djvu_page_text(doc, i);
             if (t)
@@ -690,6 +896,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-links")) do_links = 1;
         else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
+        else if (!strcmp(argv[i], "-bench-sum")) do_bench = 2; /* SumatraPDF Engine* render path */
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
         else if (!strcmp(argv[i], "-verify-render")) do_verify_render = 1;
         else if (!strcmp(argv[i], "-dump-features")) do_dump_features = 1;
@@ -792,21 +999,26 @@ int main(int argc, char **argv)
 
     if (do_bench) {
         int n = djvu_doc_page_count(doc);
+        int sum = (do_bench == 2); /* replicate SumatraPDF Engine* render path */
         const int REPS = 3;   /* REPS fresh docs/page; time render only; keep fastest */
         djvu_doc_close(doc);
         doc = NULL;
         bench_ddjvu_reset();
+        if (sum)
+            printf("(bench-sum: EngineDjvuDec vs EngineDjVu render path, zoom=1)\n");
         for (i = 0; i < n; i++) {
             double mine = -1, lib = -1;
             int ok = 1, r;
             for (r = 0; r < REPS; r++) {
-                double dt = bench_ours_page_ms(ctx, data, len, i);
+                double dt = sum ? bench_ours_page_sum_ms(ctx, data, len, i)
+                                : bench_ours_page_ms(ctx, data, len, i);
                 if (dt < 0)
                     ok = 0;
                 else if (mine < 0 || dt < mine)
                     mine = dt;
                 {
-                    double l = bench_ddjvu_page_ms(in, i);
+                    double l = sum ? bench_ddjvu_page_sum_ms(in, i)
+                                   : bench_ddjvu_page_ms(in, i);
                     if (l >= 0 && (lib < 0 || l < lib))
                         lib = l;
                 }
@@ -826,13 +1038,15 @@ int main(int argc, char **argv)
             int ok = 1, r;
             bench_ddjvu_reset();
             for (r = 0; r < REPS; r++) {
-                double dt = bench_ours_doc_ms(ctx, data, len);
+                double dt = sum ? bench_ours_doc_sum_ms(ctx, data, len)
+                                : bench_ours_doc_ms(ctx, data, len);
                 if (dt < 0)
                     ok = 0;
                 else if (doc_mine < 0 || dt < doc_mine)
                     doc_mine = dt;
                 {
-                    double l = bench_ddjvu_doc_ms(in);
+                    double l = sum ? bench_ddjvu_doc_sum_ms(in)
+                                   : bench_ddjvu_doc_ms(in);
                     if (l >= 0 && (doc_lib < 0 || l < doc_lib))
                         doc_lib = l;
                 }
