@@ -218,6 +218,65 @@ static int load_djvm(djvu_doc *doc, uint32_t dirm_data, uint32_t dirm_size)
     return 0;
 }
 
+/* ---- IW44 cache (eager decode at doc open; immutable during render) ---- */
+
+static void free_page_iw44(djvu_ctx *ctx, djvu_page_int *pg)
+{
+    if (pg->iw_bg) { djvu_iw44_free(pg->iw_bg); pg->iw_bg = NULL; }
+    if (pg->iw_fg) { djvu_iw44_free(pg->iw_fg); pg->iw_fg = NULL; }
+}
+
+static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
+                             iw_pixmap **slot)
+{
+    uint32_t sz;
+    const char *mc;
+    int maxc;
+    iw_pixmap *pm;
+
+    if (*slot || !djvu_form_find_chunk(doc, pg->form_off, id, &sz, NULL))
+        return;
+    pm = djvu_iw44_new(doc->ctx);
+    if (!pm) return;
+    mc = getenv("DJVU_IW_MAXCHUNKS");
+    maxc = mc ? atoi(mc) : 0;
+    if (djvu_iw44_decode_form(doc, pg->form_off, id, pm, maxc) != 0) {
+        djvu_iw44_free(pm);
+        djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
+                    "IW44 preload failed (%s at form %u)", id, pg->form_off);
+        return;
+    }
+    *slot = pm;
+}
+
+static void djvu_doc_preload_iw44(djvu_doc *doc)
+{
+    int i;
+    for (i = 0; i < doc->npages; i++) {
+        djvu_page_int *pg = &doc->pages[i];
+        preload_iw_layer(doc, pg, "BG44", &pg->iw_bg);
+        preload_iw_layer(doc, pg, "FG44", &pg->iw_fg);
+    }
+}
+
+iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id)
+{
+    if (!doc || page_no < 0 || page_no >= doc->npages || !chunk_id) return NULL;
+    if (chunk_id[0] == 'B' && chunk_id[1] == 'G') return doc->pages[page_no].iw_bg;
+    if (chunk_id[0] == 'F' && chunk_id[1] == 'G') return doc->pages[page_no].iw_fg;
+    return NULL;
+}
+
+iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id)
+{
+    int i;
+    if (!doc) return NULL;
+    for (i = 0; i < doc->npages; i++)
+        if (doc->pages[i].form_off == form_off)
+            return djvu_doc_iw44(doc, i, chunk_id);
+    return NULL;
+}
+
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id)
 {
     int i;
@@ -364,6 +423,7 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
         return NULL;
     }
 
+    djvu_doc_preload_iw44(doc);
     return doc;
 }
 
@@ -378,7 +438,11 @@ void djvu_doc_close(djvu_doc *doc)
         }
         djvu_free(doc->ctx, doc->comps);
     }
-    djvu_free(doc->ctx, doc->pages);
+    if (doc->pages) {
+        for (i = 0; i < doc->npages; i++)
+            free_page_iw44(doc->ctx, &doc->pages[i]);
+        djvu_free(doc->ctx, doc->pages);
+    }
     djvu_free(doc->ctx, doc);
 }
 

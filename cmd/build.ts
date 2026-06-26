@@ -32,6 +32,9 @@ const DJVU_CXXFLAGS =
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
+const INTERNAL_H = `${ROOT}/src/djvu_internal.h`;
+const PUBLIC_H = `${ROOT}/src/djvu.h`;
+
 const SRCS = [
   "src/zptable.c",
   "src/zpcodec.c",
@@ -157,7 +160,7 @@ async function buildClang(): Promise<string> {
   };
 
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src)) continue;
+    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
     await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
   }
   if (needsRebuild(bench.obj, bench.src)) {
@@ -188,7 +191,7 @@ async function buildMsvc(): Promise<string> {
 
   const clC = `${MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src)) continue;
+    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
     const rel = u.src.startsWith(`${ROOT}/`) ? u.src.slice(ROOT.length + 1) : u.src;
     await $`cl ${{ raw: clC }} ${{ raw: rel }}`.cwd(ROOT);
   }
@@ -212,7 +215,7 @@ export async function build(useClang = defaultUseClang): Promise<string> {
   const exePath = `${outDir(useClang)}/${name}`;
   const stale = needsRebuild(exePath, LIBDJVU); // quick check before logging
   const anyUnit = cUnits(outDir(useClang), useClang ? "o" : "obj").some((u) =>
-    needsRebuild(u.obj, u.src),
+    needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H),
   );
   const benchObj = `${outDir(useClang)}/bench_ddjvu_${useClang ? "clang.o" : "msvc.obj"}`;
   const benchStale = needsRebuild(benchObj, `${ROOT}/test/bench_ddjvu.cpp`);

@@ -55,6 +55,8 @@ typedef struct {
     int      type;       /* 0=include(DJVI) 1=page 2=thumb 3=shared-anno */
 } djvu_component;
 
+typedef struct iw_pixmap iw_pixmap;
+
 /* A displayable page = a FORM:DJVU component in the document. */
 typedef struct {
     uint32_t form_off;   /* file offset of the "FORM" tag */
@@ -63,6 +65,8 @@ typedef struct {
     djvu_page_info info;
     const char *id;      /* directory component id (borrowed from comps) */
     const char *title;   /* directory component title (borrowed), or NULL */
+    iw_pixmap *iw_bg;    /* decoded BG44 (filled at doc open; doc-owned) */
+    iw_pixmap *iw_fg;    /* decoded FG44 (filled at doc open; doc-owned) */
 } djvu_page_int;
 
 struct djvu_doc {
@@ -75,6 +79,10 @@ struct djvu_doc {
     int ncomp;
     djvu_component *comps;   /* all DIRM components, in directory order */
 };
+
+/* Cached IW44 layers (read-only during render; freed in djvu_doc_close). */
+iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
+iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
 
 /* Resolve an INCL component id to its FORM file offset; 0 if not found. */
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id);
@@ -462,8 +470,6 @@ jb2_shape *djvu_jb2_get_shape(jb2_image *img, int shapeno);
 /* iw44.c -- IW44 wavelet decoder (DjvuNet Wavelet port, decode only).    */
 /* Decodes BG44/FG44/PM44/BM44 chunks into a Y[CbCr] pixmap.              */
 /* ===================================================================== */
-
-typedef struct iw_pixmap iw_pixmap;
 
 iw_pixmap *djvu_iw44_new(djvu_ctx *ctx);
 void djvu_iw44_free(iw_pixmap *pm);

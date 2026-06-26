@@ -18,26 +18,9 @@ void djvu_debug_dump_comps(djvu_doc *doc)
     }
 }
 
-static iw_pixmap *debug_decode_iw_form(djvu_doc *doc, uint32_t form_off, const char *id)
-{
-    iw_pixmap *pm = djvu_iw44_new(doc->ctx);
-    const char *mc;
-    int maxc;
-
-    if (!pm) return NULL;
-    mc = getenv("DJVU_IW_MAXCHUNKS");
-    maxc = mc ? atoi(mc) : 1000;
-    if (djvu_iw44_decode_form(doc, form_off, id, pm, maxc) != 0) {
-        djvu_iw44_free(pm);
-        return NULL;
-    }
-    return pm;
-}
-
 djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind)
 {
     djvu_ctx *ctx;
-    uint32_t form_off;
     const char *id = kind ? "FG44" : "BG44";
     iw_pixmap *pm;
     djvu_image *out = NULL;
@@ -45,68 +28,67 @@ djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind)
 
     if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
     ctx = doc->ctx;
-    form_off = doc->pages[page_no].form_off;
-    pm = debug_decode_iw_form(doc, form_off, id);
+    pm = djvu_doc_iw44(doc, page_no, id);
     if (!pm) return NULL;
     w = djvu_iw44_width(pm); h = djvu_iw44_height(pm);
-    if (w <= 0 || h <= 0) { djvu_iw44_free(pm); return NULL; }
+    if (w <= 0 || h <= 0) return NULL;
     out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
-    if (!out) { djvu_iw44_free(pm); return NULL; }
+    if (!out) return NULL;
     out->width = w; out->height = h; out->format = DJVU_FORMAT_RGB24;
     out->stride = w * 3;
     out->data = (uint8_t *)djvu_alloc(ctx, (size_t)w * h * 3);
     if (!out->data || djvu_iw44_render_rgb(pm, out->data) != 0) {
-        djvu_image_destroy(ctx, out); djvu_iw44_free(pm); return NULL;
+        djvu_image_destroy(ctx, out);
+        return NULL;
     }
-    djvu_iw44_free(pm);
     return out;
 }
 
 djvu_image *djvu_debug_render_iw_gray(djvu_doc *doc, int page_no, int kind)
 {
     djvu_ctx *ctx;
-    uint32_t form_off;
     const char *id = kind ? "FG44" : "BG44";
     iw_pixmap *pm;
     djvu_image *out = NULL;
     int w, h;
     if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
     ctx = doc->ctx;
-    form_off = doc->pages[page_no].form_off;
-    pm = debug_decode_iw_form(doc, form_off, id);
+    pm = djvu_doc_iw44(doc, page_no, id);
     if (!pm) return NULL;
     w = djvu_iw44_width(pm); h = djvu_iw44_height(pm);
-    if (w <= 0 || h <= 0) { djvu_iw44_free(pm); return NULL; }
+    if (w <= 0 || h <= 0) return NULL;
     out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
-    if (!out) { djvu_iw44_free(pm); return NULL; }
+    if (!out) return NULL;
     out->width = w; out->height = h; out->format = DJVU_FORMAT_GRAY8; out->stride = w;
     out->data = (uint8_t *)djvu_alloc(ctx, (size_t)w * h);
     if (!out->data || djvu_iw44_render_gray(pm, out->data) != 0) {
-        djvu_image_destroy(ctx, out); djvu_iw44_free(pm); return NULL;
+        djvu_image_destroy(ctx, out);
+        return NULL;
     }
-    djvu_iw44_free(pm);
     return out;
 }
 
 djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane)
 {
-    djvu_ctx *ctx; uint32_t form_off;
-    const char *id = kind ? "FG44" : "BG44"; iw_pixmap *pm; djvu_image *out;
+    djvu_ctx *ctx;
+    const char *id = kind ? "FG44" : "BG44";
+    iw_pixmap *pm;
+    djvu_image *out;
     int w, h;
     if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
-    ctx = doc->ctx; form_off = doc->pages[page_no].form_off;
-    pm = debug_decode_iw_form(doc, form_off, id);
+    ctx = doc->ctx;
+    pm = djvu_doc_iw44(doc, page_no, id);
     if (!pm) return NULL;
     w = djvu_iw44_width(pm); h = djvu_iw44_height(pm);
-    if (w <= 0 || h <= 0) { djvu_iw44_free(pm); return NULL; }
+    if (w <= 0 || h <= 0) return NULL;
     out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
-    if (!out) { djvu_iw44_free(pm); return NULL; }
+    if (!out) return NULL;
     out->width = w; out->height = h; out->format = DJVU_FORMAT_GRAY8; out->stride = w;
     out->data = (uint8_t *)djvu_alloc(ctx, (size_t)w * h);
     if (!out->data || djvu_iw44_render_plane(pm, plane, out->data) != 0) {
-        djvu_image_destroy(ctx, out); djvu_iw44_free(pm); return NULL;
+        djvu_image_destroy(ctx, out);
+        return NULL;
     }
-    djvu_iw44_free(pm);
     return out;
 }
 

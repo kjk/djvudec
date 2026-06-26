@@ -7,30 +7,19 @@
 #include <string.h>
 #include <math.h>
 
-static iw_pixmap *decode_bg(djvu_doc *doc, uint32_t form_off)
-{
-    iw_pixmap *pm = djvu_iw44_new(doc->ctx);
-    if (!pm) return NULL;
-    if (djvu_iw44_decode_form(doc, form_off, "BG44", pm, 0) != 0) {
-        djvu_iw44_free(pm);
-        return NULL;
-    }
-    return pm;
-}
-
 int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int height,
                             djvu_cpix *out)
 {
     djvu_ctx *ctx = doc->ctx;
-    iw_pixmap *pm = decode_bg(doc, form_off);
+    iw_pixmap *pm = djvu_doc_iw44_by_form(doc, form_off, "BG44");
     int bw, bh, red, rc = -1;
     djvu_cpix native;
     memset(&native, 0, sizeof(native));
     if (!pm) return -1;
     bw = djvu_iw44_width(pm); bh = djvu_iw44_height(pm);
     red = djvu_compute_red(width, height, bw, bh);
-    if (red < 1) { djvu_iw44_free(pm); return -1; }
-    if (djvu_cpix_init(ctx, &native, bw, bh) != 0) { djvu_iw44_free(pm); return -1; }
+    if (red < 1) return -1;
+    if (djvu_cpix_init(ctx, &native, bw, bh) != 0) return -1;
     if (djvu_iw44_render_rgb_raw(pm, native.d) != 0) goto done;
     if (red == 1) {
         *out = native; native.d = NULL; rc = 0;
@@ -39,7 +28,6 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
     }
 done:
     djvu_cpix_free(ctx, &native);
-    djvu_iw44_free(pm);
     return rc;
 }
 
@@ -75,7 +63,7 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     djvu_ctx *ctx = doc->ctx;
     uint32_t form_off = doc->pages[page_no].form_off;
     djvu_cpix bg; djvu_image *out = NULL;
-    uint32_t sz; const uint8_t *fgbz, *fg44chunk;
+    uint32_t sz; const uint8_t *fgbz;
     uint8_t *pal = NULL; int palsize = 0;
     short *colordata = NULL; int ncolor = 0;
     iw_pixmap *fgpm = NULL; djvu_cpix fgnat; int fgred = 0;
@@ -119,22 +107,15 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     if (!pal) {
         double tfg;
         if (t) tfg = djvu_bench_now_ms();
-        fg44chunk = djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL);
-        if (fg44chunk) {
-            int fw, fh;
-            fgpm = djvu_iw44_new(ctx);
-            if (fgpm && djvu_iw44_decode_form(doc, form_off, "FG44", fgpm, 0) == 0) {
-                fw = djvu_iw44_width(fgpm);
-                fh = djvu_iw44_height(fgpm);
-                fgred = djvu_compute_red(width, height, fw, fh);
-                if (fgred < 1) fgred = 1;
-                if (djvu_cpix_init(ctx, &fgnat, fw, fh) != 0 ||
-                    djvu_iw44_render_rgb_raw(fgpm, fgnat.d) != 0) {
-                    djvu_iw44_free(fgpm); fgpm = NULL;
-                }
-            } else {
-                djvu_iw44_free(fgpm); fgpm = NULL;
-            }
+        fgpm = djvu_doc_iw44(doc, page_no, "FG44");
+        if (fgpm) {
+            int fw = djvu_iw44_width(fgpm);
+            int fh = djvu_iw44_height(fgpm);
+            fgred = djvu_compute_red(width, height, fw, fh);
+            if (fgred < 1) fgred = 1;
+            if (djvu_cpix_init(ctx, &fgnat, fw, fh) != 0 ||
+                djvu_iw44_render_rgb_raw(fgpm, fgnat.d) != 0)
+                fgpm = NULL;
         }
         if (t) t->iw44_ms += djvu_bench_now_ms() - tfg;
     }
@@ -198,7 +179,7 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     if (t) t->composite_ms += djvu_bench_now_ms() - t0;
 
     djvu_free(ctx, pal); djvu_free(ctx, colordata);
-    djvu_cpix_free(ctx, &fgnat); djvu_iw44_free(fgpm);
+    djvu_cpix_free(ctx, &fgnat);
     djvu_cpix_free(ctx, &bg);
     return out;
 }
