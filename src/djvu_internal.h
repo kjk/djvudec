@@ -62,6 +62,7 @@ typedef struct {
 
 typedef struct iw_pixmap iw_pixmap;
 typedef struct jb2_image jb2_image;
+typedef struct { int w, h; uint8_t *d; } djvu_cpix;  /* RGB, w*h*3 */
 
 /* Cached shared Djbz dictionary (keyed by INCL component id). */
 typedef struct {
@@ -88,6 +89,8 @@ typedef struct {
     iw_pixmap *iw_fg;    /* decoded FG44 (filled at doc open; doc-owned) */
     jb2_image *jb2_dict; /* borrowed inline Djbz cache entry (doc open; do not free) */
     jb2_image *jb2_mask; /* decoded Sjbz mask (filled at doc open; doc-owned) */
+    djvu_cpix bg_native; /* BG44 RGB at pixmap resolution (doc open; doc-owned) */
+    djvu_cpix bg_scaled; /* upscaled BG44 RGB bottom-up (doc open; doc-owned) */
 } djvu_page_int;
 
 struct djvu_doc {
@@ -113,6 +116,7 @@ void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
 void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0);
 void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0);
 void djvu_doc_preload_jb2_masks_range(djvu_doc *doc, int lo0, int hi0);
+void djvu_doc_preload_compose_bg_range(djvu_doc *doc, int lo0, int hi0);
 
 /* Cached JB2 dictionaries (read-only during render; freed in djvu_doc_close). */
 jb2_image *djvu_doc_jb2_mask(djvu_doc *doc, int page_no);
@@ -551,8 +555,6 @@ int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray);
 /* ===================================================================== */
 /* scaler.c -- GPixmapScaler bilinear upsampler (compose background path) */
 /* ===================================================================== */
-
-typedef struct { int w, h; uint8_t *d; } djvu_cpix;  /* RGB, w*h*3 */
 
 int  djvu_cpix_init(djvu_ctx *ctx, djvu_cpix *p, int w, int h);
 void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);

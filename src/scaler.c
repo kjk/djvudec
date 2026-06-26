@@ -104,6 +104,14 @@ static void scaler_get_line(scaler *s, int fy, const djvu_cpix *in, int in_x0, i
     }
 }
 
+static int cpix_init_uninit(djvu_ctx *ctx, djvu_cpix *p, int w, int h)
+{
+    djvu_free(ctx, p->d);
+    p->w = w; p->h = h;
+    p->d = (uint8_t *)djvu_alloc(ctx, (size_t)w * h * 3);
+    return p->d ? 0 : -1;
+}
+
 static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
 {
     djvu_ctx *ctx = s->ctx;
@@ -115,7 +123,7 @@ static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
     prepare_interp();
     if (!s->hcoord) scaler_set_h(s, 0, 0);
     if (!s->vcoord) scaler_set_v(s, 0, 0);
-    if (djvu_cpix_init(ctx, out, s->outw, s->outh) != 0) return -1;
+    if (cpix_init_uninit(ctx, out, s->outw, s->outh) != 0) return -1;
     bufw = s->redw;
     lbuf = (uint8_t *)djvu_alloc(ctx, (size_t)(bufw + 2) * 3);
     if (!lbuf) return -1;
@@ -158,14 +166,27 @@ static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
         lbuf[0]=lbuf[3]; lbuf[1]=lbuf[4]; lbuf[2]=lbuf[5];
         lbuf[(bufw+1)*3+0]=lbuf[bufw*3+0]; lbuf[(bufw+1)*3+1]=lbuf[bufw*3+1]; lbuf[(bufw+1)*3+2]=lbuf[bufw*3+2];
         dest = out->d + (size_t)y * s->outw * 3;
-        for (x = 0; x < s->outw; x++) {
-            int n = s->hcoord[x];
-            const uint8_t *lo = lbuf + (1 + (n >> FRACBITS) - red_xmin) * 3;
-            const short *dh = &s_interp[n & FRACMASK][256];
-            int lr = lo[0], lg = lo[1], lb = lo[2];
-            dest[x*3+0] = (uint8_t)(lr + dh[lo[3] - lr]);
-            dest[x*3+1] = (uint8_t)(lg + dh[lo[4] - lg]);
-            dest[x*3+2] = (uint8_t)(lb + dh[lo[5] - lb]);
+        if (red_xmin == 0) {
+            for (x = 0; x < s->outw; x++) {
+                int n = s->hcoord[x];
+                const uint8_t *lo = lbuf + (1 + (n >> FRACBITS)) * 3;
+                const short *dh = &s_interp[n & FRACMASK][256];
+                int lr = lo[0], lg = lo[1], lb = lo[2];
+                int dr = lo[3] - lr, dg = lo[4] - lg, db = lo[5] - lb;
+                dest[x*3+0] = (uint8_t)(lr + dh[dr]);
+                dest[x*3+1] = (uint8_t)(lg + dh[dg]);
+                dest[x*3+2] = (uint8_t)(lb + dh[db]);
+            }
+        } else {
+            for (x = 0; x < s->outw; x++) {
+                int n = s->hcoord[x];
+                const uint8_t *lo = lbuf + (1 + (n >> FRACBITS) - red_xmin) * 3;
+                const short *dh = &s_interp[n & FRACMASK][256];
+                int lr = lo[0], lg = lo[1], lb = lo[2];
+                dest[x*3+0] = (uint8_t)(lr + dh[lo[3] - lr]);
+                dest[x*3+1] = (uint8_t)(lg + dh[lo[4] - lg]);
+                dest[x*3+2] = (uint8_t)(lb + dh[lo[5] - lb]);
+            }
         }
     }
     djvu_free(ctx, lbuf); djvu_free(ctx, p1); djvu_free(ctx, p2);

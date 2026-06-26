@@ -260,6 +260,12 @@ static void free_page_jb2_mask(djvu_ctx *ctx, djvu_page_int *pg)
     }
 }
 
+static void free_page_bg_native(djvu_ctx *ctx, djvu_page_int *pg)
+{
+    djvu_cpix_free(ctx, &pg->bg_native);
+    djvu_cpix_free(ctx, &pg->bg_scaled);
+}
+
 static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
                              iw_pixmap **slot)
 {
@@ -752,6 +758,7 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
         djvu_doc_preload_iw44(doc);
         djvu_doc_preload_jb2_dicts(doc);
         djvu_doc_preload_jb2_masks(doc);
+        djvu_doc_preload_compose_bg_range(doc, 0, doc->npages - 1);
     }
     return doc;
 }
@@ -771,6 +778,7 @@ void djvu_doc_close(djvu_doc *doc)
     free_jb2_inline_cache(doc->ctx, doc);
     if (doc->pages) {
         for (i = 0; i < doc->npages; i++) {
+            free_page_bg_native(doc->ctx, &doc->pages[i]);
             free_page_jb2_mask(doc->ctx, &doc->pages[i]);
             free_page_iw44(&doc->pages[i]);
         }
