@@ -95,11 +95,14 @@ internals. Our output is arguably more correct. Do not "fix" it.
   `dist/djvu.h` (verbatim public header) and `dist/djvu.c` (the public header +
   `djvu_internal.h` + every `src/*.c` concatenated into one translation unit,
   with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped). The
-  script verifies the result with `clang -c` before finishing. `dist/*.c/.h`
-  are committed (regenerate after touching `src/`); the build
-  artifacts are gitignored. This works because no two `.c` files share a
-  file-local (`static`) symbol name — keep it that way or the single-unit build
-  breaks.
+  script verifies the result with `clang -c` before finishing. Regenerate after
+  touching `src/` so the amalgamation still compiles; build artifacts are
+  gitignored. This works because no two `.c` files share a file-local (`static`)
+  symbol name — keep it that way or the single-unit build breaks.
+- **`dist/djvu.c` is never committed by agents.** The user regenerates and
+  commits it manually when they want to publish/update the single-file drop.
+  Do not `git add` or include `dist/djvu.c` in commits unless the user
+  explicitly asks. (`dist/djvu.h` may still be committed with API changes.)
 
 ### Helper tests / scripts
 Write one-off helper tests, probes, and verification scripts in TypeScript and
@@ -236,7 +239,9 @@ milestone history and change log.
 
 **Do not commit automatically.** Make and verify changes, but leave them staged
 in the working tree; only run `git commit` when the user explicitly asks. (The
-user reviews diffs and decides when to commit.)
+user reviews diffs and decides when to commit.) Never commit `dist/djvu.c` —
+that file is always left for the user to commit manually after
+`bun cmd/build-dist.ts`.
 
 ## Status
 Feature-complete; verified byte-for-byte vs DjVuLibre. All remaining
