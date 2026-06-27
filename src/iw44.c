@@ -8,6 +8,106 @@
 
 extern const int16_t djvu_iw44_zigzag[1024];
 
+/* SSE2 is baseline on x86-64; gate so other targets fall back to scalar. */
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#define IW_HAVE_SSE2 1
+/* Sign-extend the low 8 int8 lanes of a 64-bit load to 8 int16 lanes. */
+static __m128i iw_sx8(__m128i v8)
+{
+    return _mm_srai_epi16(_mm_unpacklo_epi8(_mm_setzero_si128(), v8), 8);
+}
+#endif
+
+/* Clamp a contiguous row of int16 coeffs to signed 8-bit: (c+32)>>6 saturated
+   to [-128,127]. Signed pack does the clamp. Matches the scalar tail exactly. */
+static void clamp_row_s8(const int16_t *src, int8_t *dst, int w)
+{
+    int j = 0;
+#ifdef IW_HAVE_SSE2
+    __m128i c32 = _mm_set1_epi16(32);
+    for (; j + 8 <= w; j += 8) {
+        __m128i v = _mm_loadu_si128((const __m128i *)(src + j));
+        v = _mm_srai_epi16(_mm_add_epi16(v, c32), 6);
+        _mm_storel_epi64((__m128i *)(dst + j), _mm_packs_epi16(v, v));
+    }
+#endif
+    for (; j < w; j++) {
+        int x = (src[j] + 32) >> 6;
+        if (x < -128) x = -128; else if (x > 127) x = 127;
+        dst[j] = (int8_t)x;
+    }
+}
+
+/* One row of YCbCr(planar int8) -> interleaved RGB. The integer math is identical
+   to the scalar tail (and to DjvuNet's AVX2 TransformYCbCrToRgb); packus does the
+   [0,255] clamp. */
+static void ycbcr_to_rgb_row(const int8_t *Y, const int8_t *B, const int8_t *R,
+                             uint8_t *out, int w)
+{
+    int x = 0;
+#ifdef IW_HAVE_SSE2
+    __m128i c128 = _mm_set1_epi16(128);
+    for (; x + 8 <= w; x += 8) {
+        __m128i yv = iw_sx8(_mm_loadl_epi64((const __m128i *)(Y + x)));
+        __m128i bv = iw_sx8(_mm_loadl_epi64((const __m128i *)(B + x)));
+        __m128i rv = iw_sx8(_mm_loadl_epi64((const __m128i *)(R + x)));
+        __m128i t1 = _mm_srai_epi16(bv, 2);
+        __m128i t2 = _mm_add_epi16(rv, _mm_srai_epi16(rv, 1));
+        __m128i y128 = _mm_add_epi16(yv, c128);
+        __m128i t3 = _mm_sub_epi16(y128, t1);
+        __m128i tr = _mm_add_epi16(y128, t2);
+        __m128i tg = _mm_sub_epi16(t3, _mm_srai_epi16(t2, 1));
+        __m128i tb = _mm_add_epi16(t3, _mm_slli_epi16(bv, 1));
+        uint8_t rr[8], gg[8], bb[8];
+        int k;
+        _mm_storel_epi64((__m128i *)rr, _mm_packus_epi16(tr, tr));
+        _mm_storel_epi64((__m128i *)gg, _mm_packus_epi16(tg, tg));
+        _mm_storel_epi64((__m128i *)bb, _mm_packus_epi16(tb, tb));
+        for (k = 0; k < 8; k++) {
+            out[(x + k) * 3 + 0] = rr[k];
+            out[(x + k) * 3 + 1] = gg[k];
+            out[(x + k) * 3 + 2] = bb[k];
+        }
+    }
+#endif
+    for (; x < w; x++) {
+        int yv = Y[x], bv = B[x], rv = R[x];
+        int t1 = bv >> 2;
+        int t2 = rv + (rv >> 1);
+        int t3 = yv + 128 - t1;
+        int tr = yv + 128 + t2;
+        int tg = t3 - (t2 >> 1);
+        int tb = t3 + (bv << 1);
+        out[x * 3 + 0] = (uint8_t)(tr < 0 ? 0 : tr > 255 ? 255 : tr);
+        out[x * 3 + 1] = (uint8_t)(tg < 0 ? 0 : tg > 255 ? 255 : tg);
+        out[x * 3 + 2] = (uint8_t)(tb < 0 ? 0 : tb > 255 ? 255 : tb);
+    }
+}
+
+/* One row of luma(planar int8) -> interleaved gray RGB (gray = clamp(127 - Y)). */
+static void gray_to_rgb_row(const int8_t *Y, uint8_t *out, int w)
+{
+    int x = 0;
+#ifdef IW_HAVE_SSE2
+    __m128i c127 = _mm_set1_epi16(127);
+    for (; x + 8 <= w; x += 8) {
+        __m128i yv = iw_sx8(_mm_loadl_epi64((const __m128i *)(Y + x)));
+        __m128i g = _mm_sub_epi16(c127, yv);
+        uint8_t gg[8];
+        int k;
+        _mm_storel_epi64((__m128i *)gg, _mm_packus_epi16(g, g));
+        for (k = 0; k < 8; k++)
+            out[(x + k) * 3 + 0] = out[(x + k) * 3 + 1] = out[(x + k) * 3 + 2] = gg[k];
+    }
+#endif
+    for (; x < w; x++) {
+        int g = 127 - Y[x];
+        if (g < 0) g = 0; else if (g > 255) g = 255;
+        out[x * 3 + 0] = out[x * 3 + 1] = out[x * 3 + 2] = (uint8_t)g;
+    }
+}
+
 /* ---------- block: 64 sparse buckets of 16 coefficients ---------- */
 
 typedef struct {
@@ -295,11 +395,15 @@ static int map_image(djvu_ctx *ctx, iw_map *m, int index, int8_t *img8,
 
     pidx = 0;
     for (i = 0, rowidx = index; i < m->h; i++, rowidx += rowsize, pidx += m->bw) {
-        for (j = 0, pixidx = rowidx; j < m->w; j++, pixidx += pixsep) {
-            int x = (data16[pidx + j] + 32) >> 6;
-            if (x < -128) x = -128;
-            else if (x > 127) x = 127;
-            img8[pixidx] = (int8_t)x;
+        if (pixsep == 1) {
+            clamp_row_s8(data16 + pidx, img8 + rowidx, m->w);  /* contiguous (planar) */
+        } else {
+            for (j = 0, pixidx = rowidx; j < m->w; j++, pixidx += pixsep) {
+                int x = (data16[pidx + j] + 32) >> 6;
+                if (x < -128) x = -128;
+                else if (x > 127) x = 127;
+                img8[pixidx] = (int8_t)x;
+            }
         }
     }
     djvu_free(ctx, data16);
@@ -633,44 +737,39 @@ static int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
 {
     djvu_ctx *ctx;
-    int w, h, i, color;
-    int8_t *bytes;
+    int w, h, oy, color;
+    int8_t *planes;
+    size_t wh;
     if (!pm || !pm->ymap) return -1;
     ctx = pm->ctx;
     w = pm->w; h = pm->h;
     color = djvu_iw44_is_color(pm);
+    wh = (size_t)w * h;
 
-    bytes = (int8_t *)djvu_alloc(ctx, (size_t)w * h * 3);
-    if (!bytes) return -1;
-    memset(bytes, 0, (size_t)w * h * 3);
+    /* Planar layout: contiguous Y/Cb/Cr planes so the clamp (map_image) and the
+       YCbCr->RGB / gray conversion below are straight-line SIMD-able. map_image
+       writes every pixel of each plane, so no clear is needed. */
+    planes = (int8_t *)djvu_alloc(ctx, wh * 3);
+    if (!planes) return -1;
 
     /* map_image produces rows bottom-up (DjVu convention); emit top-down. */
-    if (map_image(ctx, pm->ymap, 0, bytes, w * 3, 3, 0) != 0) { djvu_free(ctx, bytes); return -1; }
+    if (map_image(ctx, pm->ymap, 0, planes, w, 1, 0) != 0) { djvu_free(ctx, planes); return -1; }
     if (color) {
-        map_image(ctx, pm->cbmap, 1, bytes, w * 3, 3, pm->crcbhalf);
-        map_image(ctx, pm->crmap, 2, bytes, w * 3, 3, pm->crcbhalf);
-        for (i = 0; i < w * h; i++) {
-            int8_t *q = bytes + (size_t)i * 3;
-            int yv = q[0], bv = q[1], rv = q[2];
-            int t1 = bv >> 2;
-            int t2 = rv + (rv >> 1);
-            int t3 = yv + 128 - t1;
-            int tr = yv + 128 + t2;
-            int tg = t3 - (t2 >> 1);
-            int tb = t3 + (bv << 1);
-            size_t o = (size_t)(flip ? (h - 1 - i / w) * w + (i % w) : i) * 3;
-            rgb[o + 0] = (uint8_t)clamp255(tr);
-            rgb[o + 1] = (uint8_t)clamp255(tg);
-            rgb[o + 2] = (uint8_t)clamp255(tb);
+        int8_t *yb = planes, *cbb = planes + wh, *crb = planes + 2 * wh;
+        map_image(ctx, pm->cbmap, 0, cbb, w, 1, pm->crcbhalf);
+        map_image(ctx, pm->crmap, 0, crb, w, 1, pm->crcbhalf);
+        for (oy = 0; oy < h; oy++) {
+            int sy = flip ? (h - 1 - oy) : oy;
+            ycbcr_to_rgb_row(yb + (size_t)sy * w, cbb + (size_t)sy * w,
+                             crb + (size_t)sy * w, rgb + (size_t)oy * w * 3, w);
         }
     } else {
-        for (i = 0; i < w * h; i++) {
-            int g = clamp255(127 - bytes[(size_t)i * 3]);  /* gray = 127 - Y */
-            size_t o = (size_t)(flip ? (h - 1 - i / w) * w + (i % w) : i) * 3;
-            rgb[o + 0] = rgb[o + 1] = rgb[o + 2] = (uint8_t)g;
+        for (oy = 0; oy < h; oy++) {
+            int sy = flip ? (h - 1 - oy) : oy;
+            gray_to_rgb_row(planes + (size_t)sy * w, rgb + (size_t)oy * w * 3, w);
         }
     }
-    djvu_free(ctx, bytes);
+    djvu_free(ctx, planes);
     return 0;
 }
 

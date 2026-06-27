@@ -191,7 +191,19 @@ corpus oracle).
 
 ## Ranked opportunities
 
-### 1. Planar `map_image` + SIMD clamp + SIMD YCbCr→RGB — best risk/reward, DjvuNet-proven  [IN PROGRESS]
+### 1. Planar `map_image` + SIMD clamp + SIMD YCbCr→RGB — best risk/reward, DjvuNet-proven  [DONE]
+Implemented in `iw44.c` (SSE2, baseline on x86-64, scalar fallback elsewhere —
+no CPUID dispatch needed for SSE2). `map_image` now writes contiguous **planar**
+Y/Cb/Cr; `clamp_row_s8` does `(c+32)>>6` via `packs_epi16` (signed saturation =
+[-128,127] clamp); `ycbcr_to_rgb_row` / `gray_to_rgb_row` do the conversion 8 px
+at a time (`packus_epi16` = [0,255] clamp), with the bottom-up flip as a
+row-reorder. Dropped the wasteful full-buffer memset. Byte-exact (corpus oracle
+245 match / 0 mismatch, ASan clean). IW44 color-render layer **−3 to −4 %**
+(min-of-8: lossy_masked 46.5→45.1 ms, compression 111.9→107.7 ms over all pages);
+A/B confirmed the SSE2 conversion beats scalar-planar by ~5 %. AVX2 (CPUID
+dispatch) would widen this further — deferred.
+
+Original plan:
 `map_image` (`iw44.c:277`) writes int8 with stride (`pixsep=3`, interleaved
 Y/B/R); `iw44_render_rgb_impl` reads it back interleaved and writes to a *flipped*
 index. Two SIMD blockers: clamp loop scatters (stride 3), color loop reads
