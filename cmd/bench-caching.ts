@@ -4,7 +4,8 @@
 //
 // Builds djvu_test, then runs `djvu_test -bench-caching` on the given file.
 // Each mode (none / eager / on_demand) gets 2 session runs (open, render every
-// page, close); the summary prints best-of-2 timings with % delta vs eager.
+// page, close); then a best-of-2 comparison table (op | none | eager |
+// on_demand | %none | %demand; % vs eager baseline).
 // With no file, picks a random .djvu from testfiles/subset (`-full` →
 // testfiles/full).
 import { existsSync, readdirSync, statSync } from "fs";

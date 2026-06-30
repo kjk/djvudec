@@ -372,18 +372,79 @@ static void bench_print_session_line(const char *tag, const bench_session_timing
     printf(" close: %.2f\n", t->close_ms);
 }
 
-static void bench_print_compare_line(const char *label, double ours, double lib)
+typedef struct {
+    char op[16];
+    double ours;
+    double lib;
+} bench_cmp_row;
+
+static void bench_fmt_ms_cell(char *buf, size_t cap, double ms)
 {
-    if (lib < 0.0 || ours < 0.0) {
-        printf("%s: djvudec %s, libdjvu %s\n", label,
-               ours < 0.0 ? "ERROR" : "ok", lib < 0.0 ? "ERROR" : "ok");
-        return;
+    if (ms < 0.0)
+        snprintf(buf, cap, "ERROR");
+    else
+        snprintf(buf, cap, "%.2f", ms);
+}
+
+static void bench_fmt_diff_cell(char *buf, size_t cap, double ours, double lib)
+{
+    if (ours < 0.0 || lib < 0.0)
+        snprintf(buf, cap, "ERROR");
+    else
+        snprintf(buf, cap, "%+.2f", ours - lib);
+}
+
+static void bench_fmt_pct_cell(char *buf, size_t cap, double ours, double lib)
+{
+    if (ours < 0.0 || lib < 0.0)
+        snprintf(buf, cap, "ERROR");
+    else if (lib > 0.0)
+        snprintf(buf, cap, "%+.1f%%", (ours - lib) / lib * 100.0);
+    else
+        snprintf(buf, cap, "0.0%%");
+}
+
+static void bench_print_compare_table(const bench_cmp_row *rows, int nrows)
+{
+    static const char *h_op = "op";
+    static const char *h_ours = "djvudec";
+    static const char *h_lib = "libdjvu";
+    static const char *h_diff = "diff";
+    static const char *h_pct = "%diff";
+    int w_op = (int)strlen(h_op);
+    int w_ours = (int)strlen(h_ours);
+    int w_lib = (int)strlen(h_lib);
+    int w_diff = (int)strlen(h_diff);
+    int w_pct = (int)strlen(h_pct);
+    char ours[24], lib[24], diff[24], pct[24];
+    int i, w;
+
+    for (i = 0; i < nrows; i++) {
+        bench_fmt_ms_cell(ours, sizeof ours, rows[i].ours);
+        bench_fmt_ms_cell(lib, sizeof lib, rows[i].lib);
+        bench_fmt_diff_cell(diff, sizeof diff, rows[i].ours, rows[i].lib);
+        bench_fmt_pct_cell(pct, sizeof pct, rows[i].ours, rows[i].lib);
+        w = (int)strlen(rows[i].op);
+        if (w > w_op) w_op = w;
+        w = (int)strlen(ours);
+        if (w > w_ours) w_ours = w;
+        w = (int)strlen(lib);
+        if (w > w_lib) w_lib = w;
+        w = (int)strlen(diff);
+        if (w > w_diff) w_diff = w;
+        w = (int)strlen(pct);
+        if (w > w_pct) w_pct = w;
     }
-    {
-        double diff = ours - lib;
-        double pct = lib > 0.0 ? diff / lib * 100.0 : 0.0;
-        printf("%s: djvudec %.2f ms, libdjvu %.2f ms, %+.2f ms, %+.1f%%\n",
-               label, ours, lib, diff, pct);
+
+    printf("%-*s %-*s %-*s %-*s %-*s\n",
+           w_op, h_op, w_ours, h_ours, w_lib, h_lib, w_diff, h_diff, w_pct, h_pct);
+    for (i = 0; i < nrows; i++) {
+        bench_fmt_ms_cell(ours, sizeof ours, rows[i].ours);
+        bench_fmt_ms_cell(lib, sizeof lib, rows[i].lib);
+        bench_fmt_diff_cell(diff, sizeof diff, rows[i].ours, rows[i].lib);
+        bench_fmt_pct_cell(pct, sizeof pct, rows[i].ours, rows[i].lib);
+        printf("%-*s %-*s %-*s %-*s %-*s\n",
+               w_op, rows[i].op, w_ours, ours, w_lib, lib, w_diff, diff, w_pct, pct);
     }
 }
 
@@ -515,23 +576,72 @@ static int bench_caching_session(const uint8_t *data, size_t len, djvu_cache_mod
     return rc;
 }
 
-static void bench_print_caching_compare(const char *label, double none_ms,
-                                        double eager_ms, double demand_ms)
+typedef struct {
+    char op[16];
+    double none;
+    double eager;
+    double demand;
+} bench_cache_row;
+
+static void bench_fmt_pct_vs_eager(char *buf, size_t cap, double ms, double eager)
 {
-    if (none_ms < 0.0 || eager_ms < 0.0 || demand_ms < 0.0) {
-        printf("%s: none %s, eager %s, on_demand %s\n", label,
-               none_ms < 0.0 ? "ERROR" : "ok",
-               eager_ms < 0.0 ? "ERROR" : "ok",
-               demand_ms < 0.0 ? "ERROR" : "ok");
-        return;
+    if (ms < 0.0 || eager < 0.0)
+        snprintf(buf, cap, "ERROR");
+    else if (eager > 0.0)
+        snprintf(buf, cap, "%+.1f%%", (ms - eager) / eager * 100.0);
+    else
+        snprintf(buf, cap, "0.0%%");
+}
+
+static void bench_print_caching_table(const bench_cache_row *rows, int nrows)
+{
+    static const char *h_op = "op";
+    static const char *h_none = "none";
+    static const char *h_eager = "eager";
+    static const char *h_demand = "on_demand";
+    static const char *h_pct_none = "%none";
+    static const char *h_pct_demand = "%demand";
+    int w_op = (int)strlen(h_op);
+    int w_none = (int)strlen(h_none);
+    int w_eager = (int)strlen(h_eager);
+    int w_demand = (int)strlen(h_demand);
+    int w_pct_none = (int)strlen(h_pct_none);
+    int w_pct_demand = (int)strlen(h_pct_demand);
+    char none[24], eager[24], demand[24], pct_none[24], pct_demand[24];
+    int i, w;
+
+    for (i = 0; i < nrows; i++) {
+        bench_fmt_ms_cell(none, sizeof none, rows[i].none);
+        bench_fmt_ms_cell(eager, sizeof eager, rows[i].eager);
+        bench_fmt_ms_cell(demand, sizeof demand, rows[i].demand);
+        bench_fmt_pct_vs_eager(pct_none, sizeof pct_none, rows[i].none, rows[i].eager);
+        bench_fmt_pct_vs_eager(pct_demand, sizeof pct_demand, rows[i].demand, rows[i].eager);
+        w = (int)strlen(rows[i].op);
+        if (w > w_op) w_op = w;
+        w = (int)strlen(none);
+        if (w > w_none) w_none = w;
+        w = (int)strlen(eager);
+        if (w > w_eager) w_eager = w;
+        w = (int)strlen(demand);
+        if (w > w_demand) w_demand = w;
+        w = (int)strlen(pct_none);
+        if (w > w_pct_none) w_pct_none = w;
+        w = (int)strlen(pct_demand);
+        if (w > w_pct_demand) w_pct_demand = w;
     }
-    if (eager_ms > 0.0) {
-        printf("%s: none %.2f ms (%+.1f%%), eager %.2f ms, on_demand %.2f ms (%+.1f%%)\n",
-               label, none_ms, (none_ms - eager_ms) / eager_ms * 100.0,
-               eager_ms, demand_ms, (demand_ms - eager_ms) / eager_ms * 100.0);
-    } else {
-        printf("%s: none %.2f ms, eager %.2f ms, on_demand %.2f ms\n",
-               label, none_ms, eager_ms, demand_ms);
+
+    printf("%-*s %-*s %-*s %-*s %-*s %-*s\n",
+           w_op, h_op, w_none, h_none, w_eager, h_eager, w_demand, h_demand,
+           w_pct_none, h_pct_none, w_pct_demand, h_pct_demand);
+    for (i = 0; i < nrows; i++) {
+        bench_fmt_ms_cell(none, sizeof none, rows[i].none);
+        bench_fmt_ms_cell(eager, sizeof eager, rows[i].eager);
+        bench_fmt_ms_cell(demand, sizeof demand, rows[i].demand);
+        bench_fmt_pct_vs_eager(pct_none, sizeof pct_none, rows[i].none, rows[i].eager);
+        bench_fmt_pct_vs_eager(pct_demand, sizeof pct_demand, rows[i].demand, rows[i].eager);
+        printf("%-*s %-*s %-*s %-*s %-*s %-*s\n",
+               w_op, rows[i].op, w_none, none, w_eager, eager, w_demand, demand,
+               w_pct_none, pct_none, w_pct_demand, pct_demand);
     }
 }
 
@@ -1368,7 +1478,6 @@ int main(int argc, char **argv)
         bench_session_timings runs[3][2];
         double *page_ms[3][2];
         int m, r, p;
-        char lbl[16];
 
         djvu_doc_close(doc);
         doc = NULL;
@@ -1414,17 +1523,38 @@ int main(int argc, char **argv)
             double total_eager = bench_best2(runs[1][0].total_ms, runs[1][1].total_ms);
             double total_demand = bench_best2(runs[2][0].total_ms, runs[2][1].total_ms);
 
-            printf("(best of %d runs; %% vs eager baseline)\n", RUNS);
-            bench_print_caching_compare("open", open_none, open_eager, open_demand);
-            for (p = 0; p < n; p++) {
-                double pg_none = bench_best2(runs[0][0].page_ms[p], runs[0][1].page_ms[p]);
-                double pg_eager = bench_best2(runs[1][0].page_ms[p], runs[1][1].page_ms[p]);
-                double pg_demand = bench_best2(runs[2][0].page_ms[p], runs[2][1].page_ms[p]);
-                snprintf(lbl, sizeof lbl, "%d", p + 1);
-                bench_print_caching_compare(lbl, pg_none, pg_eager, pg_demand);
+            bench_cache_row *rows = (bench_cache_row *)calloc((size_t)n + 3, sizeof *rows);
+
+            if (!rows) {
+                fprintf(stderr, "bench-caching: out of memory\n");
+                for (m = 0; m < NM; m++)
+                    for (r = 0; r < RUNS; r++)
+                        free(page_ms[m][r]);
+                free(data);
+                return 1;
             }
-            bench_print_caching_compare("close", close_none, close_eager, close_demand);
-            bench_print_caching_compare("total", total_none, total_eager, total_demand);
+            strcpy(rows[0].op, "open");
+            rows[0].none = open_none;
+            rows[0].eager = open_eager;
+            rows[0].demand = open_demand;
+            for (p = 0; p < n; p++) {
+                snprintf(rows[1 + p].op, sizeof rows[1 + p].op, "%d", p + 1);
+                rows[1 + p].none = bench_best2(runs[0][0].page_ms[p], runs[0][1].page_ms[p]);
+                rows[1 + p].eager = bench_best2(runs[1][0].page_ms[p], runs[1][1].page_ms[p]);
+                rows[1 + p].demand = bench_best2(runs[2][0].page_ms[p], runs[2][1].page_ms[p]);
+            }
+            strcpy(rows[n + 1].op, "close");
+            rows[n + 1].none = close_none;
+            rows[n + 1].eager = close_eager;
+            rows[n + 1].demand = close_demand;
+            strcpy(rows[n + 2].op, "total");
+            rows[n + 2].none = total_none;
+            rows[n + 2].eager = total_eager;
+            rows[n + 2].demand = total_demand;
+
+            printf("(best of %d runs; %% vs eager baseline)\n", RUNS);
+            bench_print_caching_table(rows, n + 3);
+            free(rows);
         }
 
         for (m = 0; m < NM; m++)
@@ -1441,7 +1571,6 @@ int main(int argc, char **argv)
         bench_session_timings ours[2], lib[2];
         double *page_ms[4];
         int r, p;
-        char lbl[16];
 
         djvu_doc_close(doc);
         doc = NULL;
@@ -1493,16 +1622,33 @@ int main(int argc, char **argv)
             double total_ours = bench_best2(ours[0].total_ms, ours[1].total_ms);
             double total_lib = bench_best2(lib[0].total_ms, lib[1].total_ms);
 
-            printf("(best of %d runs; + = djvudec slower)\n", RUNS);
-            bench_print_compare_line("open", open_ours, open_lib);
-            for (p = 0; p < n; p++) {
-                double pg_ours = bench_best2(ours[0].page_ms[p], ours[1].page_ms[p]);
-                double pg_lib = bench_best2(lib[0].page_ms[p], lib[1].page_ms[p]);
-                snprintf(lbl, sizeof lbl, "%d", p + 1);
-                bench_print_compare_line(lbl, pg_ours, pg_lib);
+            bench_cmp_row *rows = (bench_cmp_row *)calloc((size_t)n + 3, sizeof *rows);
+
+            if (!rows) {
+                fprintf(stderr, "bench: out of memory\n");
+                for (i = 0; i < 4; i++)
+                    free(page_ms[i]);
+                free(data);
+                return 1;
             }
-            bench_print_compare_line("close", close_ours, close_lib);
-            bench_print_compare_line("total", total_ours, total_lib);
+            strcpy(rows[0].op, "open");
+            rows[0].ours = open_ours;
+            rows[0].lib = open_lib;
+            for (p = 0; p < n; p++) {
+                snprintf(rows[1 + p].op, sizeof rows[1 + p].op, "%d", p + 1);
+                rows[1 + p].ours = bench_best2(ours[0].page_ms[p], ours[1].page_ms[p]);
+                rows[1 + p].lib = bench_best2(lib[0].page_ms[p], lib[1].page_ms[p]);
+            }
+            strcpy(rows[n + 1].op, "close");
+            rows[n + 1].ours = close_ours;
+            rows[n + 1].lib = close_lib;
+            strcpy(rows[n + 2].op, "total");
+            rows[n + 2].ours = total_ours;
+            rows[n + 2].lib = total_lib;
+
+            printf("(best of %d runs; + = djvudec slower)\n", RUNS);
+            bench_print_compare_table(rows, n + 3);
+            free(rows);
         }
 
         for (i = 0; i < 4; i++)

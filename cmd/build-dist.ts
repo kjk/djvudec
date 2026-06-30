@@ -11,12 +11,13 @@
 //                   comments and line-trailing whitespace removed.
 //
 // A consumer drops both files into their tree and compiles djvu.c like any
-// other source. This verifies the result compiles (clang -c) before finishing.
+// other source. Verifies the result compiles with every available toolchain
+// (clang everywhere; MSVC cl.exe too on Windows) before finishing.
 // bench.ts calls ensureDist() to regenerate only when src/ is newer than dist/.
 import { $ } from "bun";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, rmSync } from "fs";
 import { join } from "path";
-import { clangCFlags } from "./build";
+import { clangCFlags, DJVUDEC_MSVC_CL_C, isWindows } from "./build";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const SRC = join(ROOT, "src");
@@ -150,6 +151,47 @@ function stripTrailingWhitespace(code: string): string {
     .join("\n");
 }
 
+/** Echo a compiler command, then run it (stdout progress tracking). */
+async function runCmd(cmd: string, cwd?: string): Promise<number> {
+  console.log(cwd ? `+ cd ${cwd} && ${cmd}` : `+ ${cmd}`);
+  const shell = $`${{ raw: cmd }}`.nothrow();
+  if (cwd) await shell.cwd(cwd);
+  const r = await shell;
+  return r.exitCode ?? 1;
+}
+
+async function haveCompiler(name: string): Promise<boolean> {
+  const probe = isWindows ? $`where ${name}` : $`which ${name}`;
+  const r = await probe.nothrow().quiet();
+  return r.exitCode === 0;
+}
+
+const VERIFY_OBJS = ["djvu.o", "djvu_verify_clang.o", "djvu_verify_msvc.obj"];
+
+function cleanVerifyObjs(): void {
+  for (const name of VERIFY_OBJS) {
+    const p = join(DIST, name);
+    if (existsSync(p)) rmSync(p);
+  }
+}
+
+async function verifyDistCompile(toolchain: "clang" | "msvc"): Promise<boolean> {
+  const relC = "dist/djvu.c";
+  if (toolchain === "clang") {
+    const obj = "dist/djvu_verify_clang.o";
+    const rc = await runCmd(
+      `clang ${clangCFlags("-O1")} -c ${relC} -o ${obj}`,
+      ROOT,
+    );
+    if (existsSync(join(DIST, "djvu_verify_clang.o"))) rmSync(join(DIST, "djvu_verify_clang.o"));
+    return rc === 0;
+  }
+  const obj = "dist/djvu_verify_msvc.obj";
+  const rc = await runCmd(`cl ${DJVUDEC_MSVC_CL_C} -c ${relC} -Fo${obj}`, ROOT);
+  if (existsSync(join(DIST, "djvu_verify_msvc.obj"))) rmSync(join(DIST, "djvu_verify_msvc.obj"));
+  return rc === 0;
+}
+
 export async function buildDist(): Promise<void> {
   mkdirSync(DIST, { recursive: true });
 
@@ -175,18 +217,30 @@ export async function buildDist(): Promise<void> {
   console.log(`wrote dist/djvu.h (${hLines} lines)`);
   console.log(`wrote dist/djvu.c (${cLines} lines, ${DIST_MODULES.length} modules)`);
 
-  console.log("compiling dist/djvu.c (clang -c)...");
-  const obj = join(DIST, "djvu.o");
-  if (existsSync(obj)) await $`rm -f ${obj}`.nothrow();
-  const r = await $`clang ${{ raw: clangCFlags("-O1") }} -c ${DIST_C} -o ${obj}`
-    .cwd(DIST)
-    .nothrow();
-  if (r.exitCode !== 0) {
-    console.error("amalgamation FAILED to compile");
+  cleanVerifyObjs();
+
+  const toolchains: ("clang" | "msvc")[] = [];
+  if (await haveCompiler("clang")) toolchains.push("clang");
+  else {
+    console.error("amalgamation verify: clang not found");
     process.exit(1);
   }
-  if (existsSync(obj)) await $`rm -f ${obj}`.nothrow();
-  console.log("amalgamation compiles cleanly ✓");
+  if (isWindows) {
+    if (await haveCompiler("cl")) toolchains.push("msvc");
+    else console.log("amalgamation verify: skipping msvc (cl.exe not found)");
+  }
+
+  let failed = false;
+  for (const tc of toolchains) {
+    const label = tc === "clang" ? "clang" : "msvc cl";
+    console.log(`verifying dist/djvu.c (${label})...`);
+    if (await verifyDistCompile(tc)) console.log(`amalgamation compiles cleanly (${label}) ✓`);
+    else {
+      console.error(`amalgamation FAILED to compile (${label})`);
+      failed = true;
+    }
+  }
+  if (failed) process.exit(1);
 }
 
 export async function ensureDist(): Promise<void> {

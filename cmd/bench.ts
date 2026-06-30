@@ -7,7 +7,8 @@
 // (DjVuLibre via test/bench_ddjvu.cpp), then runs `djvu_test -bench` on the
 // given file. Session benchmark: open doc, render every page, close; 2 runs each
 // for djvudec and libdjvu. Prints one line per run (open, per-page, close ms),
-// then best-of-2 comparison lines (open, each page, close; + = djvudec slower).
+// then a best-of-2 comparison table (op | djvudec | libdjvu | diff | %diff;
+// + = djvudec slower).
 // With no file, picks a random .djvu from testfiles/subset (`-full` →
 // testfiles/full).
 import { existsSync, readdirSync, statSync } from "fs";
