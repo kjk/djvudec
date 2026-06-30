@@ -1,12 +1,13 @@
 // bench.ts -- benchmark our decoder against DjVuLibre ddjvuapi.
 //
-//   bun cmd/bench.ts [file.djvu] [-clang] [-full] [-clean] [-eager]
+//   bun cmd/bench.ts [file.djvu] [-clang] [-full] [-clean] [-precache-shared]
 //
 // Regenerates dist/ when src/ is newer (`-clean`: always regenerate dist/,
 // delete out/, full rebuild). Builds djvu_test from dist/djvu.c
 // (DjVuLibre via test/bench_ddjvu.cpp), then runs `djvu_test -bench` on the
-// given file. djvudec uses on-demand caching by default (`-eager` for preload-at-
-// open). Session benchmark: open doc, render every page, close; 2 runs each for
+// given file. djvudec uses no caching by default (`-precache-shared` preloads
+// shared JB2 dicts at open). Session benchmark: open doc, render every page,
+// close; 2 runs each for
 // djvudec and libdjvu. Prints one line per run (open, per-page, close ms),
 // then a best-of-2 comparison table (op | libdjvu | djvudec | diff | %diff;
 // + = djvudec slower).
@@ -34,9 +35,15 @@ function walkDjvu(dir: string): string[] {
 
 const useClang = process.argv.includes("-clang") || defaultUseClang;
 const doClean = process.argv.includes("-clean");
-const benchEager = process.argv.includes("-eager");
+const benchPrecacheShared =
+  process.argv.includes("-precache-shared") || process.argv.includes("-eager");
 const benchArgs = process.argv.slice(2).filter(
-  (a) => a !== "-clang" && a !== "-full" && a !== "-clean" && a !== "-eager",
+  (a) =>
+    a !== "-clang" &&
+    a !== "-full" &&
+    a !== "-clean" &&
+    a !== "-precache-shared" &&
+    a !== "-eager",
 );
 let file = benchArgs.find((a) => !a.startsWith("-"));
 if (!file) {
@@ -63,6 +70,11 @@ if (doClean) {
 await buildRef();
 const TEST = await buildBench(useClang);
 
-const testArgs = [TEST, "-bench", ...(benchEager ? ["-eager"] : []), file];
+const testArgs = [
+  TEST,
+  "-bench",
+  ...(benchPrecacheShared ? ["-precache-shared"] : []),
+  file,
+];
 const r = Bun.spawnSync({ cmd: testArgs, stdout: "inherit", stderr: "inherit" });
 process.exit(r.exitCode ?? 0);

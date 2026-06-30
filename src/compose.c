@@ -41,7 +41,7 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
     int bw, bh, w, h, pm_owned = 0;
     uint32_t sz;
 
-    if (!djvu_cache_stores(ctx)) return -1;
+    if (!djvu_cache_stores_page(ctx)) return -1;
     if (!doc || !pg || pg->bg_native.d) return 0;
     if (!pg->has_info || pg->info.width <= 0 || pg->info.height <= 0)
         return -1;
@@ -80,7 +80,7 @@ void djvu_doc_preload_compose_bg_range(djvu_doc *doc, int lo0, int hi0)
 {
     int i;
 
-    if (!doc) return;
+    if (!doc || !djvu_cache_stores_page(doc->ctx)) return;
     if (lo0 < 0) lo0 = 0;
     if (hi0 >= doc->npages) hi0 = doc->npages - 1;
     if (lo0 > hi0) return;
@@ -99,7 +99,7 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
 
     memset(&native, 0, sizeof(native));
     page_no = compose_bg_page_no(doc, form_off);
-    if (page_no >= 0) {
+    if (page_no >= 0 && djvu_cache_stores_page(ctx)) {
         pg = &doc->pages[page_no];
         if (!pg->bg_native.d)
             compose_bg_native_build(doc, pg);
@@ -304,11 +304,10 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     djvu_free(ctx, pal); djvu_free(ctx, colordata);
     djvu_cpix_free(ctx, &fgnat);
     djvu_doc_iw44_release(ctx, fgpm, fg_owned);
-    *bgout = bg;          /* hand off the composited pixmap (caller frees) */
+    *bgout = bg;
     return 0;
 }
 
-/* Compute the page's gamma-correction LUT, or return 0 if no correction needed. */
 static int compose_gamma_lut(djvu_doc *doc, uint32_t form_off, unsigned char *lut)
 {
     return build_gamma_lut(2.2 / page_gamma(doc, form_off), lut);
@@ -340,9 +339,6 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     return out;
 }
 
-/* Composite a color page straight into a caller buffer (top-down, dst stride in
-   bytes), skipping the intermediate djvu_image. dst must hold width*height*3
-   (the composited dims, == page width/height). Returns 0 on success. */
 int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
                            int width, int height, uint8_t *dst, int stride)
 {

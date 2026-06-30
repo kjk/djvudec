@@ -30,6 +30,24 @@ unchanged until `djvu_doc_close`.
 used from multiple threads (the default `malloc`/`free` are fine on Windows and
 glibc).
 
+## Caching flags (both default off)
+
+Set before `djvu_doc_open` via `djvu_ctx_set_cache_precache_shared` and
+`djvu_ctx_set_cache_per_page`.
+
+| Flag | Effect | Lock required |
+|------|--------|---------------|
+| `cache_precache_shared` | Pre-decode shared **Djbz** dicts (INCL + deduped inline) at open | No |
+| `cache_per_page` | Retain page-local decoded layers (**IW44**, **Sjbz**, composited BG) on each page | Yes (`lock`/`unlock` on `djvu_ctx`) |
+
+With both off: shared dicts and page-local layers are decoded per use and not
+retained on the doc (except the open-time chunk index and INFO preload).
+
+When `cache_precache_shared` is on, shared dicts are read-only after open.
+When `cache_per_page` is on, the first concurrent decode of a given page-local
+layer is serialized via the caller's lock callbacks; later renders of the same
+page reuse the cached layer.
+
 ## What `djvu_doc_open` mutates (single-threaded phase)
 
 At open time the library:
@@ -37,19 +55,19 @@ At open time the library:
 - Parses DIRM / page table (read-only `doc->data` thereafter).
 - Preloads **INFO** for every page (`has_info`, dimensions, rotation).
 - Initializes the scaler bilinear lookup table (`djvu_init` / `djvu_scaler_init`).
-- With `DJVU_CACHE_EAGER` (default): decodes and caches **IW44** BG44/FG44 per
-  page, **Sjbz** masks, shared **Djbz** dictionaries, and composited BG pixmaps.
-- With `DJVU_CACHE_ON_DEMAND`: same caches, filled on first use (requires
-  `lock`/`unlock` callbacks on the `djvu_ctx`).
-- With `DJVU_CACHE_NONE`: no layer cache; each render decodes afresh.
+- Builds a chunk index at open (page-local `DJVU_PG_*` flags + unique **INCL**
+  ids for shared **DJVI** includes).
+- Optionally pre-decodes shared **Djbz** dictionaries when
+  `cache_precache_shared` is enabled.
 
-Cached data is read-only during render/text/annotation access.
+Cached data is read-only during render/text/annotation access (shared dicts
+always; page-local layers when `cache_per_page` is on).
 
 ## Per-call behavior (concurrent-safe paths)
 
 - **Render** (`djvu_page_render`): uses cached or freshly decoded layer data
-  depending on `djvu_cache_mode`; returns a new `djvu_image`. With
-  `DJVU_CACHE_ON_DEMAND`, concurrent first access to a page is serialized via
+  depending on the caching flags; returns a new `djvu_image`. With
+  `cache_per_page`, concurrent first access to a page's layers is serialized via
   the caller's lock callbacks.
 - **Text** (`djvu_page_text`, `djvu_page_text_get_zones`): reads chunk bytes from
   `doc->data`, allocates fresh UTF-8 / zone tree.
@@ -81,9 +99,9 @@ bun cmd/thread.ts testfiles/subset/djvu3spec.djvu
 bun cmd/thread.ts -cpu 4 -nops 512 testfiles/subset/foo.djvu
 ```
 
-`djvudec_thread` opens the file once, then runs `-nops` random operations
-(default 256) across `-cpu` worker threads (default `processor_count / 2`).
-Each op picks a random page and one of: render, text, text zones, links.
-Exits 0 if all operations succeed, 1 otherwise.
+`djvudec_thread` opens the file once with per-page caching and lock callbacks,
+then runs `-nops` random operations (default 256) across `-cpu` worker threads
+(default `processor_count / 2`). Each op picks a random page and one of: render,
+text, text zones, links. Exits 0 if all operations succeed, 1 otherwise.
 
 Run under Thread Sanitizer (clang `-fsanitize=thread`) for deeper validation.

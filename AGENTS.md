@@ -167,10 +167,10 @@ internals. Our output is arguably more correct. Do not "fix" it.
   touching `src/` so the amalgamation still compiles; build artifacts are
   gitignored. This works because no two `.c` files share a file-local (`static`)
   symbol name — keep it that way or the single-unit build breaks.
-- **`dist/djvu.c` and `dist/djvu.h` are never committed by agents.** The user regenerates and
-  commits it manually when they want to publish/update the single-file drop.
-  Do not `git add` or include `dist/djvu.c` in commits unless the user
-  explicitly asks. (`dist/djvu.h` may still be committed with API changes.)
+- **`dist/djvu.c` and `dist/djvu.h` are never committed by agents.** The user
+  regenerates and commits them manually when publishing/updating the single-file
+  drop. Do not `git add` or include either file in commits unless the user
+  explicitly asks.
 
 ### Helper tests / scripts
 Write one-off helper tests, probes, and verification scripts in TypeScript and
@@ -327,9 +327,9 @@ milestone history and change log.
 
 **Do not commit automatically.** Make and verify changes, but leave them staged
 in the working tree; only run `git commit` when the user explicitly asks. (The
-user reviews diffs and decides when to commit.) Never commit `dist/djvu.c` —
-that file is always left for the user to commit manually after
-`bun cmd/build-dist.ts`.
+user reviews diffs and decides when to commit.) Never commit `dist/djvu.c` or
+`dist/djvu.h` — those files are always left for the user to commit manually
+after `bun cmd/build-dist.ts`.
 
 ## Status
 Feature-complete; verified byte-for-byte vs DjVuLibre. All remaining

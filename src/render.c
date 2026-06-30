@@ -243,7 +243,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     type = djvu_page_get_type(doc, page_no);
     info_ok = (djvu_doc_page_info(doc, page_no, &pi) == 0);
 
-    /* JB2 mask: eager cache at open, on-demand cache, or per-render decode. */
+    /* JB2 mask: shared precache, per-page cache, or per-render decode. */
     if (type == DJVU_PAGE_BITONAL || type == DJVU_PAGE_COMPOUND) {
         if (!djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL))
             goto done;
@@ -276,7 +276,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     }
 
 done:
-    djvu_doc_jb2_mask_release(ctx, mask, mask_owned);
+    djvu_doc_jb2_mask_release(doc, mask, mask_owned);
     return apply_page_rotation(ctx, doc, page_no, out, subsample, t);
 }
 
@@ -386,7 +386,7 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
                 return -1;
         }
         rc = djvu_compose_page_into(doc, page_no, mask, w, h, dst, stride);
-        djvu_doc_jb2_mask_release(ctx, mask, mask_owned);
+        djvu_doc_jb2_mask_release(doc, mask, mask_owned);
         return rc;
     }
 

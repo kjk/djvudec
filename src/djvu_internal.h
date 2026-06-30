@@ -27,26 +27,32 @@ struct djvu_ctx {
     djvu_unlock_cb unlock;
     djvu_error_cb error;
     void *user;
-    djvu_cache_mode cache_mode;
+    int cache_precache_shared; /* preload shared JB2 dicts at djvu_doc_open */
+    int cache_per_page;        /* retain page-local decoded layers on djvu_page_int */
     int no_compose;    /* skip color composite in render */
     int iw_max_chunks; /* cap IW44 chunks per layer (0 = unlimited) */
     int bgr;           /* emit color output as B,G,R instead of R,G,B */
 };
 
-static inline int djvu_cache_stores(djvu_ctx *ctx)
+static inline int djvu_cache_stores_shared(djvu_ctx *ctx)
 {
-    return ctx && ctx->cache_mode != DJVU_CACHE_NONE;
+    return ctx && (ctx->cache_precache_shared || ctx->cache_per_page);
+}
+
+static inline int djvu_cache_stores_page(djvu_ctx *ctx)
+{
+    return ctx && ctx->cache_per_page;
 }
 
 static inline void djvu_cache_lock(djvu_ctx *ctx)
 {
-    if (ctx && ctx->cache_mode == DJVU_CACHE_ON_DEMAND && ctx->lock)
+    if (ctx && ctx->cache_per_page && ctx->lock)
         ctx->lock(ctx->user, ctx);
 }
 
 static inline void djvu_cache_unlock(djvu_ctx *ctx)
 {
-    if (ctx && ctx->cache_mode == DJVU_CACHE_ON_DEMAND && ctx->unlock)
+    if (ctx && ctx->cache_per_page && ctx->unlock)
         ctx->unlock(ctx->user, ctx);
 }
 
@@ -96,6 +102,13 @@ typedef struct {
     jb2_image *dict;     /* decoded once; shared by all matching pages */
 } djvu_jb2_inline_entry;
 
+/* Page-local chunk presence (scanned at doc open; chunk bytes live in page FORM). */
+#define DJVU_PG_SJBZ 0x01u
+#define DJVU_PG_BG44 0x02u
+#define DJVU_PG_FG44 0x04u
+#define DJVU_PG_FGBZ 0x08u
+#define DJVU_PG_DJBZ 0x10u /* inline dict; decoded into doc-wide jb2_inline dedupe */
+
 /* A displayable page = a FORM:DJVU component in the document. */
 typedef struct {
     uint32_t form_off;   /* file offset of the "FORM" tag */
@@ -104,12 +117,12 @@ typedef struct {
     djvu_page_info info;
     const char *id;      /* directory component id (borrowed from comps) */
     const char *title;   /* directory component title (borrowed), or NULL */
-    iw_pixmap *iw_bg;    /* decoded BG44 (filled at doc open; doc-owned) */
-    iw_pixmap *iw_fg;    /* decoded FG44 (filled at doc open; doc-owned) */
-    jb2_image *jb2_dict; /* borrowed inline Djbz cache entry (doc open; do not free) */
-    jb2_image *jb2_mask; /* decoded Sjbz mask (filled at doc open; doc-owned) */
-    djvu_cpix bg_native; /* BG44 RGB at pixmap resolution (doc open; doc-owned) */
-    djvu_cpix bg_scaled; /* upscaled BG44 RGB bottom-up (doc open; doc-owned) */
+    uint32_t chunk_flags; /* DJVU_PG_* bitmask from open-time chunk index */
+    iw_pixmap *iw_bg;    /* decoded BG44 when cache_per_page */
+    iw_pixmap *iw_fg;    /* decoded FG44 when cache_per_page */
+    jb2_image *jb2_mask; /* decoded Sjbz when cache_per_page */
+    djvu_cpix bg_native; /* composited BG when cache_per_page */
+    djvu_cpix bg_scaled;
 } djvu_page_int;
 
 struct djvu_doc {
@@ -121,15 +134,16 @@ struct djvu_doc {
     djvu_page_int *pages;
     int ncomp;
     djvu_component *comps;   /* all DIRM components, in directory order */
+    char **shared_incl_ids;  /* unique INCL ids + DIRM type-0 includes (owned) */
+    int n_shared_incl;
     djvu_jb2_dict_entry *jb2_dicts;
     int n_jb2_dicts;
     djvu_jb2_inline_entry *jb2_inline;
     int n_jb2_inline;
 };
 
-/* Cached IW44 / JB2 layers (read-only during render; freed in djvu_doc_close).
-   DJVU_CACHE_EAGER fills at doc open; DJVU_CACHE_ON_DEMAND on first use;
-   DJVU_CACHE_NONE decodes per acquire call (*owned_out=1, caller releases). */
+/* Layer acquire: page-local slots filled when cache_per_page (lock required).
+   Shared JB2 dicts cached when cache_precache_shared or cache_per_page. */
 iw_pixmap *djvu_doc_iw44_acquire(djvu_doc *doc, int page_no, const char *chunk_id,
                                  int *owned_out);
 void djvu_doc_iw44_release(djvu_ctx *ctx, iw_pixmap *pm, int owned);
@@ -138,7 +152,7 @@ iw_pixmap *djvu_doc_iw44_by_form_acquire(djvu_doc *doc, uint32_t form_off,
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
 jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out);
-void djvu_doc_jb2_mask_release(djvu_ctx *ctx, jb2_image *mask, int owned);
+void djvu_doc_jb2_mask_release(djvu_doc *doc, jb2_image *mask, int owned);
 void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
 void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0);
 void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0);

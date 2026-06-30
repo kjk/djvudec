@@ -257,7 +257,7 @@ int main(int argc, char **argv)
 #endif
     ctx = djvu_ctx_new(NULL, NULL, cache_lock_cb, cache_unlock_cb, NULL, NULL);
     if (!ctx) goto done;
-    djvu_ctx_set_cache_mode(ctx, DJVU_CACHE_ON_DEMAND);
+    djvu_ctx_set_cache_per_page(ctx, 1);
 
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) {

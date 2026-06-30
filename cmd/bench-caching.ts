@@ -1,11 +1,11 @@
-// bench-caching.ts -- compare djvudec cache modes on the same file.
+// bench-caching.ts -- compare djvudec shared-cache settings on the same file.
 //
 //   bun cmd/bench-caching.ts [file.djvu] [-clang] [-full] [-clean]
 //
 // Builds djvu_test, then runs `djvu_test -bench-caching` on the given file.
-// Each mode (none / eager / on_demand) gets 2 session runs (open, render every
-// page, close); then a best-of-2 comparison table (op | none | eager |
-// on_demand | %none | %demand; % vs eager baseline).
+// Each mode (none / shared) gets 2 session runs (open, render every page,
+// close); then a best-of-2 comparison table (op | none | shared | %none;
+// % vs shared baseline). Per-page caching is not benchmarked here.
 // With no file, picks a random .djvu from testfiles/subset (`-full` →
 // testfiles/full).
 import { existsSync, readdirSync, statSync } from "fs";
