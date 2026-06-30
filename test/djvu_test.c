@@ -437,14 +437,14 @@ static void bench_print_compare_table(const bench_cmp_row *rows, int nrows)
     }
 
     printf("%-*s %-*s %-*s %-*s %-*s\n",
-           w_op, h_op, w_ours, h_ours, w_lib, h_lib, w_diff, h_diff, w_pct, h_pct);
+           w_op, h_op, w_lib, h_lib, w_ours, h_ours, w_diff, h_diff, w_pct, h_pct);
     for (i = 0; i < nrows; i++) {
         bench_fmt_ms_cell(ours, sizeof ours, rows[i].ours);
         bench_fmt_ms_cell(lib, sizeof lib, rows[i].lib);
         bench_fmt_diff_cell(diff, sizeof diff, rows[i].ours, rows[i].lib);
         bench_fmt_pct_cell(pct, sizeof pct, rows[i].ours, rows[i].lib);
         printf("%-*s %-*s %-*s %-*s %-*s\n",
-               w_op, rows[i].op, w_ours, ours, w_lib, lib, w_diff, diff, w_pct, pct);
+               w_op, rows[i].op, w_lib, lib, w_ours, ours, w_diff, diff, w_pct, pct);
     }
 }
 
@@ -557,17 +557,28 @@ static void bench_cache_unlock_cb(void *user, void *ctx)
 }
 #endif
 
+static djvu_ctx *bench_ctx_new(int eager)
+{
+    if (eager)
+        return djvu_ctx_new(NULL, NULL, NULL, NULL, NULL, NULL);
+    return djvu_ctx_new(NULL, NULL, bench_cache_lock_cb, bench_cache_unlock_cb,
+                        NULL, NULL);
+}
+
+static void bench_ctx_configure(djvu_ctx *ctx, int eager, int sum)
+{
+    djvu_ctx_set_cache_mode(ctx, eager ? DJVU_CACHE_EAGER : DJVU_CACHE_ON_DEMAND);
+    if (sum)
+        djvu_ctx_set_bgr(ctx, 1);
+}
+
 static int bench_caching_session(const uint8_t *data, size_t len, djvu_cache_mode mode,
                                  bench_session_timings *out)
 {
     djvu_ctx *ctx;
     int rc;
 
-    if (mode == DJVU_CACHE_ON_DEMAND)
-        ctx = djvu_ctx_new(NULL, NULL, bench_cache_lock_cb, bench_cache_unlock_cb,
-                           NULL, NULL);
-    else
-        ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, NULL, NULL);
+    ctx = bench_ctx_new(mode != DJVU_CACHE_ON_DEMAND);
     if (!ctx)
         return -1;
     djvu_ctx_set_cache_mode(ctx, mode);
@@ -1313,6 +1324,7 @@ int main(int argc, char **argv)
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1, out_sub = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
     int do_bench_caching = 0;
+    int bench_eager = 0;
     int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0, do_verify_into = 0;
     int do_profile_sum = 0;
     const char *diffdir = NULL;
@@ -1340,6 +1352,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-bench-sum")) do_bench = 2; /* SumatraPDF Engine* render path */
         else if (!strcmp(argv[i], "-bench-caching")) do_bench_caching = 1;
+        else if (!strcmp(argv[i], "-eager")) bench_eager = 1;
         else if (!strcmp(argv[i], "-profile-sum")) do_profile_sum = 1;
         else if (!strcmp(argv[i], "-verify-into")) do_verify_into = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
@@ -1574,12 +1587,21 @@ int main(int argc, char **argv)
 
         djvu_doc_close(doc);
         doc = NULL;
+        djvu_ctx_free(ctx);
+        ctx = bench_ctx_new(bench_eager);
+        if (!ctx) {
+            fprintf(stderr, "bench: out of memory\n");
+            free(data);
+            return 1;
+        }
+        bench_ctx_configure(ctx, bench_eager, sum);
         bench_ddjvu_reset();
         if (sum) {
-            djvu_ctx_set_bgr(ctx, 1);
-            printf("(bench-sum: session open/render-all/close, zoom=1)\n");
+            printf("(bench-sum: session open/render-all/close, zoom=1, %s cache)\n",
+                   bench_eager ? "eager" : "on_demand");
         } else {
-            printf("(bench: session open/render-all/close)\n");
+            printf("(bench: session open/render-all/close, %s cache)\n",
+                   bench_eager ? "eager" : "on_demand");
         }
 
         for (i = 0; i < 4; i++) {

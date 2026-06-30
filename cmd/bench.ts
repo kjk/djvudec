@@ -1,13 +1,14 @@
 // bench.ts -- benchmark our decoder against DjVuLibre ddjvuapi.
 //
-//   bun cmd/bench.ts [file.djvu] [-clang] [-full] [-clean]
+//   bun cmd/bench.ts [file.djvu] [-clang] [-full] [-clean] [-eager]
 //
 // Regenerates dist/ when src/ is newer (`-clean`: always regenerate dist/,
 // delete out/, full rebuild). Builds djvu_test from dist/djvu.c
 // (DjVuLibre via test/bench_ddjvu.cpp), then runs `djvu_test -bench` on the
-// given file. Session benchmark: open doc, render every page, close; 2 runs each
-// for djvudec and libdjvu. Prints one line per run (open, per-page, close ms),
-// then a best-of-2 comparison table (op | djvudec | libdjvu | diff | %diff;
+// given file. djvudec uses on-demand caching by default (`-eager` for preload-at-
+// open). Session benchmark: open doc, render every page, close; 2 runs each for
+// djvudec and libdjvu. Prints one line per run (open, per-page, close ms),
+// then a best-of-2 comparison table (op | libdjvu | djvudec | diff | %diff;
 // + = djvudec slower).
 // With no file, picks a random .djvu from testfiles/subset (`-full` →
 // testfiles/full).
@@ -33,8 +34,9 @@ function walkDjvu(dir: string): string[] {
 
 const useClang = process.argv.includes("-clang") || defaultUseClang;
 const doClean = process.argv.includes("-clean");
+const benchEager = process.argv.includes("-eager");
 const benchArgs = process.argv.slice(2).filter(
-  (a) => a !== "-clang" && a !== "-full" && a !== "-clean",
+  (a) => a !== "-clang" && a !== "-full" && a !== "-clean" && a !== "-eager",
 );
 let file = benchArgs.find((a) => !a.startsWith("-"));
 if (!file) {
@@ -61,5 +63,6 @@ if (doClean) {
 await buildRef();
 const TEST = await buildBench(useClang);
 
-const r = Bun.spawnSync({ cmd: [TEST, "-bench", file], stdout: "inherit", stderr: "inherit" });
+const testArgs = [TEST, "-bench", ...(benchEager ? ["-eager"] : []), file];
+const r = Bun.spawnSync({ cmd: testArgs, stdout: "inherit", stderr: "inherit" });
 process.exit(r.exitCode ?? 0);
