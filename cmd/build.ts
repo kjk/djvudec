@@ -35,7 +35,7 @@ function binName(base: string): string {
   return isWindows ? `${base}.exe` : base;
 }
 
-// DjVuLibre C++ compile flags (static link, no dll import/export indirection).
+// DjVuLibre C++ compile flags (oracle only — NOT our code; keep -w, no -Werror).
 // -O3: both sides are built at max optimization so `-bench` is a fair compare.
 const DJVU_CXXFLAGS_WIN =
   `-std=c++14 -w -O3 -DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
@@ -87,6 +87,14 @@ function needsRebuild(output: string, ...inputs: string[]): boolean {
   return false;
 }
 
+/** Echo a compiler/link command, then run it (stdout progress tracking). */
+async function runCmd(cmd: string, cwd?: string): Promise<void> {
+  console.log(cwd ? `+ cd ${cwd} && ${cmd}` : `+ ${cmd}`);
+  const shell = $`${{ raw: cmd }}`;
+  if (cwd) await shell.cwd(cwd);
+  else await shell;
+}
+
 export function cleanBuildOutput(): void {
   rmSync(OUT_ROOT, { recursive: true, force: true });
 }
@@ -103,16 +111,19 @@ async function buildRefWindows() {
   for (const tool of ["ddjvu", "djvutxt", "bzz", "djvused"]) {
     const exe = `${REF}/${tool}.exe`;
     if (existsSync(exe)) continue;
-    console.log(`building ref tool ${tool}...`);
-    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${DJVULIBRE}/tools/${tool}.cpp -ladvapi32 -o ${exe}`;
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${DJVULIBRE}/tools/${tool}.cpp -ladvapi32 -o ${exe}`,
+    );
   }
   if (!existsSync(`${REF}/iw44ref.exe`)) {
-    console.log("building ref tool iw44ref...");
-    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${ROOT}/test/iw44ref.cpp -ladvapi32 -o ${REF}/iw44ref.exe`;
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${ROOT}/test/iw44ref.cpp -ladvapi32 -o ${REF}/iw44ref.exe`,
+    );
   }
   if (!existsSync(`${REF}/jb2ref.exe`)) {
-    console.log("building ref tool jb2ref...");
-    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${ROOT}/test/jb2ref.cpp -ladvapi32 -o ${REF}/jb2ref.exe`;
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2ref.cpp -ladvapi32 -o ${REF}/jb2ref.exe`,
+    );
   }
   console.log("ref tools ready");
 }
@@ -125,16 +136,19 @@ async function buildRefMac() {
   for (const tool of ["ddjvu", "djvutxt", "bzz", "djvused"]) {
     const exe = refToolPath(tool);
     if (existsSync(exe)) continue;
-    console.log(`building ref tool ${tool}...`);
-    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${DJVULIBRE}/tools/${tool}.cpp ${{ raw: link }} -o ${exe}`;
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${DJVULIBRE}/tools/${tool}.cpp ${link} -o ${exe}`,
+    );
   }
   if (!existsSync(refToolPath("iw44ref"))) {
-    console.log("building ref tool iw44ref...");
-    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${ROOT}/test/iw44ref.cpp ${{ raw: link }} -o ${refToolPath("iw44ref")}`;
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${ROOT}/test/iw44ref.cpp ${link} -o ${refToolPath("iw44ref")}`,
+    );
   }
   if (!existsSync(refToolPath("jb2ref"))) {
-    console.log("building ref tool jb2ref...");
-    await $`clang++ ${{ raw: common }} ${{ raw: libsrc }} ${ROOT}/test/jb2ref.cpp ${{ raw: link }} -o ${refToolPath("jb2ref")}`;
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2ref.cpp ${link} -o ${refToolPath("jb2ref")}`,
+    );
   }
   console.log("ref tools ready");
 }
@@ -151,8 +165,8 @@ async function buildLibDjvuWindows() {
   if (existsSync(LIBDJVU)) return;
   console.log("building libdjvu.lib (one-time, slow)...");
   mkdirSync(OBJDIR, { recursive: true });
-  await $`clang++ ${{ raw: DJVU_CXXFLAGS_WIN }} -c ${{ raw: `${DJVULIBRE}/libdjvu/*.cpp` }}`.cwd(OBJDIR);
-  await $`llvm-lib /out:${LIBDJVU} ${{ raw: "*.o" }}`.cwd(OBJDIR);
+  await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c ${DJVULIBRE}/libdjvu/*.cpp`, OBJDIR);
+  await runCmd(`llvm-lib /out:${LIBDJVU} *.o`, OBJDIR);
   console.log("built libdjvu.lib");
 }
 
@@ -160,8 +174,8 @@ async function buildLibDjvuMac() {
   if (existsSync(LIBDJVU)) return;
   console.log("building libdjvu.a (one-time, slow)...");
   mkdirSync(OBJDIR, { recursive: true });
-  await $`clang++ ${{ raw: DJVU_CXXFLAGS_MAC }} -c ${{ raw: `${DJVULIBRE}/libdjvu/*.cpp` }}`.cwd(OBJDIR);
-  await $`ar rcs ${LIBDJVU} ${{ raw: "*.o" }}`.cwd(OBJDIR);
+  await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c ${DJVULIBRE}/libdjvu/*.cpp`, OBJDIR);
+  await runCmd(`ar rcs ${LIBDJVU} *.o`, OBJDIR);
   console.log("built libdjvu.a");
 }
 
@@ -183,9 +197,25 @@ export const defaultUseClang = !isWindows;
 
 // MSVC cl.exe flags (use '-' not '/' — Bun's shell treats backslashes as escapes).
 // -Ob3: inline any suitable function (aggressive inlining with /O2).
+// Link-only / bench-shim base: no elevated warnings (libdjvu headers, bench_ddjvu.cpp).
 export const MSVC_CL_COMMON = `-nologo -O2 -Ob3 -GL -MT`;
-export const MSVC_CL_C = `${MSVC_CL_COMMON} -W3 -std:c11 -D_CRT_SECURE_NO_WARNINGS`;
 export const MSVC_CL_CXX = `${MSVC_CL_COMMON} -EHsc -std:c++14`;
+
+// Strict warnings for djvudec C sources only (src/*.c, test/*.c, dist/djvu.c).
+// -W4 -WX: high warning level + warnings as errors (C4700/C4701 uninitialized use).
+export const DJVUDEC_MSVC_CL_C =
+  `${MSVC_CL_COMMON} -W4 -WX -std:c11 -D_CRT_SECURE_NO_WARNINGS`;
+
+export const DJVUDEC_CLANG_C_WARN =
+  "-Wall -Wextra -Wuninitialized -Wconditional-uninitialized -Winit-self -Werror";
+const DJVUDEC_CLANG_C_STD = "-std=c11";
+const DJVUDEC_CLANG_C_DEFINES_WIN = "-D_CRT_SECURE_NO_WARNINGS";
+
+/** clang flags for djvudec C sources only (not libdjvu). */
+export function clangCFlags(opt = "-g -O3", win = isWindows): string {
+  const crt = win ? ` ${DJVUDEC_CLANG_C_DEFINES_WIN}` : "";
+  return `${DJVUDEC_CLANG_C_STD} ${opt} ${DJVUDEC_CLANG_C_WARN}${crt}`;
+}
 const harnessExeName = (useClang: boolean) =>
   binName(`djvu_test_${useClang ? "clang" : "msvc"}`);
 
@@ -225,15 +255,15 @@ async function buildClangWindows(): Promise<string> {
 
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
-    await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+    await runCmd(`clang ${clangCFlags()} -I${ROOT}/src -c -o ${u.obj} ${u.src}`);
   }
   if (needsRebuild(bench.obj, bench.src)) {
-    await $`clang++ ${{ raw: DJVU_CXXFLAGS_WIN }} -c -o ${bench.obj} ${bench.src}`;
+    await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c -o ${bench.obj} ${bench.src}`);
   }
 
   const objs = [...units.map((u) => u.obj), bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await $`clang++ ${{ raw: objs.join(" ") }} ${LIBDJVU} -ladvapi32 -o ${exePath}`;
+    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${exePath}`);
   }
   return exePath;
 }
@@ -253,15 +283,15 @@ async function buildClangMac(): Promise<string> {
 
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
-    await $`clang -std=c11 -g -O3 -Wall -Wextra -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+    await runCmd(`clang ${clangCFlags()} -I${ROOT}/src -c -o ${u.obj} ${u.src}`);
   }
   if (needsRebuild(bench.obj, bench.src)) {
-    await $`clang++ ${{ raw: DJVU_CXXFLAGS_MAC }} -c -o ${bench.obj} ${bench.src}`;
+    await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c -o ${bench.obj} ${bench.src}`);
   }
 
   const objs = [...units.map((u) => u.obj), bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await $`clang++ ${{ raw: objs.join(" ") }} ${LIBDJVU} ${{ raw: djvuLinkLibs() }} -o ${exePath}`;
+    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} ${djvuLinkLibs()} -o ${exePath}`);
   }
   return exePath;
 }
@@ -288,19 +318,25 @@ async function buildMsvc(): Promise<string> {
     label: "test/bench_ddjvu.cpp",
   };
 
-  const clC = `${MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
+  const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
     const rel = u.src.startsWith(`${ROOT}/`) ? u.src.slice(ROOT.length + 1) : u.src;
-    await $`cl ${{ raw: clC }} ${{ raw: rel }}`.cwd(ROOT);
+    await runCmd(`cl ${clC} ${rel}`, ROOT);
   }
   if (needsRebuild(bench.obj, bench.src)) {
-    await $`cl ${{ raw: MSVC_CL_CXX }} ${{ raw: DJVU_DEFINES }} -Fo${bench.obj} -c test/bench_ddjvu.cpp`.cwd(ROOT);
+    await runCmd(
+      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} -c test/bench_ddjvu.cpp`,
+      ROOT,
+    );
   }
 
   const objs = [...units.map((u) => u.obj), bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await $`cl -nologo ${{ raw: objs.join(" ") }} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`.cwd(ROOT);
+    await runCmd(
+      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`,
+      ROOT,
+    );
   }
   return exePath;
 }
@@ -327,18 +363,20 @@ async function buildBenchClangWindows(): Promise<string> {
   };
 
   if (needsRebuild(lib.obj, lib.src, DIST_H)) {
-    await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/dist -c -o ${lib.obj} ${lib.src}`;
+    await runCmd(`clang ${clangCFlags()} -I${ROOT}/dist -c -o ${lib.obj} ${lib.src}`);
   }
   if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
-    await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/dist -I${ROOT}/src -c -o ${test.obj} ${test.src}`;
+    await runCmd(
+      `clang ${clangCFlags()} -I${ROOT}/dist -I${ROOT}/src -c -o ${test.obj} ${test.src}`,
+    );
   }
   if (needsRebuild(bench.obj, bench.src)) {
-    await $`clang++ ${{ raw: DJVU_CXXFLAGS_WIN }} -c -o ${bench.obj} ${bench.src}`;
+    await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c -o ${bench.obj} ${bench.src}`);
   }
 
   const objs = [lib.obj, test.obj, bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await $`clang++ ${{ raw: objs.join(" ") }} ${LIBDJVU} -ladvapi32 -o ${exePath}`;
+    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${exePath}`);
   }
   return exePath;
 }
@@ -363,18 +401,20 @@ async function buildBenchClangMac(): Promise<string> {
   };
 
   if (needsRebuild(lib.obj, lib.src, DIST_H)) {
-    await $`clang -std=c11 -g -O3 -Wall -Wextra -I${ROOT}/dist -c -o ${lib.obj} ${lib.src}`;
+    await runCmd(`clang ${clangCFlags()} -I${ROOT}/dist -c -o ${lib.obj} ${lib.src}`);
   }
   if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
-    await $`clang -std=c11 -g -O3 -Wall -Wextra -I${ROOT}/dist -I${ROOT}/src -c -o ${test.obj} ${test.src}`;
+    await runCmd(
+      `clang ${clangCFlags()} -I${ROOT}/dist -I${ROOT}/src -c -o ${test.obj} ${test.src}`,
+    );
   }
   if (needsRebuild(bench.obj, bench.src)) {
-    await $`clang++ ${{ raw: DJVU_CXXFLAGS_MAC }} -c -o ${bench.obj} ${bench.src}`;
+    await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c -o ${bench.obj} ${bench.src}`);
   }
 
   const objs = [lib.obj, test.obj, bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await $`clang++ ${{ raw: objs.join(" ") }} ${LIBDJVU} ${{ raw: djvuLinkLibs() }} -o ${exePath}`;
+    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} ${djvuLinkLibs()} -o ${exePath}`);
   }
   return exePath;
 }
@@ -405,21 +445,27 @@ async function buildBenchMsvc(): Promise<string> {
     label: "test/bench_ddjvu.cpp",
   };
 
-  const clLib = `${MSVC_CL_C} -Idist -Fo${dir}/ -c`;
-  const clTest = `${MSVC_CL_C} -Idist -Isrc -Fo${dir}/ -c`;
+  const clLib = `${DJVUDEC_MSVC_CL_C} -Idist -Fo${dir}/ -c`;
+  const clTest = `${DJVUDEC_MSVC_CL_C} -Idist -Isrc -Fo${dir}/ -c`;
   if (needsRebuild(lib.obj, lib.src, DIST_H)) {
-    await $`cl ${{ raw: clLib }} dist/djvu.c`.cwd(ROOT);
+    await runCmd(`cl ${clLib} dist/djvu.c`, ROOT);
   }
   if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
-    await $`cl ${{ raw: clTest }} test/djvu_test.c`.cwd(ROOT);
+    await runCmd(`cl ${clTest} test/djvu_test.c`, ROOT);
   }
   if (needsRebuild(bench.obj, bench.src)) {
-    await $`cl ${{ raw: MSVC_CL_CXX }} ${{ raw: DJVU_DEFINES }} -Fo${bench.obj} -c test/bench_ddjvu.cpp`.cwd(ROOT);
+    await runCmd(
+      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} -c test/bench_ddjvu.cpp`,
+      ROOT,
+    );
   }
 
   const objs = [lib.obj, test.obj, bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await $`cl -nologo ${{ raw: objs.join(" ") }} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`.cwd(ROOT);
+    await runCmd(
+      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`,
+      ROOT,
+    );
   }
   return exePath;
 }
@@ -500,16 +546,18 @@ async function buildAsanWindows(): Promise<string> {
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
     built = true;
-    await $`clang ${{ raw: ASAN }} -std=c11 -g -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+    await runCmd(
+      `clang ${ASAN} ${clangCFlags("-g -O1")} -I${ROOT}/src -c -o ${u.obj} ${u.src}`,
+    );
   }
   if (needsRebuild(bench.obj, bench.src)) {
     built = true;
-    await $`clang++ ${{ raw: DJVU_CXXFLAGS_WIN }} -c -o ${bench.obj} ${bench.src}`;
+    await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c -o ${bench.obj} ${bench.src}`);
   }
   const objs = [...units.map((u) => u.obj), bench.obj];
   if (needsRebuild(ASAN_EXE, ...objs, LIBDJVU)) {
     built = true;
-    await $`clang++ ${{ raw: ASAN }} ${{ raw: objs.join(" ") }} ${LIBDJVU} -ladvapi32 -o ${ASAN_EXE}`;
+    await runCmd(`clang++ ${ASAN} ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${ASAN_EXE}`);
   }
   console.log(built ? `built ${binName("djvu_test_clang_asan")}` : `${binName("djvu_test_clang_asan")} up to date`);
   return ASAN_EXE;
@@ -528,16 +576,18 @@ async function buildAsanMac(): Promise<string> {
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
     built = true;
-    await $`clang ${{ raw: ASAN }} -std=c11 -g -O1 -Wall -Wextra -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+    await runCmd(
+      `clang ${ASAN} ${clangCFlags("-g -O1", false)} -I${ROOT}/src -c -o ${u.obj} ${u.src}`,
+    );
   }
   if (needsRebuild(bench.obj, bench.src)) {
     built = true;
-    await $`clang++ ${{ raw: DJVU_CXXFLAGS_MAC }} -c -o ${bench.obj} ${bench.src}`;
+    await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c -o ${bench.obj} ${bench.src}`);
   }
   const objs = [...units.map((u) => u.obj), bench.obj];
   if (needsRebuild(ASAN_EXE, ...objs, LIBDJVU)) {
     built = true;
-    await $`clang++ ${{ raw: ASAN }} ${{ raw: objs.join(" ") }} ${LIBDJVU} ${{ raw: djvuLinkLibs() }} -o ${ASAN_EXE}`;
+    await runCmd(`clang++ ${ASAN} ${objs.join(" ")} ${LIBDJVU} ${djvuLinkLibs()} -o ${ASAN_EXE}`);
   }
   console.log(built ? `built ${binName("djvu_test_clang_asan")}` : `${binName("djvu_test_clang_asan")} up to date`);
   return ASAN_EXE;

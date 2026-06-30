@@ -16,6 +16,7 @@
 import { $ } from "bun";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
+import { clangCFlags } from "./build";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const SRC = join(ROOT, "src");
@@ -177,7 +178,7 @@ export async function buildDist(): Promise<void> {
   console.log("compiling dist/djvu.c (clang -c)...");
   const obj = join(DIST, "djvu.o");
   if (existsSync(obj)) await $`rm -f ${obj}`.nothrow();
-  const r = await $`clang -std=c11 -O1 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -c ${DIST_C} -o ${obj}`
+  const r = await $`clang ${{ raw: clangCFlags("-O1") }} -c ${DIST_C} -o ${obj}`
     .cwd(DIST)
     .nothrow();
   if (r.exitCode !== 0) {

@@ -1,7 +1,7 @@
 // Shared build for library-only tools (djvudec_dump, bench_before, bench_after).
 import { $ } from "bun";
 import { existsSync, mkdirSync, statSync } from "fs";
-import { defaultUseClang, MSVC_CL_C } from "./build";
+import { clangCFlags, defaultUseClang, DJVUDEC_MSVC_CL_C } from "./build";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 
@@ -78,7 +78,7 @@ async function buildClang(target: LibToolTarget): Promise<string> {
   const units = cUnits(dir, "o", testSrc);
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src)) continue;
-    await $`clang -std=c11 -g -O3 -Wall -Wextra -D_CRT_SECURE_NO_WARNINGS -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+    await $`clang ${{ raw: clangCFlags() }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
   }
 
   const objs = units.map((u) => u.obj);
@@ -95,7 +95,7 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
 
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
   const units = cUnits(dir, "obj", testSrc);
-  const clC = `${MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
+  const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src)) continue;
     const rel = u.src.startsWith(`${ROOT}/`)

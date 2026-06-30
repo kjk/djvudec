@@ -208,7 +208,7 @@ static djvu_image *apply_page_rotation(djvu_ctx *ctx, djvu_doc *doc, int page_no
     djvu_page_info pi;
     int k;
     djvu_image *r;
-    double t0;
+    double t0 = 0.0;
 
     (void)subsample; /* rotation applies at every subsample (tiled, cheap) */
     if (!img) return img;
@@ -232,7 +232,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     int info_ok;
     jb2_image *mask = NULL;
     djvu_image *out = NULL;
-    double t0;
+    double t0 = 0.0;
 
     if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
     if (subsample < 1) subsample = 1;

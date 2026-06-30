@@ -214,7 +214,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     short *colordata = NULL; int ncolor = 0;
     iw_pixmap *fgpm = NULL; djvu_cpix fgnat; int fgred = 0;
     int i;
-    double t0;
+    double t0 = 0.0;
 
     memset(&bg, 0, sizeof(bg)); memset(&fgnat, 0, sizeof(fgnat));
     if (t) t0 = djvu_bench_now_ms();
@@ -251,7 +251,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     }
 
     if (!pal) {
-        double tfg;
+        double tfg = 0.0;
         if (t) tfg = djvu_bench_now_ms();
         fgpm = djvu_doc_iw44(doc, page_no, "FG44");
         if (fgpm) {
