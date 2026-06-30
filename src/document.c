@@ -523,7 +523,7 @@ static jb2_image *decode_jb2_mask_fresh(djvu_doc *doc, djvu_page_int *pg)
     if (!sjbz) return NULL;
     dict = decode_jb2_dict_fresh(doc, pg->form_off);
     mask = djvu_jb2_decode(doc->ctx, sjbz, sz, dict);
-    if (dict) djvu_jb2_free(doc->ctx, dict);
+    /* mask may borrow shapes via inherited_dict; caller frees both on release */
     return mask;
 }
 
@@ -675,8 +675,11 @@ jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out)
 
 void djvu_doc_jb2_mask_release(djvu_ctx *ctx, jb2_image *mask, int owned)
 {
-    if (owned && mask)
-        djvu_jb2_free(ctx, mask);
+    jb2_image *dict;
+    if (!owned || !mask) return;
+    dict = mask->inherited_dict;
+    djvu_jb2_free(ctx, mask);
+    if (dict) djvu_jb2_free(ctx, dict);
 }
 
 jb2_image *djvu_doc_jb2_mask(djvu_doc *doc, int page_no)

@@ -19,6 +19,7 @@
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 #else
+#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -454,6 +455,84 @@ static int bench_ours_session(djvu_ctx *ctx, const uint8_t *data, size_t len, in
     out->close_ms = bench_now_ms() - t0;
     out->total_ms = bench_now_ms() - t_session;
     return 0;
+}
+
+#if defined(_WIN32)
+static CRITICAL_SECTION g_bench_cache_lock;
+static int g_bench_cache_lock_inited;
+
+static void bench_cache_lock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    if (!g_bench_cache_lock_inited) {
+        InitializeCriticalSection(&g_bench_cache_lock);
+        g_bench_cache_lock_inited = 1;
+    }
+    EnterCriticalSection(&g_bench_cache_lock);
+}
+
+static void bench_cache_unlock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    LeaveCriticalSection(&g_bench_cache_lock);
+}
+#else
+static pthread_mutex_t g_bench_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void bench_cache_lock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    pthread_mutex_lock(&g_bench_cache_lock);
+}
+
+static void bench_cache_unlock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    pthread_mutex_unlock(&g_bench_cache_lock);
+}
+#endif
+
+static int bench_caching_session(const uint8_t *data, size_t len, djvu_cache_mode mode,
+                                 bench_session_timings *out)
+{
+    djvu_ctx *ctx;
+    int rc;
+
+    if (mode == DJVU_CACHE_ON_DEMAND)
+        ctx = djvu_ctx_new(NULL, NULL, bench_cache_lock_cb, bench_cache_unlock_cb,
+                           NULL, NULL);
+    else
+        ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, NULL, NULL);
+    if (!ctx)
+        return -1;
+    djvu_ctx_set_cache_mode(ctx, mode);
+    rc = bench_ours_session(ctx, data, len, 0, out);
+    djvu_ctx_free(ctx);
+    return rc;
+}
+
+static void bench_print_caching_compare(const char *label, double none_ms,
+                                        double eager_ms, double demand_ms)
+{
+    if (none_ms < 0.0 || eager_ms < 0.0 || demand_ms < 0.0) {
+        printf("%s: none %s, eager %s, on_demand %s\n", label,
+               none_ms < 0.0 ? "ERROR" : "ok",
+               eager_ms < 0.0 ? "ERROR" : "ok",
+               demand_ms < 0.0 ? "ERROR" : "ok");
+        return;
+    }
+    if (eager_ms > 0.0) {
+        printf("%s: none %.2f ms (%+.1f%%), eager %.2f ms, on_demand %.2f ms (%+.1f%%)\n",
+               label, none_ms, (none_ms - eager_ms) / eager_ms * 100.0,
+               eager_ms, demand_ms, (demand_ms - eager_ms) / eager_ms * 100.0);
+    } else {
+        printf("%s: none %.2f ms, eager %.2f ms, on_demand %.2f ms\n",
+               label, none_ms, eager_ms, demand_ms);
+    }
 }
 
 /* --- bench-sum: replicate SumatraPDF EngineDjvuDec::RenderPage (our path) ---
@@ -1123,6 +1202,7 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1, out_sub = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
+    int do_bench_caching = 0;
     int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0, do_verify_into = 0;
     int do_profile_sum = 0;
     const char *diffdir = NULL;
@@ -1149,6 +1229,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-bench-sum")) do_bench = 2; /* SumatraPDF Engine* render path */
+        else if (!strcmp(argv[i], "-bench-caching")) do_bench_caching = 1;
         else if (!strcmp(argv[i], "-profile-sum")) do_profile_sum = 1;
         else if (!strcmp(argv[i], "-verify-into")) do_verify_into = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
@@ -1273,6 +1354,84 @@ int main(int argc, char **argv)
         }
         djvu_doc_close(doc); djvu_ctx_free(ctx); free(data);
         return rc;
+    }
+
+    if (do_bench_caching) {
+        static const struct { const char *tag; djvu_cache_mode mode; } modes[] = {
+            { "none", DJVU_CACHE_NONE },
+            { "eager", DJVU_CACHE_EAGER },
+            { "on_demand", DJVU_CACHE_ON_DEMAND },
+        };
+        const int RUNS = 2;
+        const int NM = (int)(sizeof modes / sizeof modes[0]);
+        int n = djvu_doc_page_count(doc);
+        bench_session_timings runs[3][2];
+        double *page_ms[3][2];
+        int m, r, p;
+        char lbl[16];
+
+        djvu_doc_close(doc);
+        doc = NULL;
+        djvu_ctx_free(ctx);
+        ctx = NULL;
+
+        printf("(bench-caching: session open/render-all/close per cache mode)\n");
+        for (m = 0; m < NM; m++) {
+            for (r = 0; r < RUNS; r++) {
+                page_ms[m][r] = (double *)malloc((size_t)n * sizeof(double));
+                if (!page_ms[m][r]) {
+                    int mi, ri;
+                    fprintf(stderr, "bench-caching: out of memory\n");
+                    for (mi = 0; mi < NM; mi++)
+                        for (ri = 0; ri < RUNS; ri++)
+                            free(page_ms[mi][ri]);
+                    free(data);
+                    return 1;
+                }
+                memset(&runs[m][r], 0, sizeof runs[m][r]);
+                runs[m][r].page_ms = page_ms[m][r];
+                runs[m][r].npages = n;
+            }
+        }
+        for (m = 0; m < NM; m++) {
+            for (r = 0; r < RUNS; r++) {
+                char line[32];
+                snprintf(line, sizeof line, "%s/%d", modes[m].tag, r + 1);
+                if (bench_caching_session(data, len, modes[m].mode, &runs[m][r]) != 0)
+                    fprintf(stderr, "bench-caching: %s run %d failed\n", modes[m].tag, r + 1);
+                bench_print_session_line(line, &runs[m][r]);
+            }
+        }
+
+        {
+            double open_none = bench_best2(runs[0][0].open_ms, runs[0][1].open_ms);
+            double open_eager = bench_best2(runs[1][0].open_ms, runs[1][1].open_ms);
+            double open_demand = bench_best2(runs[2][0].open_ms, runs[2][1].open_ms);
+            double close_none = bench_best2(runs[0][0].close_ms, runs[0][1].close_ms);
+            double close_eager = bench_best2(runs[1][0].close_ms, runs[1][1].close_ms);
+            double close_demand = bench_best2(runs[2][0].close_ms, runs[2][1].close_ms);
+            double total_none = bench_best2(runs[0][0].total_ms, runs[0][1].total_ms);
+            double total_eager = bench_best2(runs[1][0].total_ms, runs[1][1].total_ms);
+            double total_demand = bench_best2(runs[2][0].total_ms, runs[2][1].total_ms);
+
+            printf("(best of %d runs; %% vs eager baseline)\n", RUNS);
+            bench_print_caching_compare("open", open_none, open_eager, open_demand);
+            for (p = 0; p < n; p++) {
+                double pg_none = bench_best2(runs[0][0].page_ms[p], runs[0][1].page_ms[p]);
+                double pg_eager = bench_best2(runs[1][0].page_ms[p], runs[1][1].page_ms[p]);
+                double pg_demand = bench_best2(runs[2][0].page_ms[p], runs[2][1].page_ms[p]);
+                snprintf(lbl, sizeof lbl, "%d", p + 1);
+                bench_print_caching_compare(lbl, pg_none, pg_eager, pg_demand);
+            }
+            bench_print_caching_compare("close", close_none, close_eager, close_demand);
+            bench_print_caching_compare("total", total_none, total_eager, total_demand);
+        }
+
+        for (m = 0; m < NM; m++)
+            for (r = 0; r < RUNS; r++)
+                free(page_ms[m][r]);
+        free(data);
+        return 0;
     }
 
     if (do_bench) {
