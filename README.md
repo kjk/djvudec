@@ -12,7 +12,7 @@ This is a djvu format decoder, like [libdjvu](https://github.com/barak/djvulibre
 See [`src/djvu.h`](src/djvu.h). Sketch:
 ```c
 djvu_init();                                       /* once, before threads */
-djvu_ctx *ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
+djvu_ctx *ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, on_error, NULL);
 djvu_doc *doc = djvu_doc_open(ctx, data, len);     /* data must outlive doc */
 int n = djvu_doc_page_count(doc);
 djvu_page_info info; djvu_doc_page_info(doc, 0, &info);

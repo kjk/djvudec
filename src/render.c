@@ -231,6 +231,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     djvu_page_info pi;
     int info_ok;
     jb2_image *mask = NULL;
+    int mask_owned = 0;
     djvu_image *out = NULL;
     double t0 = 0.0;
 
@@ -242,12 +243,12 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     type = djvu_page_get_type(doc, page_no);
     info_ok = (djvu_doc_page_info(doc, page_no, &pi) == 0);
 
-    /* JB2 mask: cached at doc open (lazy fill on first use when lazy_iw44). */
+    /* JB2 mask: eager cache at open, on-demand cache, or per-render decode. */
     if (type == DJVU_PAGE_BITONAL || type == DJVU_PAGE_COMPOUND) {
         if (!djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL))
             goto done;
         if (t) t0 = djvu_bench_now_ms();
-        mask = djvu_doc_jb2_mask(doc, page_no);
+        mask = djvu_doc_jb2_mask_acquire(doc, page_no, &mask_owned);
         if (t) t->jb2_ms += djvu_bench_now_ms() - t0;
         if (!mask) goto done;
     }
@@ -275,6 +276,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     }
 
 done:
+    djvu_doc_jb2_mask_release(ctx, mask, mask_owned);
     return apply_page_rotation(ctx, doc, page_no, out, subsample, t);
 }
 
@@ -376,13 +378,16 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
         uint32_t form_off = doc->pages[page_no].form_off;
         uint32_t sz;
         jb2_image *mask = NULL;
+        int mask_owned = 0;
 
         if (djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL)) {
-            mask = djvu_doc_jb2_mask(doc, page_no);
+            mask = djvu_doc_jb2_mask_acquire(doc, page_no, &mask_owned);
             if (!mask)
                 return -1;
         }
-        return djvu_compose_page_into(doc, page_no, mask, w, h, dst, stride);
+        rc = djvu_compose_page_into(doc, page_no, mask, w, h, dst, stride);
+        djvu_doc_jb2_mask_release(ctx, mask, mask_owned);
+        return rc;
     }
 
     /* Fallback: render normally (handles gray, rotation, subsampling) then copy

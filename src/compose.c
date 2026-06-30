@@ -38,22 +38,30 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
 {
     djvu_ctx *ctx = doc->ctx;
     iw_pixmap *pm;
-    int bw, bh, w, h;
+    int bw, bh, w, h, pm_owned = 0;
     uint32_t sz;
 
+    if (!djvu_cache_stores(ctx)) return -1;
     if (!doc || !pg || pg->bg_native.d) return 0;
     if (!pg->has_info || pg->info.width <= 0 || pg->info.height <= 0)
         return -1;
     if (!djvu_form_find_chunk(doc, pg->form_off, "BG44", &sz, NULL))
         return -1;
-    pm = djvu_doc_iw44_by_form(doc, pg->form_off, "BG44");
+    pm = djvu_doc_iw44_by_form_acquire(doc, pg->form_off, "BG44", &pm_owned);
     if (!pm) return -1;
     bw = djvu_iw44_width(pm);
     bh = djvu_iw44_height(pm);
-    if (bw <= 0 || bh <= 0) return -1;
-    if (djvu_cpix_init(ctx, &pg->bg_native, bw, bh) != 0) return -1;
+    if (bw <= 0 || bh <= 0) {
+        djvu_doc_iw44_release(ctx, pm, pm_owned);
+        return -1;
+    }
+    if (djvu_cpix_init(ctx, &pg->bg_native, bw, bh) != 0) {
+        djvu_doc_iw44_release(ctx, pm, pm_owned);
+        return -1;
+    }
     if (djvu_iw44_render_rgb_raw(pm, pg->bg_native.d) != 0) {
         djvu_cpix_free(ctx, &pg->bg_native);
+        djvu_doc_iw44_release(ctx, pm, pm_owned);
         return -1;
     }
     w = pg->info.width;
@@ -61,8 +69,10 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
     if (!pg->bg_scaled.d &&
         compose_background_from_native(ctx, &pg->bg_native, w, h, &pg->bg_scaled) != 0) {
         djvu_cpix_free(ctx, &pg->bg_native);
+        djvu_doc_iw44_release(ctx, pm, pm_owned);
         return -1;
     }
+    djvu_doc_iw44_release(ctx, pm, pm_owned);
     return 0;
 }
 
@@ -83,7 +93,7 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
 {
     djvu_ctx *ctx = doc->ctx;
     iw_pixmap *pm;
-    int page_no, bw, bh, red, rc = -1;
+    int page_no, bw, bh, red, rc = -1, pm_owned = 0;
     djvu_cpix native;
     djvu_page_int *pg;
 
@@ -107,12 +117,12 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
             return compose_background_from_native(ctx, &pg->bg_native, width, height, out);
     }
 
-    pm = djvu_doc_iw44_by_form(doc, form_off, "BG44");
+    pm = djvu_doc_iw44_by_form_acquire(doc, form_off, "BG44", &pm_owned);
     if (!pm) return -1;
     bw = djvu_iw44_width(pm); bh = djvu_iw44_height(pm);
     red = djvu_compute_red(width, height, bw, bh);
-    if (red < 1) return -1;
-    if (djvu_cpix_init(ctx, &native, bw, bh) != 0) return -1;
+    if (red < 1) goto done;
+    if (djvu_cpix_init(ctx, &native, bw, bh) != 0) goto done;
     if (djvu_iw44_render_rgb_raw(pm, native.d) != 0) goto done;
     if (red == 1) {
         *out = native; native.d = NULL; rc = 0;
@@ -121,6 +131,7 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
     }
 done:
     djvu_cpix_free(ctx, &native);
+    djvu_doc_iw44_release(ctx, pm, pm_owned);
     return rc;
 }
 
@@ -212,7 +223,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     uint32_t sz; const uint8_t *fgbz;
     uint8_t *pal = NULL; int palsize = 0;
     short *colordata = NULL; int ncolor = 0;
-    iw_pixmap *fgpm = NULL; djvu_cpix fgnat; int fgred = 0;
+    iw_pixmap *fgpm = NULL; djvu_cpix fgnat; int fgred = 0, fg_owned = 0;
     int i;
     double t0 = 0.0;
 
@@ -253,7 +264,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     if (!pal) {
         double tfg = 0.0;
         if (t) tfg = djvu_bench_now_ms();
-        fgpm = djvu_doc_iw44(doc, page_no, "FG44");
+        fgpm = djvu_doc_iw44_acquire(doc, page_no, "FG44", &fg_owned);
         if (fgpm) {
             int fw = djvu_iw44_width(fgpm);
             int fh = djvu_iw44_height(fgpm);
@@ -292,6 +303,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
 
     djvu_free(ctx, pal); djvu_free(ctx, colordata);
     djvu_cpix_free(ctx, &fgnat);
+    djvu_doc_iw44_release(ctx, fgpm, fg_owned);
     *bgout = bg;          /* hand off the composited pixmap (caller frees) */
     return 0;
 }

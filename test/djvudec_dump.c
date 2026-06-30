@@ -590,7 +590,7 @@ int main(int argc, char **argv)
     }
 
     djvu_init();
-    ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
+    ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, on_error, NULL);
     if (!ctx) { free(data); return 1; }
 
     if (o.do_bzz) {

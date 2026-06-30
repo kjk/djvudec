@@ -23,13 +23,32 @@
 struct djvu_ctx {
     djvu_alloc_cb alloc;
     djvu_free_cb  free;
+    djvu_lock_cb  lock;
+    djvu_unlock_cb unlock;
     djvu_error_cb error;
     void *user;
-    int lazy_iw44;     /* defer IW44/JB2 preload until explicit preload or use */
+    djvu_cache_mode cache_mode;
     int no_compose;    /* skip color composite in render */
     int iw_max_chunks; /* cap IW44 chunks per layer (0 = unlimited) */
     int bgr;           /* emit color output as B,G,R instead of R,G,B */
 };
+
+static inline int djvu_cache_stores(djvu_ctx *ctx)
+{
+    return ctx && ctx->cache_mode != DJVU_CACHE_NONE;
+}
+
+static inline void djvu_cache_lock(djvu_ctx *ctx)
+{
+    if (ctx && ctx->cache_mode == DJVU_CACHE_ON_DEMAND && ctx->lock)
+        ctx->lock(ctx->user, ctx);
+}
+
+static inline void djvu_cache_unlock(djvu_ctx *ctx)
+{
+    if (ctx && ctx->cache_mode == DJVU_CACHE_ON_DEMAND && ctx->unlock)
+        ctx->unlock(ctx->user, ctx);
+}
 
 void *djvu_alloc(djvu_ctx *ctx, size_t size);
 void  djvu_free(djvu_ctx *ctx, void *ptr);
@@ -108,10 +127,18 @@ struct djvu_doc {
     int n_jb2_inline;
 };
 
-/* Cached IW44 layers (read-only during render; freed in djvu_doc_close).
-   With ctx->lazy_iw44 at doc open, layers decode on first use per page. */
+/* Cached IW44 / JB2 layers (read-only during render; freed in djvu_doc_close).
+   DJVU_CACHE_EAGER fills at doc open; DJVU_CACHE_ON_DEMAND on first use;
+   DJVU_CACHE_NONE decodes per acquire call (*owned_out=1, caller releases). */
+iw_pixmap *djvu_doc_iw44_acquire(djvu_doc *doc, int page_no, const char *chunk_id,
+                                 int *owned_out);
+void djvu_doc_iw44_release(djvu_ctx *ctx, iw_pixmap *pm, int owned);
+iw_pixmap *djvu_doc_iw44_by_form_acquire(djvu_doc *doc, uint32_t form_off,
+                                         const char *chunk_id, int *owned_out);
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
+jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out);
+void djvu_doc_jb2_mask_release(djvu_ctx *ctx, jb2_image *mask, int owned);
 void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
 void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0);
 void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0);

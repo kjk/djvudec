@@ -34,6 +34,22 @@ typedef struct {
 } worker_arg;
 
 #if defined(_WIN32)
+static CRITICAL_SECTION g_cache_lock;
+
+static void cache_lock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    EnterCriticalSection(&g_cache_lock);
+}
+
+static void cache_unlock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    LeaveCriticalSection(&g_cache_lock);
+}
+
 static volatile LONG g_next_op;
 static volatile LONG g_errors;
 static LONG g_nops_done;
@@ -47,6 +63,22 @@ static int cpu_count(void)
     return (int)si.dwNumberOfProcessors;
 }
 #else
+static pthread_mutex_t g_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void cache_lock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    pthread_mutex_lock(&g_cache_lock);
+}
+
+static void cache_unlock_cb(void *user, void *ctx)
+{
+    (void)user;
+    (void)ctx;
+    pthread_mutex_unlock(&g_cache_lock);
+}
+
 static long g_next_op;
 static long g_errors;
 static long g_nops_done;
@@ -220,8 +252,12 @@ int main(int argc, char **argv)
     }
 
     djvu_init();
-    ctx = djvu_ctx_new(NULL, NULL, NULL, NULL);
+#if defined(_WIN32)
+    InitializeCriticalSection(&g_cache_lock);
+#endif
+    ctx = djvu_ctx_new(NULL, NULL, cache_lock_cb, cache_unlock_cb, NULL, NULL);
     if (!ctx) goto done;
+    djvu_ctx_set_cache_mode(ctx, DJVU_CACHE_ON_DEMAND);
 
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) {
@@ -294,6 +330,7 @@ int main(int argc, char **argv)
 
 done:
 #if defined(_WIN32)
+    DeleteCriticalSection(&g_cache_lock);
     if (handles) {
         for (i = 0; i < ncpu; i++)
             if (handles[i]) CloseHandle(handles[i]);

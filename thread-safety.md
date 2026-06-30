@@ -37,17 +37,20 @@ At open time the library:
 - Parses DIRM / page table (read-only `doc->data` thereafter).
 - Preloads **INFO** for every page (`has_info`, dimensions, rotation).
 - Initializes the scaler bilinear lookup table (`djvu_init` / `djvu_scaler_init`).
-- Decodes and caches **IW44** BG44/FG44 per page (`pages[i].iw_bg/iw_fg`).
-- Decodes and caches shared **Djbz** dictionaries (`jb2_dicts[]`, inline dedup,
-  `pages[i].jb2_dict` borrows).
+- With `DJVU_CACHE_EAGER` (default): decodes and caches **IW44** BG44/FG44 per
+  page, **Sjbz** masks, shared **Djbz** dictionaries, and composited BG pixmaps.
+- With `DJVU_CACHE_ON_DEMAND`: same caches, filled on first use (requires
+  `lock`/`unlock` callbacks on the `djvu_ctx`).
+- With `DJVU_CACHE_NONE`: no layer cache; each render decodes afresh.
 
-These caches are read-only during render/text/annotation access.
+Cached data is read-only during render/text/annotation access.
 
 ## Per-call behavior (concurrent-safe paths)
 
-- **Render** (`djvu_page_render`): decodes Sjbz mask per call into a temporary
-  `jb2_image`, composites using cached IW44/dict data, returns a new
-  `djvu_image`. No persistent state written back to `djvu_doc`.
+- **Render** (`djvu_page_render`): uses cached or freshly decoded layer data
+  depending on `djvu_cache_mode`; returns a new `djvu_image`. With
+  `DJVU_CACHE_ON_DEMAND`, concurrent first access to a page is serialized via
+  the caller's lock callbacks.
 - **Text** (`djvu_page_text`, `djvu_page_text_get_zones`): reads chunk bytes from
   `doc->data`, allocates fresh UTF-8 / zone tree.
 - **Links** (`djvu_page_get_links`): reads ANTa/ANTz (or INCL), allocates fresh

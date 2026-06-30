@@ -600,7 +600,7 @@ static void bench_mem_report(const uint8_t *data, size_t len, int sum)
     int i;
 
     g_mem_n = 0; /* fresh accounting for this pass */
-    ctx = djvu_ctx_new(mem_alloc, mem_free, on_error, NULL);
+    ctx = djvu_ctx_new(mem_alloc, mem_free, NULL, NULL, on_error, NULL);
     if (!ctx) return;
     if (sum) djvu_ctx_set_bgr(ctx, 1);
     doc = djvu_doc_open(ctx, data, len);
@@ -955,7 +955,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         if (lo < 1) lo = 1;
         if (hi > npages) hi = npages;
         ensure_dir(diffdir);
-        if (doc->ctx->lazy_iw44) {
+        if (doc->ctx->cache_mode == DJVU_CACHE_ON_DEMAND) {
             djvu_doc_preload_jb2_range(doc, lo - 1, hi - 1);
             djvu_doc_preload_iw44_range(doc, lo - 1, hi - 1);
         }
@@ -1177,9 +1177,9 @@ int main(int argc, char **argv)
        leak check, 4 GB-per-ctx abort); other modes use the default allocator so
        e.g. -bench timing isn't perturbed. */
     if (do_verify_render)
-        ctx = djvu_ctx_new(mem_alloc, mem_free, on_error, NULL);
+        ctx = djvu_ctx_new(mem_alloc, mem_free, NULL, NULL, on_error, NULL);
     else
-        ctx = djvu_ctx_new(NULL, NULL, on_error, NULL);
+        ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, on_error, NULL);
     if (do_verify_render)
         djvu_ctx_set_lazy_iw44(ctx, 1);
 
