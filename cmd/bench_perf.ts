@@ -2,16 +2,18 @@
 // bench_perf.ts -- compare per-page render times (bench_before vs bench_after).
 //
 //   bun cmd/bench_perf.ts file.djvu              run both + compare
+//   bun cmd/bench_perf.ts -p 3 file.djvu        single page only
 //   bun cmd/bench_perf.ts -warm 1 -layers file.djvu
 //   bun cmd/bench_perf.ts run before file.djvu   capture timings to stdout
 //   bun cmd/bench_perf.ts compare before.txt after.txt
 //
+// Builds bench_before / bench_after automatically when missing or stale.
 // Each timing line: pN t1 t2 (ms, from -bench-render). Comparison uses the
 // fastest of the two runs per page. With -layers, also:
 //   layer pN jb2 t1 t2 iw44 t1 t2 composite t1 t2 rotate t1 t2
 import { existsSync, readFileSync } from "fs";
 import { defaultUseClang } from "./build";
-import { benchTarget, libToolExePath } from "./build_lib";
+import { benchTarget, buildLibTool } from "./build_lib";
 
 export type PageTimings = Map<number, [number, number]>;
 
@@ -25,6 +27,7 @@ export type PageLayerTimings = Map<
 export type BenchOpts = {
   warm: number;
   layers: boolean;
+  page: number | null;
 };
 
 const LAYER_NAMES: LayerName[] = ["jb2", "iw44", "composite", "rotate"];
@@ -158,30 +161,58 @@ export function compareLayerTimings(
   return lines.join("\n");
 }
 
-function parseBenchOpts(argv: string[]): BenchOpts {
-  const opts: BenchOpts = { warm: 0, layers: false };
+function isPageFlag(arg: string): boolean {
+  return arg === "-p" || arg === "--page";
+}
+
+export function parseBenchOpts(argv: string[]): BenchOpts {
+  const opts: BenchOpts = { warm: 0, layers: false, page: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "-warm" && i + 1 < argv.length) {
       opts.warm = parseInt(argv[++i], 10);
       if (Number.isNaN(opts.warm) || opts.warm < 0) opts.warm = 0;
     } else if (argv[i] === "-layers") {
       opts.layers = true;
+    } else if (isPageFlag(argv[i]) && i + 1 < argv.length) {
+      const page = parseInt(argv[++i], 10);
+      if (!Number.isNaN(page) && page > 0) opts.page = page;
     }
   }
   return opts;
 }
 
+function filterBenchArgs(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "-clang" || a === "-layers") continue;
+    if (a === "-warm" || isPageFlag(a)) {
+      i++;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+async function ensureBenchExe(
+  variant: "before" | "after",
+  useClang: boolean,
+): Promise<string> {
+  return buildLibTool(benchTarget(variant), useClang);
+}
+
 async function runBenchRender(
-  exe: string,
+  variant: "before" | "after",
+  useClang: boolean,
   file: string,
   opts: BenchOpts,
 ): Promise<string> {
-  if (!existsSync(exe)) {
-    throw new Error(`not found: ${exe} (run bun cmd/build_bench.ts … -clean)`);
-  }
+  const exe = await ensureBenchExe(variant, useClang);
   const cmd = [exe, "-bench-render"];
   if (opts.warm > 0) cmd.push("-warm", String(opts.warm));
   if (opts.layers) cmd.push("-layers");
+  if (opts.page != null) cmd.push("-page", String(opts.page));
   cmd.push(file);
   const proc = Bun.spawn({
     cmd,
@@ -203,13 +234,7 @@ async function main(): Promise<number> {
   const rawArgs = process.argv.slice(2);
   const useClang = rawArgs.includes("-clang") || defaultUseClang;
   const benchOpts = parseBenchOpts(rawArgs);
-  const args = rawArgs.filter(
-    (a, i) =>
-      a !== "-clang" &&
-      a !== "-layers" &&
-      !(a === "-warm" && i + 1 < rawArgs.length) &&
-      !(i > 0 && rawArgs[i - 1] === "-warm"),
-  );
+  const args = filterBenchArgs(rawArgs);
 
   if (args[0] === "compare") {
     const [beforePath, afterPath] = args.slice(1);
@@ -236,7 +261,7 @@ async function main(): Promise<number> {
     const file = args[2];
     if ((variant !== "before" && variant !== "after") || !file) {
       console.error(
-        "usage: bun cmd/bench_perf.ts run before|after file.djvu [-warm N] [-layers]",
+        "usage: bun cmd/bench_perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]",
       );
       return 1;
     }
@@ -244,8 +269,7 @@ async function main(): Promise<number> {
       console.error(`no such file: ${file}`);
       return 1;
     }
-    const exe = libToolExePath(benchTarget(variant), useClang);
-    const out = await runBenchRender(exe, file, benchOpts);
+    const out = await runBenchRender(variant, useClang, file, benchOpts);
     process.stdout.write(out);
     return 0;
   }
@@ -253,8 +277,8 @@ async function main(): Promise<number> {
   const file = args.find((a) => !a.startsWith("-"));
   if (!file) {
     console.error(
-      "usage: bun cmd/bench_perf.ts file.djvu [-warm N] [-layers]\n" +
-        "       bun cmd/bench_perf.ts run before|after file.djvu [-warm N] [-layers]\n" +
+      "usage: bun cmd/bench_perf.ts file.djvu [-warm N] [-layers] [-p N]\n" +
+        "       bun cmd/bench_perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]\n" +
         "       bun cmd/bench_perf.ts compare before.txt after.txt",
     );
     return 1;
@@ -264,15 +288,15 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const beforeExe = libToolExePath(benchTarget("before"), useClang);
-  const afterExe = libToolExePath(benchTarget("after"), useClang);
   console.log(`file: ${file}`);
+  if (benchOpts.page != null) console.log(`page: ${benchOpts.page}`);
   if (benchOpts.warm > 0) console.log(`warm: ${benchOpts.warm} renders/page`);
   if (benchOpts.layers) console.log("layers: jb2 / iw44 / composite / rotate");
-  console.log(`before: ${beforeExe}`);
-  const beforeOut = await runBenchRender(beforeExe, file, benchOpts);
-  console.log(`after: ${afterExe}`);
-  const afterOut = await runBenchRender(afterExe, file, benchOpts);
+
+  console.log("before: building...");
+  const beforeOut = await runBenchRender("before", useClang, file, benchOpts);
+  console.log("after: building...");
+  const afterOut = await runBenchRender("after", useClang, file, benchOpts);
 
   const before = parseBenchOutput(beforeOut);
   const after = parseBenchOutput(afterOut);

@@ -9,7 +9,7 @@
  *   djvudec_dump -page 3 -zones -text file.djvu
  *   djvudec_dump -dump-features file.djvu
  *
- * No DjVuLibre dependency; links only src/*.c + this file. */
+ * No DjVuLibre dependency; links only src/ sources + this file. */
 #include "djvu.h"
 #include "djvu_internal.h"
 #include <stdio.h>
@@ -327,14 +327,27 @@ static int bench_render_page(djvu_doc *doc, int page0, int warm,
 }
 
 /* Two timed renders per page (djvudec only; for bench_before/after). */
-static int run_bench_render(djvu_doc *doc, int warm, int layers)
+static int run_bench_render(djvu_doc *doc, int warm, int layers,
+                            int page0, int single_page)
 {
     djvu_ctx *ctx = doc->ctx;
     int npages = djvu_doc_page_count(doc);
-    int i, r;
+    int lo, hi, i, r;
     const int reps = 2;
 
-    for (i = 0; i < npages; i++) {
+    if (single_page) {
+        if (page0 < 0 || page0 >= npages) {
+            fprintf(stderr, "invalid page %d (document has %d pages)\n",
+                    page0 + 1, npages);
+            return 1;
+        }
+        lo = hi = page0;
+    } else {
+        lo = 0;
+        hi = npages - 1;
+    }
+
+    for (i = lo; i <= hi; i++) {
         double t[2];
         djvu_render_timings lt[2];
 
@@ -372,6 +385,7 @@ typedef struct {
     int do_bench_render;
     int do_layers;
     int bench_warm;
+    int page_explicit;
     int do_bzz;
     int do_iw;
     int do_all;
@@ -406,6 +420,7 @@ static void usage(void)
         "  -comps             list DJVM components (incl/page/thumb/anno)\n"
         "  -dump-features     tab-separated feature + render-time dump\n"
         "  -bench-render      time 2 renders/page (pN t1 t2 ms; djvudec only)\n"
+        "  -page N, -p N      with -bench-render: single page only (default: all)\n"
         "  -warm N            discard first N renders/page before timing (default 0)\n"
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
         "\n"
@@ -462,9 +477,10 @@ static int parse_args(int argc, char **argv, opts_t *o)
         } else if (!strcmp(argv[i], "-iwdumpfg") && i + 1 < argc) {
             o->do_iw = 4;
             o->out = argv[++i];
-        } else if (!strcmp(argv[i], "-page") && i + 1 < argc)
+        } else if ((!strcmp(argv[i], "-page") || !strcmp(argv[i], "-p")) && i + 1 < argc) {
             o->page = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "-out") && i + 1 < argc)
+            o->page_explicit = 1;
+        } else if (!strcmp(argv[i], "-out") && i + 1 < argc)
             o->out = argv[++i];
         else if (!strcmp(argv[i], "-resolve") && i + 1 < argc)
             o->resolve = argv[++i];
@@ -624,7 +640,8 @@ int main(int argc, char **argv)
     }
 
     if (o.do_bench_render) {
-        rc = run_bench_render(doc, o.bench_warm, o.do_layers);
+        rc = run_bench_render(doc, o.bench_warm, o.do_layers,
+                              o.page - 1, o.page_explicit);
         goto done;
     }
 
