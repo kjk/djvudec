@@ -1,7 +1,7 @@
 # djvudec — a plain-C DjVu decoder
 
 This is a djvu format decoder, like [libdjvu](https://github.com/barak/djvulibre), but better:
-* smaller (in [SumatraPDF](https://www.sumatrapdfreader.org/), I saved 400 kB when I replaced libdjvu)
+* smaller `bun cmd/compare-code-sizes.ts` shows 100 kB (us) vs. 720 kB of libdjvue
 * plain C, no dependencies (vs. C++)
 * simpler API
 * simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite

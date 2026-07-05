@@ -12,7 +12,6 @@ import { $ } from "bun";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import {
-  buildLibDjvu,
   defaultUseClang,
   isMac,
   isWindows,
@@ -23,9 +22,7 @@ import { LIB_SRCS } from "./build_lib";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/");
-const REF = `${ROOT}/ref_build`;
 const OUT = `${ROOT}/out/code_size`;
-const LIBDJVU = `${REF}/${isWindows ? "libdjvu.lib" : "libdjvu.a"}`;
 
 const DJVU_SRCS = LIB_SRCS.filter((s) => s !== "src/debug.c");
 
@@ -52,7 +49,11 @@ const RELEASE_CLANG_CXX_MAC =
   "-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT " +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 const RELEASE_CLANG_LINK_GNU = "-Wl,--gc-sections -Wl,-s";
+const RELEASE_CLANG_LINK_MAC = "-Wl,-dead_strip";
 const RELEASE_CLANG_LINK_WIN = "-Wl,/OPT:REF -Wl,/OPT:ICF";
+function releaseLibPath(dir: string): string {
+  return `${dir}/libdjvu_release${isWindows ? ".lib" : ".a"}`;
+}
 const RELEASE_MSVC_C =
   "-nologo -O2 -Ob3 -GL -MT -std:c11 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS";
 const RELEASE_MSVC_CXX = `${MSVC_CL_CXX} -DNDEBUG`;
@@ -119,6 +120,66 @@ type SectionSizes = {
   total: number | null;
 };
 
+function parseElfSectionSizes(text: string): SectionSizes {
+  const sizes: SectionSizes = {
+    text: null,
+    rdata: null,
+    data: null,
+    bss: null,
+    total: null,
+  };
+  for (const line of text.split(/\r?\n/)) {
+    const sec = line.match(/^\s*\.(text|rdata|data|bss)\s+(\d+)/);
+    if (sec) {
+      const n = Number.parseInt(sec[2]!, 10);
+      if (sec[1] === "text") sizes.text = n;
+      else if (sec[1] === "rdata") sizes.rdata = n;
+      else if (sec[1] === "data") sizes.data = n;
+      else if (sec[1] === "bss") sizes.bss = n;
+      continue;
+    }
+    const tot = line.match(/^\s*Total\s+(\d+)/);
+    if (tot) sizes.total = Number.parseInt(tot[1]!, 10);
+  }
+  return sizes;
+}
+
+function parseMachOSectionSizes(text: string): SectionSizes {
+  const sizes: SectionSizes = {
+    text: 0,
+    rdata: 0,
+    data: 0,
+    bss: 0,
+    total: null,
+  };
+  for (const line of text.split(/\r?\n/)) {
+    const sec = line.match(
+      /Section (__text|__const|__cstring|__data|__bss|__common):\s+(\d+)/,
+    );
+    if (!sec) continue;
+    const n = Number.parseInt(sec[2]!, 10);
+    switch (sec[1]) {
+      case "__text":
+        sizes.text! += n;
+        break;
+      case "__const":
+      case "__cstring":
+        sizes.rdata! += n;
+        break;
+      case "__data":
+        sizes.data! += n;
+        break;
+      case "__bss":
+      case "__common":
+        sizes.bss! += n;
+        break;
+    }
+  }
+  sizes.total =
+    sizes.text! + sizes.rdata! + sizes.data! + sizes.bss!;
+  return sizes;
+}
+
 async function readSectionSizes(exe: string): Promise<SectionSizes> {
   const empty: SectionSizes = {
     text: null,
@@ -128,40 +189,70 @@ async function readSectionSizes(exe: string): Promise<SectionSizes> {
     total: null,
   };
   try {
+    if (isMac) {
+      const out = await $`size -m ${{ raw: exe }}`.quiet().nothrow();
+      if (out.exitCode !== 0) return empty;
+      return parseMachOSectionSizes(out.text());
+    }
     const out = await $`llvm-size -A ${{ raw: exe }}`.quiet().nothrow();
     if (out.exitCode !== 0) return empty;
-    const text = out.text();
-    const sizes: SectionSizes = { ...empty };
-    for (const line of text.split(/\r?\n/)) {
-      const sec = line.match(/^\s*\.(text|rdata|data|bss)\s+(\d+)/);
-      if (sec) {
-        const n = Number.parseInt(sec[2]!, 10);
-        if (sec[1] === "text") sizes.text = n;
-        else if (sec[1] === "rdata") sizes.rdata = n;
-        else if (sec[1] === "data") sizes.data = n;
-        else if (sec[1] === "bss") sizes.bss = n;
-        continue;
-      }
-      const tot = line.match(/^\s*Total\s+(\d+)/);
-      if (tot) sizes.total = Number.parseInt(tot[1]!, 10);
-    }
-    return sizes;
+    return parseElfSectionSizes(out.text());
   } catch {
     return empty;
   }
 }
 
 function clangLinkFlags(): string {
-  return isWindows ? RELEASE_CLANG_LINK_WIN : RELEASE_CLANG_LINK_GNU;
+  if (isWindows) return RELEASE_CLANG_LINK_WIN;
+  if (isMac) return RELEASE_CLANG_LINK_MAC;
+  return RELEASE_CLANG_LINK_GNU;
+}
+
+function stripNote(useClang: boolean): string {
+  if (!useClang) return "LTCG";
+  if (isWindows) return "OPT:REF/ICF + llvm-strip";
+  if (isMac) return "-dead_strip + strip";
+  return "--gc-sections -s";
 }
 
 async function stripExe(exe: string): Promise<void> {
   if (!existsSync(exe)) return;
-  try {
-    await $`llvm-strip ${{ raw: exe }}`.quiet().nothrow();
-  } catch {
-    /* optional */
+  if (isMac) {
+    await $`strip ${{ raw: exe }}`.quiet().nothrow();
+    return;
   }
+  const llvm = await $`llvm-strip ${{ raw: exe }}`.quiet().nothrow();
+  if (llvm.exitCode !== 0) await $`strip ${{ raw: exe }}`.quiet().nothrow();
+}
+
+async function buildReleaseLibDjvu(dir: string, useClang: boolean): Promise<string> {
+  const lib = releaseLibPath(dir);
+  const objdir = `${dir}/libdjvuobj`;
+  const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
+  mkdirSync(objdir, { recursive: true });
+
+  const stamp = `${objdir}/.stamp`;
+  if (!needsRebuild(lib, stamp)) return lib;
+
+  console.log("building release libdjvu (one-time, slow)...");
+  if (useClang) {
+    const cxx = isMac ? RELEASE_CLANG_CXX_MAC : RELEASE_CLANG_CXX_WIN;
+    await runCmd(`clang++ ${cxx} -c ${libsrc}`, objdir);
+    if (isWindows) {
+      await runCmd(`llvm-lib /out:${lib} *.o`, objdir);
+    } else {
+      await runCmd(`ar rcs ${lib} *.o`, objdir);
+    }
+  } else {
+    await runCmd(
+      `cl ${RELEASE_MSVC_CXX} ${DJVU_DEFINES} -Fo${objdir}/ -c libdjvu/*.cpp`,
+      DJVULIBRE,
+    );
+    await runCmd(`llvm-lib /out:${lib} ${objdir}/*.obj`, ROOT);
+  }
+  await Bun.write(stamp, "");
+  console.log(`built ${lib}`);
+  return lib;
 }
 
 async function buildDjvudecProbeClang(dir: string): Promise<string> {
@@ -234,14 +325,14 @@ async function buildLibdjvuProbeClang(dir: string): Promise<string> {
   const cxx = isMac ? RELEASE_CLANG_CXX_MAC : RELEASE_CLANG_CXX_WIN;
   const link = isMac ? "-lpthread" : "-ladvapi32";
 
-  await buildLibDjvu();
+  const lib = await buildReleaseLibDjvu(dir, true);
 
   if (needsRebuild(obj, PROBE_LIBDJVU)) {
     await runCmd(`clang++ ${cxx} -c -o ${obj} ${PROBE_LIBDJVU}`);
   }
-  if (needsRebuild(exe, obj, LIBDJVU)) {
+  if (needsRebuild(exe, obj, lib)) {
     await runCmd(
-      `clang++ ${obj} ${LIBDJVU} ${link} ${clangLinkFlags()} -o ${exe}`,
+      `clang++ ${obj} ${lib} ${link} ${clangLinkFlags()} -o ${exe}`,
     );
     await stripExe(exe);
   }
@@ -253,7 +344,7 @@ async function buildLibdjvuProbeMsvc(dir: string): Promise<string> {
   const obj = `${dir}/size_probe_libdjvu.obj`;
   mkdirSync(dir, { recursive: true });
 
-  await buildLibDjvu();
+  const lib = await buildReleaseLibDjvu(dir, false);
 
   if (needsRebuild(obj, PROBE_LIBDJVU)) {
     await runCmd(
@@ -261,9 +352,9 @@ async function buildLibdjvuProbeMsvc(dir: string): Promise<string> {
       ROOT,
     );
   }
-  if (needsRebuild(exe, obj, LIBDJVU)) {
+  if (needsRebuild(exe, obj, lib)) {
     await runCmd(
-      `cl -nologo ${obj} ${LIBDJVU} advapi32.lib -Fe:${exe} -link ${RELEASE_MSVC_LINK}`,
+      `cl -nologo ${obj} ${lib} advapi32.lib -Fe:${exe} -link ${RELEASE_MSVC_LINK}`,
       ROOT,
     );
   }
@@ -351,12 +442,7 @@ async function main(): Promise<void> {
   const opt = useClang ? "-O3" : "-O2 -Ob3 -GL -LTCG";
 
   console.log("");
-  const stripNote = useClang
-    ? isWindows
-      ? "OPT:REF/ICF + llvm-strip"
-      : "--gc-sections -s"
-    : "LTCG";
-  console.log(`Code size comparison (release, ${stripNote})`);
+  console.log(`Code size comparison (release, ${stripNote(useClang)})`);
   console.log(`  toolchain: ${toolchain} (${opt})`);
   console.log(`  test file: ${testFile}`);
   console.log(`  djvudec:   ${djvudec}`);
