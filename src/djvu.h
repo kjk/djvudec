@@ -55,6 +55,14 @@ void djvu_ctx_free(djvu_ctx *ctx);
 
 /* Per-context decode options (defaults off/zero). Set before djvu_doc_open.
    Shared JB2 dicts are always pre-decoded at open. */
+/* Retain decoded page-local layers on the document after each render:
+   IW44 background/foreground, JB2 mask (Sjbz), and composited background.
+   Default off: layers are decoded per use and freed when the render completes.
+   When enabled, later renders of the same page reuse the cached layers.
+   Requires non-NULL lock and unlock callbacks passed to djvu_ctx_new; the
+   decoder serializes first-time decode of a page's layers via those hooks so
+   concurrent renders on the same djvu_doc are safe. djvu_doc_open fails if
+   caching is enabled but lock/unlock were not supplied. */
 void djvu_ctx_set_cache_per_page(djvu_ctx *ctx, int enable);
 /* Legacy alias: enable=1 turns on per-page caching. */
 void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable);
