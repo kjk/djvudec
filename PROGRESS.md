@@ -139,6 +139,19 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- generalized the fixed 3x scaler path to ceil-3x sizes: profiled
+  `Mcguffey's_Primer.djvu` p3/p7 (2215x3639 pages, BG44 739x1213, red=3); the
+  fast red-3 path required both output dims to be exact 3x multiples, and
+  2215 = 3*739-2 fell back to the generic per-pixel bilinear (~13 ms vs ~7.7 ms
+  for the fast path). Since `prepare_coord(red=3)` for a ceil-3x output is the
+  exact 3x coordinate sequence truncated to outw/outh (trailing samples clamp
+  to the last input pixel/row), the fast path now accepts
+  `outw in [3w-2, 3w]` / `outh in [3h-2, 3h]` (guarded on the actual red=3
+  ratio, stored in the scaler) and emits the clamped tail replicas explicitly.
+  p3 33.3 -> 27.4 ms, p7 39.2 -> 32.4 ms (-17%); `bun cmd/bench.ts` now shows
+  every Mcguffey page ~25% faster than libdjvu (p3 44.3 libdjvu vs 32.1 ours;
+  p7 52.0 vs 38.9, previously +40%/+35% slower). Renders byte-identical to the
+  generic path; MSVC corpus verification 399/399 MATCH.
 - render-speed pass for 3x IW44 background scaling: profiled
   `1998_lossy_masked.djvu` p6/p10 and found the hot path in the GPixmapScaler
   expansion of BG44 `852x1100` to page `2556x3300`. Added a byte-exact fixed
