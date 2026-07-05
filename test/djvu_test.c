@@ -565,81 +565,11 @@ static djvu_ctx *bench_ctx_new(int per_page)
     return djvu_ctx_new(NULL, NULL, NULL, NULL, NULL, NULL);
 }
 
-static void bench_ctx_configure(djvu_ctx *ctx, int precache_shared, int per_page, int sum)
+static void bench_ctx_configure(djvu_ctx *ctx, int per_page, int sum)
 {
-    djvu_ctx_set_cache_precache_shared(ctx, precache_shared);
     djvu_ctx_set_cache_per_page(ctx, per_page);
     if (sum)
         djvu_ctx_set_bgr(ctx, 1);
-}
-
-static int bench_caching_session(const uint8_t *data, size_t len, int precache_shared,
-                                 bench_session_timings *out)
-{
-    djvu_ctx *ctx;
-    int rc;
-
-    ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, NULL, NULL);
-    if (!ctx)
-        return -1;
-    djvu_ctx_set_cache_precache_shared(ctx, precache_shared);
-    rc = bench_ours_session(ctx, data, len, 0, out);
-    djvu_ctx_free(ctx);
-    return rc;
-}
-
-typedef struct {
-    char op[16];
-    double none;
-    double shared;
-} bench_cache_row;
-
-static void bench_fmt_pct_vs_shared(char *buf, size_t cap, double ms, double shared)
-{
-    if (ms < 0.0 || shared < 0.0)
-        snprintf(buf, cap, "ERROR");
-    else if (shared > 0.0)
-        snprintf(buf, cap, "%+.1f%%", (ms - shared) / shared * 100.0);
-    else
-        snprintf(buf, cap, "0.0%%");
-}
-
-static void bench_print_caching_table(const bench_cache_row *rows, int nrows)
-{
-    static const char *h_op = "op";
-    static const char *h_none = "none";
-    static const char *h_shared = "shared";
-    static const char *h_pct_none = "%none";
-    int w_op = (int)strlen(h_op);
-    int w_none = (int)strlen(h_none);
-    int w_shared = (int)strlen(h_shared);
-    int w_pct_none = (int)strlen(h_pct_none);
-    char none[24], shared[24], pct_none[24];
-    int i, w;
-
-    for (i = 0; i < nrows; i++) {
-        bench_fmt_ms_cell(none, sizeof none, rows[i].none);
-        bench_fmt_ms_cell(shared, sizeof shared, rows[i].shared);
-        bench_fmt_pct_vs_shared(pct_none, sizeof pct_none, rows[i].none, rows[i].shared);
-        w = (int)strlen(rows[i].op);
-        if (w > w_op) w_op = w;
-        w = (int)strlen(none);
-        if (w > w_none) w_none = w;
-        w = (int)strlen(shared);
-        if (w > w_shared) w_shared = w;
-        w = (int)strlen(pct_none);
-        if (w > w_pct_none) w_pct_none = w;
-    }
-
-    printf("%-*s %-*s %-*s %-*s\n",
-           w_op, h_op, w_none, h_none, w_shared, h_shared, w_pct_none, h_pct_none);
-    for (i = 0; i < nrows; i++) {
-        bench_fmt_ms_cell(none, sizeof none, rows[i].none);
-        bench_fmt_ms_cell(shared, sizeof shared, rows[i].shared);
-        bench_fmt_pct_vs_shared(pct_none, sizeof pct_none, rows[i].none, rows[i].shared);
-        printf("%-*s %-*s %-*s %-*s\n",
-               w_op, rows[i].op, w_none, none, w_shared, shared, w_pct_none, pct_none);
-    }
 }
 
 /* --- bench-sum: replicate SumatraPDF EngineDjvuDec::RenderPage (our path) ---
@@ -1141,8 +1071,6 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         if (lo < 1) lo = 1;
         if (hi > npages) hi = npages;
         ensure_dir(diffdir);
-        if (doc->ctx->cache_precache_shared)
-            djvu_doc_preload_jb2_range(doc, lo - 1, hi - 1);
         if (verify_mem_checkpoint(doc, lo, "chunk_start") < 0)
             goto mem_limit;
         for (i = lo - 1; i < hi; i++) {
@@ -1307,8 +1235,6 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1, out_sub = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
-    int do_bench_caching = 0;
-    int bench_precache_shared = 0;
     int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0, do_verify_into = 0;
     int do_profile_sum = 0;
     const char *diffdir = NULL;
@@ -1335,9 +1261,6 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-type")) do_type = 1;
         else if (!strcmp(argv[i], "-bench")) do_bench = 1;
         else if (!strcmp(argv[i], "-bench-sum")) do_bench = 2; /* SumatraPDF Engine* render path */
-        else if (!strcmp(argv[i], "-bench-caching")) do_bench_caching = 1;
-        else if (!strcmp(argv[i], "-precache-shared")) bench_precache_shared = 1;
-        else if (!strcmp(argv[i], "-eager")) bench_precache_shared = 1;
         else if (!strcmp(argv[i], "-profile-sum")) do_profile_sum = 1;
         else if (!strcmp(argv[i], "-verify-into")) do_verify_into = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
@@ -1465,96 +1388,6 @@ int main(int argc, char **argv)
         return rc;
     }
 
-    if (do_bench_caching) {
-        static const struct { const char *tag; int precache_shared; } modes[] = {
-            { "none", 0 },
-            { "shared", 1 },
-        };
-        const int RUNS = 2;
-        const int NM = (int)(sizeof modes / sizeof modes[0]);
-        int n = djvu_doc_page_count(doc);
-        bench_session_timings runs[2][2];
-        double *page_ms[2][2];
-        int m, r, p;
-
-        djvu_doc_close(doc);
-        doc = NULL;
-        djvu_ctx_free(ctx);
-        ctx = NULL;
-
-        printf("(bench-caching: none vs pre-cache shared)\n");
-        for (m = 0; m < NM; m++) {
-            for (r = 0; r < RUNS; r++) {
-                page_ms[m][r] = (double *)malloc((size_t)n * sizeof(double));
-                if (!page_ms[m][r]) {
-                    int mi, ri;
-                    fprintf(stderr, "bench-caching: out of memory\n");
-                    for (mi = 0; mi < NM; mi++)
-                        for (ri = 0; ri < RUNS; ri++)
-                            free(page_ms[mi][ri]);
-                    free(data);
-                    return 1;
-                }
-                memset(&runs[m][r], 0, sizeof runs[m][r]);
-                runs[m][r].page_ms = page_ms[m][r];
-                runs[m][r].npages = n;
-            }
-        }
-        for (m = 0; m < NM; m++) {
-            for (r = 0; r < RUNS; r++) {
-                char line[32];
-                snprintf(line, sizeof line, "%s/%d", modes[m].tag, r + 1);
-                if (bench_caching_session(data, len, modes[m].precache_shared, &runs[m][r]) != 0)
-                    fprintf(stderr, "bench-caching: %s run %d failed\n", modes[m].tag, r + 1);
-                bench_print_session_line(line, &runs[m][r]);
-            }
-        }
-
-        {
-            double open_none = bench_best2(runs[0][0].open_ms, runs[0][1].open_ms);
-            double open_shared = bench_best2(runs[1][0].open_ms, runs[1][1].open_ms);
-            double close_none = bench_best2(runs[0][0].close_ms, runs[0][1].close_ms);
-            double close_shared = bench_best2(runs[1][0].close_ms, runs[1][1].close_ms);
-            double total_none = bench_best2(runs[0][0].total_ms, runs[0][1].total_ms);
-            double total_shared = bench_best2(runs[1][0].total_ms, runs[1][1].total_ms);
-
-            bench_cache_row *rows = (bench_cache_row *)calloc((size_t)n + 3, sizeof *rows);
-
-            if (!rows) {
-                fprintf(stderr, "bench-caching: out of memory\n");
-                for (m = 0; m < NM; m++)
-                    for (r = 0; r < RUNS; r++)
-                        free(page_ms[m][r]);
-                free(data);
-                return 1;
-            }
-            strcpy(rows[0].op, "open");
-            rows[0].none = open_none;
-            rows[0].shared = open_shared;
-            for (p = 0; p < n; p++) {
-                snprintf(rows[1 + p].op, sizeof rows[1 + p].op, "%d", p + 1);
-                rows[1 + p].none = bench_best2(runs[0][0].page_ms[p], runs[0][1].page_ms[p]);
-                rows[1 + p].shared = bench_best2(runs[1][0].page_ms[p], runs[1][1].page_ms[p]);
-            }
-            strcpy(rows[n + 1].op, "close");
-            rows[n + 1].none = close_none;
-            rows[n + 1].shared = close_shared;
-            strcpy(rows[n + 2].op, "total");
-            rows[n + 2].none = total_none;
-            rows[n + 2].shared = total_shared;
-
-            printf("(best of %d runs; %% vs shared baseline)\n", RUNS);
-            bench_print_caching_table(rows, n + 3);
-            free(rows);
-        }
-
-        for (m = 0; m < NM; m++)
-            for (r = 0; r < RUNS; r++)
-                free(page_ms[m][r]);
-        free(data);
-        return 0;
-    }
-
     if (do_bench) {
         int n = djvu_doc_page_count(doc);
         int sum = (do_bench == 2); /* replicate SumatraPDF Engine* render path */
@@ -1572,15 +1405,12 @@ int main(int argc, char **argv)
             free(data);
             return 1;
         }
-        bench_ctx_configure(ctx, bench_precache_shared, 0, sum);
+        bench_ctx_configure(ctx, 0, sum);
         bench_ddjvu_reset();
-        if (sum) {
-            printf("(bench-sum: session open/render-all/close, zoom=1, precache_shared=%d)\n",
-                   bench_precache_shared);
-        } else {
-            printf("(bench: session open/render-all/close, precache_shared=%d)\n",
-                   bench_precache_shared);
-        }
+        if (sum)
+            printf("(bench-sum: session open/render-all/close, zoom=1)\n");
+        else
+            printf("(bench: session open/render-all/close)\n");
 
         for (i = 0; i < 4; i++) {
             page_ms[i] = (double *)malloc((size_t)n * sizeof(double));

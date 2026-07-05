@@ -243,7 +243,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     type = djvu_page_get_type(doc, page_no);
     info_ok = (djvu_doc_page_info(doc, page_no, &pi) == 0);
 
-    /* JB2 mask: shared precache, per-page cache, or per-render decode. */
+    /* JB2 mask: per-page cache or per-render decode (shared dicts cached at open). */
     if (type == DJVU_PAGE_BITONAL || type == DJVU_PAGE_COMPOUND) {
         if (!djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL))
             goto done;

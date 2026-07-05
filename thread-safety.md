@@ -30,23 +30,21 @@ unchanged until `djvu_doc_close`.
 used from multiple threads (the default `malloc`/`free` are fine on Windows and
 glibc).
 
-## Caching flags (both default off)
+## Caching flags
 
-Set before `djvu_doc_open` via `djvu_ctx_set_cache_precache_shared` and
-`djvu_ctx_set_cache_per_page`.
+Set `djvu_ctx_set_cache_per_page` before `djvu_doc_open` (default off).
 
-| Flag | Effect | Lock required |
-|------|--------|---------------|
-| `cache_precache_shared` | Pre-decode shared **Djbz** dicts (INCL + deduped inline) at open | No |
+| Behavior | Effect | Lock required |
+|----------|--------|---------------|
+| Shared **Djbz** dicts | Always pre-decoded at open and cached on the doc | No |
 | `cache_per_page` | Retain page-local decoded layers (**IW44**, **Sjbz**, composited BG) on each page | Yes (`lock`/`unlock` on `djvu_ctx`) |
 
-With both off: shared dicts and page-local layers are decoded per use and not
+With `cache_per_page` off: page-local layers are decoded per use and not
 retained on the doc (except the open-time chunk index and INFO preload).
 
-When `cache_precache_shared` is on, shared dicts are read-only after open.
-When `cache_per_page` is on, the first concurrent decode of a given page-local
-layer is serialized via the caller's lock callbacks; later renders of the same
-page reuse the cached layer.
+Shared dicts are read-only after open. When `cache_per_page` is on, the first
+concurrent decode of a given page-local layer is serialized via the caller's
+lock callbacks; later renders of the same page reuse the cached layer.
 
 ## What `djvu_doc_open` mutates (single-threaded phase)
 
@@ -57,8 +55,7 @@ At open time the library:
 - Initializes the scaler bilinear lookup table (`djvu_init` / `djvu_scaler_init`).
 - Builds a chunk index at open (page-local `DJVU_PG_*` flags + unique **INCL**
   ids for shared **DJVI** includes).
-- Optionally pre-decodes shared **Djbz** dictionaries when
-  `cache_precache_shared` is enabled.
+- Pre-decodes shared **Djbz** dictionaries (INCL + deduped inline).
 
 Cached data is read-only during render/text/annotation access (shared dicts
 always; page-local layers when `cache_per_page` is on).

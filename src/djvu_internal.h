@@ -27,17 +27,11 @@ struct djvu_ctx {
     djvu_unlock_cb unlock;
     djvu_error_cb error;
     void *user;
-    int cache_precache_shared; /* preload shared JB2 dicts at djvu_doc_open */
     int cache_per_page;        /* retain page-local decoded layers on djvu_page_int */
     int no_compose;    /* skip color composite in render */
     int iw_max_chunks; /* cap IW44 chunks per layer (0 = unlimited) */
     int bgr;           /* emit color output as B,G,R instead of R,G,B */
 };
-
-static inline int djvu_cache_stores_shared(djvu_ctx *ctx)
-{
-    return ctx && (ctx->cache_precache_shared || ctx->cache_per_page);
-}
 
 static inline int djvu_cache_stores_page(djvu_ctx *ctx)
 {
@@ -143,7 +137,7 @@ struct djvu_doc {
 };
 
 /* Layer acquire: page-local slots filled when cache_per_page (lock required).
-   Shared JB2 dicts cached when cache_precache_shared or cache_per_page. */
+   Shared JB2 dicts are always cached on the doc after open. */
 iw_pixmap *djvu_doc_iw44_acquire(djvu_doc *doc, int page_no, const char *chunk_id,
                                  int *owned_out);
 void djvu_doc_iw44_release(djvu_ctx *ctx, iw_pixmap *pm, int owned);

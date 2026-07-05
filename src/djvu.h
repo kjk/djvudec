@@ -53,8 +53,8 @@ djvu_ctx *djvu_ctx_new(djvu_alloc_cb alloc, djvu_free_cb free_cb,
                        djvu_error_cb error, void *user);
 void djvu_ctx_free(djvu_ctx *ctx);
 
-/* Per-context decode options (defaults off/zero). Set before djvu_doc_open. */
-void djvu_ctx_set_cache_precache_shared(djvu_ctx *ctx, int enable);
+/* Per-context decode options (defaults off/zero). Set before djvu_doc_open.
+   Shared JB2 dicts are always pre-decoded at open. */
 void djvu_ctx_set_cache_per_page(djvu_ctx *ctx, int enable);
 /* Legacy alias: enable=1 turns on per-page caching. */
 void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable);
