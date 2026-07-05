@@ -139,6 +139,14 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- render-speed pass for 3x IW44 background scaling: profiled
+  `1998_lossy_masked.djvu` p6/p10 and found the hot path in the GPixmapScaler
+  expansion of BG44 `852x1100` to page `2556x3300`. Added a byte-exact fixed
+  3x scaler path that keeps the same vertical-then-horizontal rounding order as
+  the generic scaler. Target pages now benchmark faster than libdjvu (p6
+  46.62 ms libdjvu vs 34.36 ms ours; p10 47.72 ms vs 32.77 ms), target
+  `-verify-into` and clang corpus verification stayed byte-exact, and
+  `slower-mac-clang.txt` regenerated with 0 slower pages.
 - render-speed pass for sparse JB2 direct bitmaps: profiled `djvu3spec.djvu`
   p62 with Xcode Time Profiler (`xctrace`) plus `sample`; the hot path was
   direct JB2 bitmap decode of large mostly-white 300x300 page-local tiles. Added

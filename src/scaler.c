@@ -112,6 +112,103 @@ static int cpix_init_uninit(djvu_ctx *ctx, djvu_cpix *p, int w, int h)
     return p->d ? 0 : -1;
 }
 
+static uint8_t *scaler_dest_row(uint8_t *dst0, int stride, int outh,
+                                int topdown, int y)
+{
+    return dst0 + (size_t)(topdown ? (outh - 1 - y) : y) * stride;
+}
+
+static void scaler_expand_row3(const uint8_t *src, int w, uint8_t *dst)
+{
+    const uint8_t *last;
+    uint8_t *d = dst;
+    int x;
+
+    d[0] = src[0];
+    d[1] = src[1];
+    d[2] = src[2];
+    d += 3;
+
+    for (x = 0; x < w - 1; x++) {
+        const uint8_t *a = src + (size_t)x * 3;
+        const uint8_t *b = a + 3;
+        int ar = a[0], ag = a[1], ab = a[2];
+        int dr = b[0] - ar, dg = b[1] - ag, db = b[2] - ab;
+
+        d[0] = (uint8_t)ar;
+        d[1] = (uint8_t)ag;
+        d[2] = (uint8_t)ab;
+        d[3] = (uint8_t)(ar + ((dr * 6 + FRACSIZE2) >> FRACBITS));
+        d[4] = (uint8_t)(ag + ((dg * 6 + FRACSIZE2) >> FRACBITS));
+        d[5] = (uint8_t)(ab + ((db * 6 + FRACSIZE2) >> FRACBITS));
+        d[6] = (uint8_t)(ar + ((dr * 11 + FRACSIZE2) >> FRACBITS));
+        d[7] = (uint8_t)(ag + ((dg * 11 + FRACSIZE2) >> FRACBITS));
+        d[8] = (uint8_t)(ab + ((db * 11 + FRACSIZE2) >> FRACBITS));
+        d += 9;
+    }
+
+    last = src + (size_t)(w - 1) * 3;
+    d[0] = last[0];
+    d[1] = last[1];
+    d[2] = last[2];
+    d[3] = last[0];
+    d[4] = last[1];
+    d[5] = last[2];
+}
+
+static void scaler_interp_row(const uint8_t *lower, const uint8_t *upper,
+                              int w, int vf, uint8_t *dst)
+{
+    int i, n = w * 3;
+
+    for (i = 0; i < n; i++) {
+        int lo = lower[i];
+        dst[i] = (uint8_t)(lo + (((upper[i] - lo) * vf + FRACSIZE2) >> FRACBITS));
+    }
+}
+
+static int scaler_scale_red3_into(scaler *s, const djvu_cpix *in,
+                                  uint8_t *dst0, int stride, int topdown)
+{
+    djvu_ctx *ctx = s->ctx;
+    int w = s->inw, h = s->inh;
+    size_t row = (size_t)w * 3;
+    uint8_t *tmp;
+    const uint8_t *last;
+    int y;
+
+    tmp = (uint8_t *)djvu_alloc(ctx, row);
+    if (!tmp) return -1;
+
+    scaler_expand_row3(in->d, w, scaler_dest_row(dst0, stride, s->outh, topdown, 0));
+    for (y = 0; y < h - 1; y++) {
+        const uint8_t *lower = in->d + (size_t)y * row;
+        const uint8_t *upper = lower + row;
+
+        scaler_expand_row3(lower, w,
+                           scaler_dest_row(dst0, stride, s->outh, topdown,
+                                           y * 3 + 1));
+        scaler_interp_row(lower, upper, w, 6, tmp);
+        scaler_expand_row3(tmp, w,
+                           scaler_dest_row(dst0, stride, s->outh, topdown,
+                                           y * 3 + 2));
+        scaler_interp_row(lower, upper, w, 11, tmp);
+        scaler_expand_row3(tmp, w,
+                           scaler_dest_row(dst0, stride, s->outh, topdown,
+                                           y * 3 + 3));
+    }
+
+    last = in->d + (size_t)(h - 1) * row;
+    scaler_expand_row3(last, w,
+                       scaler_dest_row(dst0, stride, s->outh, topdown,
+                                       h * 3 - 2));
+    scaler_expand_row3(last, w,
+                       scaler_dest_row(dst0, stride, s->outh, topdown,
+                                       h * 3 - 1));
+    djvu_free(ctx, tmp);
+    return 0;
+}
+
 static int scaler_scale_into(scaler *s, const djvu_cpix *in,
                              uint8_t *dst0, int stride, int topdown)
 {
@@ -126,6 +223,13 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
     prepare_interp();
     if (!s->hcoord) scaler_set_h(s, 0, 0);
     if (!s->vcoord) scaler_set_v(s, 0, 0);
+    if (s->xshift == 0 && s->yshift == 0 &&
+        s->inw > 0 && s->inh > 0 &&
+        s->redw == s->inw && s->redh == s->inh &&
+        s->outw % 3 == 0 && s->outh % 3 == 0 &&
+        s->outw / 3 == s->inw && s->outh / 3 == s->inh &&
+        in->w == s->inw && in->h == s->inh)
+        return scaler_scale_red3_into(s, in, dst0, stride, topdown);
     bufw = s->redw;
     lbuf = (uint8_t *)djvu_alloc(ctx, (size_t)(bufw + 2) * 3);
     if (!lbuf) return -1;
