@@ -2,7 +2,7 @@
 // tests.ts -- verify djvu_test render output against DjVuLibre's ddjvu, page
 // by page (run with `bun cmd/tests.ts`; replaces the old Python verify.py).
 //
-// This is the test entry point: it ensures deps (get-deps.ts), builds the ref
+// This is the test entry point: it ensures deps (get_deps.ts), builds the ref
 // tools + harness (buildRef/build from build.ts), then verifies.
 //
 // Pages that are pure JB2 masks (Sjbz, no BG44/FG44 background) must match
@@ -30,7 +30,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
-import { getDeps } from "./get-deps";
+import { getDeps } from "./get_deps";
 import { buildRef, build, buildAsan, cleanBuildOutput, defaultUseClang, refToolPath } from "./build";
 import { corpusDir } from "./corpus";
 import { trackDjvuTestProc, awaitDjvuTestProc } from "./win_proc_mem";

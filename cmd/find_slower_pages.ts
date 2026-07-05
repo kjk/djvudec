@@ -9,7 +9,7 @@
 import { existsSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, relative } from "path";
-import { getDeps } from "./get-deps";
+import { getDeps } from "./get_deps";
 import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);

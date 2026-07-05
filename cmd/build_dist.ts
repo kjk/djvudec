@@ -1,6 +1,6 @@
-// build-dist.ts -- produce an SQLite-style single-file amalgamation in dist/.
+// build_dist.ts -- produce an SQLite-style single-file amalgamation in dist/.
 //
-//   bun cmd/build-dist.ts
+//   bun cmd/build_dist.ts
 //
 // Emits two files:
 //   dist/djvu.h  -- the public API header (verbatim copy of src/djvu.h)

@@ -19,7 +19,7 @@ import {
 } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename, relative } from "path";
-import { getDeps } from "./get-deps";
+import { getDeps } from "./get_deps";
 import { build, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);

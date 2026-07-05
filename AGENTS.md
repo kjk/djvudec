@@ -26,7 +26,7 @@ either. Don't re-investigate this.
 ## Reference checkouts (local)
 - C# source being ported:  `deps/DjvuNet/DjvuNet`  (DjvuNet repo)
 - Verification oracle:      `deps/DjVuLibre`        (DjVuLibre repo)
-- `bun cmd/get-deps.ts` clones both repos into `deps/` (skipped if present)
+- `bun cmd/get_deps.ts` clones both repos into `deps/` (skipped if present)
   and assembles the test corpus into `testfiles/djvu/*.djvu` by copying every
   `.djvu` from `deps/DjVuLibre/doc`, `deps/DjvuNet/Specs`, and
   `deps/DjvuNet/DjvuNetTest/TestFiles`. Exported as `getDeps()`; `build.ts`
@@ -63,7 +63,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   After the timing lines, a `document, allocs N, total <bytes>, peak <bytes>`
   line reports the decoder's allocation stats for the whole document (gathered in
   one extra untimed tracked pass, so it doesn't skew the timings).
-- `bun cmd/bench-sum.ts [file.djvu] [-clang] [-full]` — same harness as
+- `bun cmd/bench_sum.ts [file.djvu] [-clang] [-full]` — same harness as
   `bench.ts` (same `-bench`-style per-page + document lines), but replicates how
   **SumatraPDF** actually opens/renders pages instead of timing the bare
   `djvu_page_render(subsample=1)` (runs `djvu_test -bench-sum`):
@@ -159,7 +159,7 @@ from the JB2 mask). Verified our mask/bg/fg are byte-exact vs DjVuLibre
 internals. Our output is arguably more correct. Do not "fix" it.
 
 ### Amalgamation (single-file distribution)
-- `bun cmd/build-dist.ts` — generates an SQLite-style amalgamation in `dist/`:
+- `bun cmd/build_dist.ts` — generates an SQLite-style amalgamation in `dist/`:
   `dist/djvu.h` (verbatim public header) and `dist/djvu.c` (the public header +
   `djvu_internal.h` + every `src/*.c` concatenated into one translation unit,
   with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped). The
@@ -315,7 +315,7 @@ Notes:
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
   `-bench` times our render vs DjVuLibre `ddjvu_page_render` per page (see
   `bun cmd/bench.ts`); `-bench-sum` does the same for the SumatraPDF engine
-  render path (see `bun cmd/bench-sum.ts`). `-sub N` renders `-out` at subsample
+  render path (see `bun cmd/bench_sum.ts`). `-sub N` renders `-out` at subsample
   N (for inspecting the subsampled raster). `-verify-into` checks
   `djvu_page_render_into` is byte-identical to `djvu_page_render`.
 
@@ -329,7 +329,7 @@ milestone history and change log.
 in the working tree; only run `git commit` when the user explicitly asks. (The
 user reviews diffs and decides when to commit.) Never commit `dist/djvu.c` or
 `dist/djvu.h` — those files are always left for the user to commit manually
-after `bun cmd/build-dist.ts`.
+after `bun cmd/build_dist.ts`.
 
 ## Status
 Feature-complete; verified byte-for-byte vs DjVuLibre. All remaining

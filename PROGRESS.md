@@ -106,7 +106,7 @@ whose INFO gamma != 2.2.
 - DJVU_JB2_DEBUG=1 env prints a per-stream record-type histogram.
 
 ## Build / test
-`bun cmd/get-deps.ts` — clones DjvuNet + DjVuLibre into deps/, assembles testfiles/djvu.
+`bun cmd/get_deps.ts` — clones DjvuNet + DjVuLibre into deps/, assembles testfiles/djvu.
 `bun cmd/build.ts` — builds ref tools (once), the C library + test harness with clang.
 `bun cmd/tests.ts` — the test driver: ensures deps, builds, then verifies over
 every .djvu under testfiles/ (recursively).

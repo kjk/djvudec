@@ -1,11 +1,11 @@
-// compare-code-sizes.ts -- compare stripped release binary sizes: djvudec vs libdjvu.
+// compare_code_sizes.ts -- compare stripped release binary sizes: djvudec vs libdjvu.
 //
 // Builds two minimal probe programs that exercise the same viewer-facing APIs
 // (page render, hidden text, hyperlinks, outline), links each against its
 // decoder with matching release optimization, then reports executable and .text
 // sizes.
 //
-//   bun cmd/compare-code-sizes.ts [file.djvu] [-clang] [-clean]
+//   bun cmd/compare_code_sizes.ts [file.djvu] [-clang] [-clean]
 //
 // With no file, uses the first .djvu under testfiles/djvu/.
 import { $ } from "bun";
@@ -17,7 +17,7 @@ import {
   isWindows,
   MSVC_CL_CXX,
 } from "./build";
-import { DJVULIBRE_DIR, getDeps } from "./get-deps";
+import { DJVULIBRE_DIR, getDeps } from "./get_deps";
 import { LIB_SRCS } from "./build_lib";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
