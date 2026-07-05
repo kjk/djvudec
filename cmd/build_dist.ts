@@ -2,13 +2,15 @@
 //
 //   bun cmd/build_dist.ts
 //
-// Emits two files:
+// Emits:
 //   dist/djvu.h  -- the public API header (verbatim copy of src/djvu.h)
 //   dist/djvu.c  -- the entire decoder as one translation unit: the public
 //                   header, then the internal header, then every src/*.c,
 //                   concatenated with the local `#include "djvu.h"` /
 //                   `#include "djvu_internal.h"` lines stripped out; all C
 //                   comments and line-trailing whitespace removed.
+//   wasm/djvu.js -- Emscripten SINGLE_FILE module (wasm embedded) for the
+//                   committed demo at wasm/index.html; compiled from dist/djvu.c.
 //
 // A consumer drops both files into their tree and compiles djvu.c like any
 // other source. Verifies the result compiles with every available toolchain
@@ -18,6 +20,7 @@ import { $ } from "bun";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, rmSync } from "fs";
 import { join } from "path";
 import { clangCFlags, DJVUDEC_MSVC_CL_C, isWindows } from "./build";
+import { buildWasm } from "./build_wasm";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const SRC = join(ROOT, "src");
@@ -241,6 +244,8 @@ export async function buildDist(): Promise<void> {
     }
   }
   if (failed) process.exit(1);
+
+  buildWasm({ useDist: true });
 }
 
 export async function ensureDist(): Promise<void> {
