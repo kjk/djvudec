@@ -80,6 +80,12 @@ void bench_ddjvu_reset(void)
         g_api_doc = 0;
     }
     g_api_path[0] = 0;
+    /* Drop decoded DjVuFiles retained by the CONTEXT-level cache. Without this
+       a re-opened document gets its page decodes from the cache (~0 ms), so a
+       best-of-2 bench compared our cold decode against a cache-warm libdjvu.
+       (ddjvu_cache_set_size(ctx, 0) is a no-op: the API ignores sizes <= 0.) */
+    if (g_api_ctx)
+        ddjvu_cache_clear(g_api_ctx);
 }
 
 /* Drop cached DjVuLibre decodes; release the API context (end of verify chunk). */

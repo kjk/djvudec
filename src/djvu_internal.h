@@ -68,6 +68,27 @@ static inline void djvu_cache_unlock(djvu_ctx *ctx)
         ctx->unlock(ctx->user, ctx);
 }
 
+/* Serialization for the doc-wide JB2 dict caches: taken whenever lock/unlock
+   callbacks exist (even with per-page caching off), so shared dicts can be
+   decoded lazily on first use. Without callbacks the dict caches are fully
+   populated at djvu_doc_open and stay immutable, so no lock is needed. */
+static inline int djvu_has_lock(djvu_ctx *ctx)
+{
+    return ctx && ctx->lock && ctx->unlock;
+}
+
+static inline void djvu_dict_lock(djvu_ctx *ctx)
+{
+    if (djvu_has_lock(ctx))
+        ctx->lock(ctx->user, ctx);
+}
+
+static inline void djvu_dict_unlock(djvu_ctx *ctx)
+{
+    if (djvu_has_lock(ctx))
+        ctx->unlock(ctx->user, ctx);
+}
+
 void *djvu_alloc(djvu_ctx *ctx, size_t size);
 void  djvu_free(djvu_ctx *ctx, void *ptr);
 void  djvu_errorf(djvu_ctx *ctx, djvu_severity sev, const char *fmt, ...);

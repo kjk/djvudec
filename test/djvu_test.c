@@ -559,10 +559,12 @@ static void bench_cache_unlock_cb(void *user, void *ctx)
 
 static djvu_ctx *bench_ctx_new(int per_page)
 {
-    if (per_page)
-        return djvu_ctx_new(NULL, NULL, bench_cache_lock_cb, bench_cache_unlock_cb,
-                            NULL, NULL);
-    return djvu_ctx_new(NULL, NULL, NULL, NULL, NULL, NULL);
+    /* Always supply the lock hooks: shared JB2 dicts then decode lazily on
+       first use (like libdjvu) instead of eagerly at open, so -bench charges
+       dict decode to the page that needs it on both sides. */
+    (void)per_page;
+    return djvu_ctx_new(NULL, NULL, bench_cache_lock_cb, bench_cache_unlock_cb,
+                        NULL, NULL);
 }
 
 static void bench_ctx_configure(djvu_ctx *ctx, int per_page, int sum)
@@ -1433,12 +1435,13 @@ int main(int argc, char **argv)
             lib[r].npages = n;
         }
 
+        /* Interleave the sessions (ours, lib, ours, lib): running all of one
+           side back-to-back lets a transient machine-load difference between
+           the two phases masquerade as per-page speed differences. */
         for (r = 0; r < RUNS; r++) {
             if (bench_ours_session(ctx, data, len, sum, &ours[r]) != 0)
                 fprintf(stderr, "bench: djvudec session run %d failed\n", r + 1);
             bench_print_session_line("djvudec", &ours[r]);
-        }
-        for (r = 0; r < RUNS; r++) {
             if (bench_ddjvu_session(in, sum, &lib[r]) != 0)
                 fprintf(stderr, "bench: libdjvu session run %d failed\n", r + 1);
             bench_print_session_line("libdjvu", &lib[r]);

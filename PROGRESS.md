@@ -139,6 +139,33 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- investigated `slower-win-msvc.txt` residuals `djvu3spec.djvu` p61 and
+  `djvulibre-book-ru.djvu` p26 and found the -bench harness was systematically
+  unfair to us in three ways; none of the flagged pages were actually slower:
+  1. **ddjvu context cache**: the libdjvu cache lives on the ddjvu *context*
+     and survives document close, so in a best-of-2 bench libdjvu's second
+     session got page decodes from cache (~0 ms) while ours decoded cold.
+     (`ddjvu_cache_set_size(ctx, 0)` is a silent no-op — the API ignores
+     sizes <= 0 — so the old "cold" flag never worked either.)
+     `bench_ddjvu_reset` now calls `ddjvu_cache_clear`. Proof via new
+     `test/jb2prof.cpp` (ref tool, times DjVuLibre's raw JB2 dict/page/render
+     phases on chunks extracted with `cmd/extract_chunk.ts`): djvu3spec p61
+     Sjbz decode is 10.6 ms in DjVuLibre vs ~2.9 ms ours; ddjvu re-open showed
+     create+decode 15.0 ms cold -> 0.02 ms cached.
+  2. **phase ordering**: -bench ran both djvudec sessions, then both libdjvu
+     sessions; with `find_slower_pages.ts` running 12 files in parallel the
+     late-finishing files timed their djvudec phase under heavier ambient load.
+     Sessions are now interleaved (ours, lib, ours, lib).
+  3. **eager dict decode at open**: `djvu_doc_open` pre-decoded every shared
+     JB2 dict (djvu3spec: 4 INCL dicts, 7.8 ms open vs libdjvu's 0.7 ms lazy
+     open). Shared dicts now decode lazily on first use when the caller
+     supplied lock/unlock hooks (serialized via `djvu_dict_lock`; without
+     hooks open still preloads so the dict cache stays immutable for lock-free
+     concurrent renders). djvu3spec open 7.4 -> 0.07 ms.
+  With the fair bench: djvu3spec p61 17.6 ms libdjvu vs 7.2 ours (-59%),
+  book-ru p26 26.3 vs 9.2 (-65%); `slower-win-msvc.txt` regenerated 21 -> 3
+  pages, all Mcguffey at noise level (+0.7..+5.9%). Corpus verification
+  399/399 MATCH, no leaks.
 - generalized the fixed 3x scaler path to ceil-3x sizes: profiled
   `Mcguffey's_Primer.djvu` p3/p7 (2215x3639 pages, BG44 739x1213, red=3); the
   fast red-3 path required both output dims to be exact 3x multiples, and

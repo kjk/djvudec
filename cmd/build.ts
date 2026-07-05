@@ -125,6 +125,11 @@ async function buildRefWindows() {
       `clang++ ${common} ${libsrc} ${ROOT}/test/jb2ref.cpp -ladvapi32 -o ${REF}/jb2ref.exe`,
     );
   }
+  if (!existsSync(`${REF}/jb2prof.exe`)) {
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2prof.cpp -ladvapi32 -o ${REF}/jb2prof.exe`,
+    );
+  }
   console.log("ref tools ready");
 }
 
@@ -148,6 +153,11 @@ async function buildRefMac() {
   if (!existsSync(refToolPath("jb2ref"))) {
     await runCmd(
       `clang++ ${common} ${libsrc} ${ROOT}/test/jb2ref.cpp ${link} -o ${refToolPath("jb2ref")}`,
+    );
+  }
+  if (!existsSync(refToolPath("jb2prof"))) {
+    await runCmd(
+      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2prof.cpp ${link} -o ${refToolPath("jb2prof")}`,
     );
   }
   console.log("ref tools ready");

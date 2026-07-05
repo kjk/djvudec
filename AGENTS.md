@@ -60,6 +60,16 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   both sides). With no file it picks a random `.djvu` from `testfiles/subset`
   (`-full` → `testfiles/full`). Each line:
   `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%` (`+` = we're slower).
+  Two fairness rules (both were once bugs — don't reintroduce them):
+  the ours/libdjvu sessions are **interleaved** (ours, lib, ours, lib) so a
+  machine-load swing can't hit only one side, and `bench_ddjvu_reset` calls
+  `ddjvu_cache_clear` so every libdjvu session decodes cold — the ddjvu cache
+  lives on the *context* and survives document close, so without the clear a
+  best-of-2 compared our cold decode against a cache-warm libdjvu (NB:
+  `ddjvu_cache_set_size(ctx, 0)` is a silent no-op, the API ignores sizes <= 0).
+  `ref_build/jb2prof.exe` (test/jb2prof.cpp) times DjVuLibre's raw JB2 phases
+  (dict decode / page decode / get_bitmap) on chunks extracted with
+  `bun cmd/extract_chunk.ts` — the tool that exposed the cache artifact.
   After the timing lines, a `document, allocs N, total <bytes>, peak <bytes>`
   line reports the decoder's allocation stats for the whole document (gathered in
   one extra untimed tracked pass, so it doesn't skew the timings).

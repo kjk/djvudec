@@ -577,11 +577,9 @@ static jb2_image *decode_jb2_mask_fresh(djvu_doc *doc, djvu_page_int *pg)
 
     sjbz = djvu_form_find_chunk(doc, pg->form_off, "Sjbz", &sz, NULL);
     if (!sjbz) return NULL;
-    if (djvu_cache_stores_page(doc->ctx))
-        djvu_cache_lock(doc->ctx);
+    djvu_dict_lock(doc->ctx);
     dict = jb2_dict_for_form_unlocked(doc, pg->form_off);
-    if (djvu_cache_stores_page(doc->ctx))
-        djvu_cache_unlock(doc->ctx);
+    djvu_dict_unlock(doc->ctx);
     mask = djvu_jb2_decode(doc->ctx, sjbz, sz, dict);
     return mask;
 }
@@ -637,14 +635,12 @@ static void djvu_doc_preload_shared_range(djvu_doc *doc, int lo0, int hi0)
     if (lo0 < 0) lo0 = 0;
     if (hi0 >= doc->npages) hi0 = doc->npages - 1;
     if (lo0 > hi0) return;
-    if (doc->ctx->cache_per_page)
-        djvu_cache_lock(doc->ctx);
+    djvu_dict_lock(doc->ctx);
     for (i = 0; i < doc->n_shared_incl; i++)
         preload_jb2_dict_incl(doc, doc->shared_incl_ids[i]);
     for (i = lo0; i <= hi0; i++)
         preload_jb2_inline_page(doc, &doc->pages[i]);
-    if (doc->ctx->cache_per_page)
-        djvu_cache_unlock(doc->ctx);
+    djvu_dict_unlock(doc->ctx);
 }
 
 void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0)
@@ -801,9 +797,9 @@ jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off)
 {
     jb2_image *dict;
     if (!doc) return NULL;
-    djvu_cache_lock(doc->ctx);
+    djvu_dict_lock(doc->ctx);
     dict = jb2_dict_for_form_unlocked(doc, form_off);
-    djvu_cache_unlock(doc->ctx);
+    djvu_dict_unlock(doc->ctx);
     return dict;
 }
 
@@ -967,7 +963,12 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
     }
 
     djvu_scaler_init();
-    djvu_doc_preload_shared_range(doc, 0, doc->npages - 1);
+    /* Without lock/unlock callbacks the doc-wide JB2 dict caches must be
+       complete before renders start (renders read them unlocked). With
+       callbacks, dicts are decoded lazily on first use under djvu_dict_lock,
+       so open stays cheap (matches libdjvu's lazy behavior). */
+    if (!djvu_has_lock(ctx))
+        djvu_doc_preload_shared_range(doc, 0, doc->npages - 1);
     return doc;
 }
 
