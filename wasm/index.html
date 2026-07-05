@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>djvudec — DjVu viewer (WebAssembly)</title>
+<style>
+  :root {
+    --bg: #1e1f22;
+    --panel: #2b2d31;
+    --border: #3a3d42;
+    --fg: #e6e6e6;
+    --muted: #9aa0a6;
+    --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto; flex-wrap: wrap;
+  }
+  header .title { font-weight: 600; margin-right: 4px; }
+  header .spacer { flex: 1 1 auto; }
+  button {
+    font: inherit; color: var(--fg); background: #363a40;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #40454c; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  .pageinfo { color: var(--muted); min-width: 90px; text-align: center; }
+  .fname { color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #stage {
+    flex: 1 1 auto; overflow: auto; position: relative;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 20px;
+  }
+  #canvas { background: #fff; box-shadow: 0 2px 16px rgba(0,0,0,.5); }
+  #hint {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); text-align: center; pointer-events: none; padding: 24px;
+  }
+  #hint .big { font-size: 18px; color: var(--fg); }
+  #drop {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(79,140,255,.18); border: 3px dashed var(--accent);
+    font-size: 22px; color: #fff; z-index: 10;
+  }
+  #drop.show { display: flex; }
+  #status { color: var(--muted); }
+  #status.err { color: #ff6b6b; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="title">djvudec</span>
+    <button id="open" class="primary">Open .djvu…</button>
+    <button id="prev" disabled>◀ Prev</button>
+    <span class="pageinfo" id="pageinfo">—</span>
+    <button id="next" disabled>Next ▶</button>
+    <span class="fname" id="fname"></span>
+    <span class="spacer"></span>
+    <span id="status">loading decoder…</span>
+    <input type="file" id="file" accept=".djvu,.djv" />
+  </header>
+
+  <div id="stage">
+    <canvas id="canvas" width="0" height="0"></canvas>
+    <div id="hint"><div>
+      <div class="big">Open or drop a .djvu file to view it</div>
+      <div>rendered entirely in your browser via WebAssembly</div>
+    </div></div>
+  </div>
+
+  <div id="drop">Drop the .djvu file to open</div>
+
+  <script src="djvu.js"></script>
+  <script>
+  (function () {
+    "use strict";
+
+    // djvu_image struct byte offsets (int32 layout, wasm32):
+    //   int width; int height; int format; int stride; uint8_t *data;
+    const IMG_WIDTH = 0, IMG_HEIGHT = 4, IMG_FORMAT = 8, IMG_STRIDE = 12, IMG_DATA = 16;
+    // djvu_page_info: int width, height, dpi, version, rotation;
+    const PAGEINFO_BYTES = 20;
+    const FMT_GRAY8 = 1, FMT_RGB24 = 3;
+    // Cap the rendered raster so huge pages stay responsive; the browser scales
+    // the canvas via CSS if needed. Full-res pages up to this many px render 1:1.
+    const MAX_DIM = 3000;
+
+    let M = null;          // Emscripten module
+    let ctx = 0;           // djvu_ctx*
+    let doc = 0;           // djvu_doc*
+    let docBuf = 0;        // malloc'd input buffer (must outlive doc — not copied)
+    let pageCount = 0;
+    let cur = 0;
+    let rendering = false;
+
+    const $ = (id) => document.getElementById(id);
+    const els = {
+      open: $("open"), file: $("file"), prev: $("prev"), next: $("next"),
+      pageinfo: $("pageinfo"), fname: $("fname"), status: $("status"),
+      canvas: $("canvas"), hint: $("hint"), drop: $("drop"), stage: $("stage"),
+    };
+
+    function setStatus(msg, isErr) {
+      els.status.textContent = msg || "";
+      els.status.className = isErr ? "err" : "";
+    }
+
+    function ptrI32(p, off) { return M.HEAP32[(p + off) >> 2]; }
+    function ptrU32(p, off) { return M.HEAPU32[(p + off) >> 2]; }
+
+    createDjvuModule().then((mod) => {
+      M = mod;
+      // djvu_ctx_new(alloc, free, lock, unlock, error, user) — all NULL uses the
+      // default malloc/free and silently ignores diagnostics.
+      ctx = M._djvu_ctx_new(0, 0, 0, 0, 0, 0);
+      setStatus("ready");
+    }).catch((e) => {
+      console.error(e);
+      setStatus("failed to load decoder", true);
+    });
+
+    function closeDoc() {
+      if (doc) { M._djvu_doc_close(doc); doc = 0; }
+      if (docBuf) { M._free(docBuf); docBuf = 0; }
+      pageCount = 0; cur = 0;
+    }
+
+    function openBuffer(arrayBuf, name) {
+      if (!M) { setStatus("decoder still loading…", true); return; }
+      closeDoc();
+      const bytes = new Uint8Array(arrayBuf);
+      docBuf = M._malloc(bytes.length);
+      if (!docBuf) { setStatus("out of memory", true); return; }
+      M.HEAPU8.set(bytes, docBuf);
+      doc = M._djvu_doc_open(ctx, docBuf, bytes.length);
+      if (!doc) {
+        M._free(docBuf); docBuf = 0;
+        setStatus("not a valid DjVu file", true);
+        els.fname.textContent = name || "";
+        updateNav();
+        return;
+      }
+      pageCount = M._djvu_doc_page_count(doc);
+      cur = 0;
+      els.fname.textContent = name || "";
+      els.hint.style.display = "none";
+      renderPage();
+    }
+
+    function updateNav() {
+      els.prev.disabled = !(doc && cur > 0);
+      els.next.disabled = !(doc && cur < pageCount - 1);
+      els.pageinfo.textContent = doc ? `Page ${cur + 1} / ${pageCount}` : "—";
+    }
+
+    function renderPage() {
+      if (!doc || rendering) return;
+      rendering = true;
+      updateNav();
+      setStatus(`rendering page ${cur + 1}…`);
+      // Yield so the status paints before the (synchronous) decode.
+      requestAnimationFrame(() => {
+        try {
+          drawPage();
+          setStatus("ready");
+        } catch (e) {
+          console.error(e);
+          setStatus("render failed: " + e.message, true);
+        } finally {
+          rendering = false;
+          updateNav();
+        }
+      });
+    }
+
+    function drawPage() {
+      // Pick an integer subsample so the longest side stays <= MAX_DIM.
+      const infoPtr = M._malloc(PAGEINFO_BYTES);
+      let sub = 1;
+      if (M._djvu_doc_page_info(doc, cur, infoPtr) === 0) {
+        const w = ptrI32(infoPtr, 0), h = ptrI32(infoPtr, 4);
+        sub = Math.max(1, Math.ceil(Math.max(w, h) / MAX_DIM));
+      }
+      M._free(infoPtr);
+
+      const img = M._djvu_page_render(doc, cur, sub);
+      if (!img) throw new Error("djvu_page_render returned null");
+      try {
+        const w = ptrI32(img, IMG_WIDTH);
+        const h = ptrI32(img, IMG_HEIGHT);
+        const fmt = ptrI32(img, IMG_FORMAT);
+        const stride = ptrI32(img, IMG_STRIDE);
+        const data = ptrU32(img, IMG_DATA);
+
+        const cv = els.canvas;
+        cv.width = w; cv.height = h;
+        const g2d = cv.getContext("2d");
+        const out = g2d.createImageData(w, h);
+        const dst = out.data;              // RGBA
+        const heap = M.HEAPU8;             // re-fetch: memory may have grown
+
+        let o = 0;
+        if (fmt === FMT_GRAY8) {
+          for (let y = 0; y < h; y++) {
+            let s = data + y * stride;
+            for (let x = 0; x < w; x++) {
+              const v = heap[s++];
+              dst[o++] = v; dst[o++] = v; dst[o++] = v; dst[o++] = 255;
+            }
+          }
+        } else if (fmt === FMT_RGB24) {
+          for (let y = 0; y < h; y++) {
+            let s = data + y * stride;
+            for (let x = 0; x < w; x++) {
+              dst[o++] = heap[s++]; dst[o++] = heap[s++]; dst[o++] = heap[s++];
+              dst[o++] = 255;
+            }
+          }
+        } else {
+          throw new Error("unexpected pixel format " + fmt);
+        }
+        g2d.putImageData(out, 0, 0);
+      } finally {
+        M._djvu_image_destroy(ctx, img);
+      }
+    }
+
+    function go(delta) {
+      if (!doc) return;
+      const n = Math.min(pageCount - 1, Math.max(0, cur + delta));
+      if (n !== cur) { cur = n; els.stage.scrollTop = 0; renderPage(); }
+    }
+
+    function pickFile(file) {
+      if (!file) return;
+      file.arrayBuffer().then((buf) => openBuffer(buf, file.name));
+    }
+
+    // ---- wiring ----
+    els.open.onclick = () => els.file.click();
+    els.file.onchange = (e) => pickFile(e.target.files[0]);
+    els.prev.onclick = () => go(-1);
+    els.next.onclick = () => go(1);
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") { go(1); e.preventDefault(); }
+      else if (e.key === "ArrowLeft" || e.key === "PageUp") { go(-1); e.preventDefault(); }
+      else if (e.key === "Home") { go(-1e9); }
+      else if (e.key === "End") { go(1e9); }
+    });
+
+    // ---- drag & drop over the whole window ----
+    let dragDepth = 0;
+    window.addEventListener("dragenter", (e) => { e.preventDefault(); if (dragDepth++ === 0) els.drop.classList.add("show"); });
+    window.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+    window.addEventListener("dragleave", (e) => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; els.drop.classList.remove("show"); } });
+    window.addEventListener("drop", (e) => {
+      e.preventDefault(); dragDepth = 0; els.drop.classList.remove("show");
+      pickFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+    });
+  })();
+  </script>
+</body>
+</html>
