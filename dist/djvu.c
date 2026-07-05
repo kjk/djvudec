@@ -228,6 +228,23 @@ static inline void djvu_cache_unlock(djvu_ctx *ctx)
         ctx->unlock(ctx->user, ctx);
 }
 
+static inline int djvu_has_lock(djvu_ctx *ctx)
+{
+    return ctx && ctx->lock && ctx->unlock;
+}
+
+static inline void djvu_dict_lock(djvu_ctx *ctx)
+{
+    if (djvu_has_lock(ctx))
+        ctx->lock(ctx->user, ctx);
+}
+
+static inline void djvu_dict_unlock(djvu_ctx *ctx)
+{
+    if (djvu_has_lock(ctx))
+        ctx->unlock(ctx->user, ctx);
+}
+
 void *djvu_alloc(djvu_ctx *ctx, size_t size);
 void  djvu_free(djvu_ctx *ctx, void *ptr);
 void  djvu_errorf(djvu_ctx *ctx, djvu_severity sev, const char *fmt, ...);
@@ -3479,12 +3496,14 @@ typedef struct {
     djvu_ctx *ctx;
     int inw, inh, outw, outh;
     int xshift, yshift, redw, redh;
+    int hnum, hden, vnum, vden;
     int *hcoord, *vcoord;
 } scaler;
 
 static void scaler_set_h(scaler *s, int numer, int denom)
 {
     if (numer == 0 && denom == 0) { numer = s->outw; denom = s->inw; }
+    s->hnum = numer; s->hden = denom;
     s->xshift = 0; s->redw = s->inw;
     while (numer + numer < denom) { s->xshift++; s->redw = (s->redw + 1) >> 1; numer <<= 1; }
     s->hcoord = (int *)djvu_alloc(s->ctx, sizeof(int) * s->outw);
@@ -3493,6 +3512,7 @@ static void scaler_set_h(scaler *s, int numer, int denom)
 static void scaler_set_v(scaler *s, int numer, int denom)
 {
     if (numer == 0 && denom == 0) { numer = s->outh; denom = s->inh; }
+    s->vnum = numer; s->vden = denom;
     s->yshift = 0; s->redh = s->inh;
     while (numer + numer < denom) { s->yshift++; s->redh = (s->redh + 1) >> 1; numer <<= 1; }
     s->vcoord = (int *)djvu_alloc(s->ctx, sizeof(int) * s->outh);
@@ -3543,11 +3563,11 @@ static uint8_t *scaler_dest_row(uint8_t *dst0, int stride, int outh,
     return dst0 + (size_t)(topdown ? (outh - 1 - y) : y) * stride;
 }
 
-static void scaler_expand_row3(const uint8_t *src, int w, uint8_t *dst)
+static void scaler_expand_row3(const uint8_t *src, int w, int outw, uint8_t *dst)
 {
     const uint8_t *last;
     uint8_t *d = dst;
-    int x;
+    int x, ntail = outw - (3 * w - 2);
 
     d[0] = src[0];
     d[1] = src[1];
@@ -3573,12 +3593,12 @@ static void scaler_expand_row3(const uint8_t *src, int w, uint8_t *dst)
     }
 
     last = src + (size_t)(w - 1) * 3;
-    d[0] = last[0];
-    d[1] = last[1];
-    d[2] = last[2];
-    d[3] = last[0];
-    d[4] = last[1];
-    d[5] = last[2];
+    for (x = 0; x < ntail; x++) {
+        d[0] = last[0];
+        d[1] = last[1];
+        d[2] = last[2];
+        d += 3;
+    }
 }
 
 static void scaler_interp_row(const uint8_t *lower, const uint8_t *upper,
@@ -3596,40 +3616,39 @@ static int scaler_scale_red3_into(scaler *s, const djvu_cpix *in,
                                   uint8_t *dst0, int stride, int topdown)
 {
     djvu_ctx *ctx = s->ctx;
-    int w = s->inw, h = s->inh;
+    int w = s->inw, h = s->inh, outw = s->outw;
     size_t row = (size_t)w * 3;
     uint8_t *tmp;
     const uint8_t *last;
-    int y;
+    int y, vtail = s->outh - (3 * h - 2);
 
     tmp = (uint8_t *)djvu_alloc(ctx, row);
     if (!tmp) return -1;
 
-    scaler_expand_row3(in->d, w, scaler_dest_row(dst0, stride, s->outh, topdown, 0));
+    scaler_expand_row3(in->d, w, outw,
+                       scaler_dest_row(dst0, stride, s->outh, topdown, 0));
     for (y = 0; y < h - 1; y++) {
         const uint8_t *lower = in->d + (size_t)y * row;
         const uint8_t *upper = lower + row;
 
-        scaler_expand_row3(lower, w,
+        scaler_expand_row3(lower, w, outw,
                            scaler_dest_row(dst0, stride, s->outh, topdown,
                                            y * 3 + 1));
         scaler_interp_row(lower, upper, w, 6, tmp);
-        scaler_expand_row3(tmp, w,
+        scaler_expand_row3(tmp, w, outw,
                            scaler_dest_row(dst0, stride, s->outh, topdown,
                                            y * 3 + 2));
         scaler_interp_row(lower, upper, w, 11, tmp);
-        scaler_expand_row3(tmp, w,
+        scaler_expand_row3(tmp, w, outw,
                            scaler_dest_row(dst0, stride, s->outh, topdown,
                                            y * 3 + 3));
     }
 
     last = in->d + (size_t)(h - 1) * row;
-    scaler_expand_row3(last, w,
-                       scaler_dest_row(dst0, stride, s->outh, topdown,
-                                       h * 3 - 2));
-    scaler_expand_row3(last, w,
-                       scaler_dest_row(dst0, stride, s->outh, topdown,
-                                       h * 3 - 1));
+    for (y = 0; y < vtail; y++)
+        scaler_expand_row3(last, w, outw,
+                           scaler_dest_row(dst0, stride, s->outh, topdown,
+                                           h * 3 - 2 + y));
     djvu_free(ctx, tmp);
     return 0;
 }
@@ -3649,10 +3668,11 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
     if (!s->hcoord) scaler_set_h(s, 0, 0);
     if (!s->vcoord) scaler_set_v(s, 0, 0);
     if (s->xshift == 0 && s->yshift == 0 &&
+        s->hnum == 3 && s->hden == 1 && s->vnum == 3 && s->vden == 1 &&
         s->inw > 0 && s->inh > 0 &&
         s->redw == s->inw && s->redh == s->inh &&
-        s->outw % 3 == 0 && s->outh % 3 == 0 &&
-        s->outw / 3 == s->inw && s->outh / 3 == s->inh &&
+        s->outw >= 3 * s->inw - 2 && s->outw <= 3 * s->inw &&
+        s->outh >= 3 * s->inh - 2 && s->outh <= 3 * s->inh &&
         in->w == s->inw && in->h == s->inh)
         return scaler_scale_red3_into(s, in, dst0, stride, topdown);
     bufw = s->redw;
@@ -5048,11 +5068,9 @@ static jb2_image *decode_jb2_mask_fresh(djvu_doc *doc, djvu_page_int *pg)
 
     sjbz = djvu_form_find_chunk(doc, pg->form_off, "Sjbz", &sz, NULL);
     if (!sjbz) return NULL;
-    if (djvu_cache_stores_page(doc->ctx))
-        djvu_cache_lock(doc->ctx);
+    djvu_dict_lock(doc->ctx);
     dict = jb2_dict_for_form_unlocked(doc, pg->form_off);
-    if (djvu_cache_stores_page(doc->ctx))
-        djvu_cache_unlock(doc->ctx);
+    djvu_dict_unlock(doc->ctx);
     mask = djvu_jb2_decode(doc->ctx, sjbz, sz, dict);
     return mask;
 }
@@ -5108,14 +5126,12 @@ static void djvu_doc_preload_shared_range(djvu_doc *doc, int lo0, int hi0)
     if (lo0 < 0) lo0 = 0;
     if (hi0 >= doc->npages) hi0 = doc->npages - 1;
     if (lo0 > hi0) return;
-    if (doc->ctx->cache_per_page)
-        djvu_cache_lock(doc->ctx);
+    djvu_dict_lock(doc->ctx);
     for (i = 0; i < doc->n_shared_incl; i++)
         preload_jb2_dict_incl(doc, doc->shared_incl_ids[i]);
     for (i = lo0; i <= hi0; i++)
         preload_jb2_inline_page(doc, &doc->pages[i]);
-    if (doc->ctx->cache_per_page)
-        djvu_cache_unlock(doc->ctx);
+    djvu_dict_unlock(doc->ctx);
 }
 
 void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0)
@@ -5272,9 +5288,9 @@ jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off)
 {
     jb2_image *dict;
     if (!doc) return NULL;
-    djvu_cache_lock(doc->ctx);
+    djvu_dict_lock(doc->ctx);
     dict = jb2_dict_for_form_unlocked(doc, form_off);
-    djvu_cache_unlock(doc->ctx);
+    djvu_dict_unlock(doc->ctx);
     return dict;
 }
 
@@ -5438,7 +5454,9 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
     }
 
     djvu_scaler_init();
-    djvu_doc_preload_shared_range(doc, 0, doc->npages - 1);
+
+    if (!djvu_has_lock(ctx))
+        djvu_doc_preload_shared_range(doc, 0, doc->npages - 1);
     return doc;
 }
 
