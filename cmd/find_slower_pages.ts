@@ -4,8 +4,9 @@
 //   bun cmd/find_slower_pages.ts [-clang] [-full] [-clean] [-cpu N]
 //
 // Runs djvu_test -bench on every .djvu under the test corpus (default
-// testfiles/djvu; -full → testfiles/full; DJVU_SPECS overrides). Writes
-// document, page, and timings to slower.txt in the repo root.
+// testfiles/djvu; -full -> testfiles/full; DJVU_SPECS overrides). Writes
+// document, page, and timings to slower-<os>-<compiler>.txt in the repo root
+// (for example slower-mac-clang.txt or slower-win-msvc.txt).
 import { existsSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, relative } from "path";
@@ -13,7 +14,6 @@ import { getDeps } from "./get_deps";
 import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
-const OUT_PATH = join(ROOT, "slower.txt");
 
 export type BenchPageRow = {
   page: number;
@@ -42,6 +42,20 @@ function corpusDir(): string {
   if (process.env.DJVU_SPECS) return process.env.DJVU_SPECS;
   const name = process.argv.includes("-full") ? "full" : "djvu";
   return join(ROOT, "testfiles", name);
+}
+
+function platformName(): string {
+  if (process.platform === "darwin") return "mac";
+  if (process.platform === "win32") return "win";
+  return process.platform;
+}
+
+function compilerName(useClang: boolean): string {
+  return useClang ? "clang" : "msvc";
+}
+
+function reportPath(useClang: boolean): string {
+  return join(ROOT, `slower-${platformName()}-${compilerName(useClang)}.txt`);
 }
 
 export function parseBenchCompareTable(text: string): BenchPageRow[] {
@@ -95,7 +109,7 @@ async function benchFile(testExe: string, file: string): Promise<string> {
   return out;
 }
 
-function writeSlowerReport(entries: SlowerPage[]): void {
+function writeSlowerReport(entries: SlowerPage[], outPath: string): void {
   const sorted = [...entries].sort((a, b) => b.diff - a.diff);
   const lines: string[] = [
     "# Pages where djvudec render is slower than libdjvu (best of 2 runs per page)",
@@ -115,7 +129,7 @@ function writeSlowerReport(entries: SlowerPage[]): void {
   lines.push(
     `# ${sorted.length} slower page(s) in ${files.size} file(s)`,
   );
-  writeFileSync(OUT_PATH, `${lines.join("\n")}\n`);
+  writeFileSync(outPath, `${lines.join("\n")}\n`);
 }
 
 async function main(): Promise<number> {
@@ -132,6 +146,7 @@ async function main(): Promise<number> {
   await getDeps();
   await buildRef();
   const testExe = await build(useClang);
+  const outPath = reportPath(useClang);
 
   const corpus = corpusDir();
   const files = walkDjvu(corpus).sort();
@@ -177,9 +192,9 @@ async function main(): Promise<number> {
 
   await Promise.all(Array.from({ length: Math.min(ncpu, files.length) }, () => worker()));
 
-  writeSlowerReport(slower);
+  writeSlowerReport(slower, outPath);
   console.log("");
-  console.log(`wrote ${slower.length} slower page(s) to ${OUT_PATH}`);
+  console.log(`wrote ${slower.length} slower page(s) to ${outPath}`);
   if (failed > 0) {
     console.error(`${failed} file(s) failed`);
     return 1;

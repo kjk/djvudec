@@ -1,0 +1,32 @@
+# Pages where djvudec render is slower than libdjvu (best of 2 runs per page)
+# columns: document<TAB>page<TAB>libdjvu_ms<TAB>djvudec_ms<TAB>diff_ms<TAB>pct
+
+testfiles/djvu/djvulibre-book-ru.djvu	26	9.90	22.28	+12.39	+125.2%
+testfiles/djvu/djvu3spec.djvu	62	5.13	14.58	+9.44	+184.0%
+testfiles/djvu/djvu3spec.djvu	63	5.33	14.42	+9.09	+170.7%
+testfiles/djvu/djvu3spec.djvu	61	5.50	14.35	+8.85	+161.0%
+testfiles/djvu/djvu3spec.djvu	47	5.16	11.88	+6.72	+130.1%
+testfiles/djvu/djvu3spec.djvu	64	5.60	10.77	+5.17	+92.4%
+testfiles/djvu/djvulibre-book-ru.djvu	31	10.39	15.35	+4.96	+47.8%
+testfiles/djvu/djvu3spec.djvu	46	5.27	9.13	+3.86	+73.2%
+testfiles/djvu/djvu2spec.djvu	24	4.87	8.48	+3.60	+74.0%
+testfiles/djvu/djvu3spec.djvu	14	4.74	8.29	+3.54	+74.7%
+testfiles/djvu/djvulibre-book-ru.djvu	45	10.71	13.93	+3.22	+30.1%
+testfiles/djvu/2001_efficient_compression.djvu	9	44.05	47.02	+2.97	+6.7%
+testfiles/djvu/djvulibre-book-ru.djvu	46	9.23	11.68	+2.45	+26.5%
+testfiles/djvu/djvu3spec.djvu	9	4.95	7.11	+2.15	+43.5%
+testfiles/djvu/djvulibre-book-ru.djvu	29	9.92	11.92	+2.01	+20.2%
+testfiles/djvu/2001_doc_browsing.djvu	4	5.37	7.18	+1.81	+33.7%
+testfiles/djvu/djvu3spec.djvu	24	4.89	6.46	+1.57	+32.1%
+testfiles/djvu/djvu3spec.djvu	19	5.21	6.64	+1.43	+27.4%
+testfiles/djvu/djvu3spec.djvu	10	4.79	6.17	+1.38	+28.8%
+testfiles/djvu/djvu3spec.djvu	26	4.47	5.68	+1.20	+26.9%
+testfiles/djvu/djvu3spec.djvu	13	5.15	6.32	+1.17	+22.8%
+testfiles/djvu/djvulibre-book-ru.djvu	44	9.64	10.71	+1.06	+11.0%
+testfiles/djvu/djvu3spec.djvu	25	5.07	5.69	+0.62	+12.1%
+testfiles/djvu/djvulibre-book-ru.djvu	42	10.37	10.98	+0.61	+5.9%
+testfiles/djvu/djvu3spec.djvu	17	4.75	5.21	+0.46	+9.7%
+testfiles/djvu/djvu3spec.djvu	23	5.30	5.63	+0.33	+6.2%
+testfiles/djvu/djvu3spec.djvu	28	4.84	4.93	+0.10	+2.0%
+
+# 27 slower page(s) in 5 file(s)
