@@ -596,6 +596,9 @@ void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);
 int  djvu_compute_red(int w, int h, int rw, int rh);
 int  djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
                      int outw, int outh, int red);
+int  djvu_cpix_scale_to_topdown_rgb(djvu_ctx *ctx, const djvu_cpix *in,
+                                    uint8_t *dst, int stride,
+                                    int outw, int outh, int red);
 /* Internal; djvu_doc_open calls this (same as public djvu_init). */
 void djvu_scaler_init(void);
 

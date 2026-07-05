@@ -65,16 +65,15 @@ static void bm_append_line(uint8_t **data, const uint8_t *row, int rowlen)
     int p = 1; /* matches GBitmap::append_line with invert=false */
 
     while (row < rowend) {
-        int count = 0;
+        const uint8_t *start;
+        const void *next;
+        int count;
+
         p = !p;
-        if (p) {
-            if (*row)
-                for (++count, ++row; row < rowend && *row; ++count, ++row)
-                    ;
-        } else if (!*row) {
-            for (++count, ++row; row < rowend && !*row; ++count, ++row)
-                ;
-        }
+        start = row;
+        next = memchr(row, p ? 0 : 1, (size_t)(rowend - row));
+        row = next ? (const uint8_t *)next : rowend;
+        count = (int)(row - start);
         bm_append_run(data, count);
     }
 }

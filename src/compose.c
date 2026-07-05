@@ -198,6 +198,15 @@ static void compose_finalize(uint8_t *dst, int stride, const djvu_cpix *bg,
                              int bgr, const unsigned char *lut)
 {
     int x, y;
+
+    if (!lut && !bgr) {
+        size_t row = (size_t)bg->w * 3;
+        for (y = 0; y < bg->h; y++)
+            memcpy(dst + (size_t)y * stride,
+                   bg->d + (size_t)(bg->h - 1 - y) * row, row);
+        return;
+    }
+
     for (y = 0; y < bg->h; y++) {
         const uint8_t *s = bg->d + (size_t)(bg->h - 1 - y) * bg->w * 3;
         uint8_t *d = dst + (size_t)y * stride;
@@ -209,6 +218,205 @@ static void compose_finalize(uint8_t *dst, int stride, const djvu_cpix *bg,
             d += 3; s += 3;
         }
     }
+}
+
+typedef struct {
+    uint8_t *pal;
+    int palsize;
+    short *colordata;
+    int ncolor;
+} fgbz_palette;
+
+static void fgbz_palette_free(djvu_ctx *ctx, fgbz_palette *fg)
+{
+    if (!fg) return;
+    djvu_free(ctx, fg->pal);
+    djvu_free(ctx, fg->colordata);
+    memset(fg, 0, sizeof(*fg));
+}
+
+static int fgbz_palette_parse(djvu_ctx *ctx, const uint8_t *fgbz,
+                              uint32_t sz, fgbz_palette *fg)
+{
+    size_t p = 0;
+    int version, i;
+
+    memset(fg, 0, sizeof(*fg));
+    if (!fgbz || sz < 3) return -1;
+    version = fgbz[p++];
+    fg->palsize = (fgbz[p] << 8) | fgbz[p + 1];
+    p += 2;
+    if ((size_t)p + (size_t)fg->palsize * 3 > sz) return -1;
+    fg->pal = (uint8_t *)djvu_alloc(ctx, (size_t)fg->palsize * 3);
+    if (!fg->pal) return -1;
+    memcpy(fg->pal, fgbz + p, (size_t)fg->palsize * 3);
+    p += (size_t)fg->palsize * 3;
+
+    if ((version & 0x80) && p + 3 <= sz) {
+        int datasize = (fgbz[p] << 16) | (fgbz[p + 1] << 8) | fgbz[p + 2];
+        size_t dlen = 0;
+        uint8_t *dd;
+
+        p += 3;
+        dd = djvu_bzz_decode_all(ctx, fgbz + p, sz - p, &dlen);
+        if (dd && (size_t)datasize * 2 <= dlen) {
+            fg->colordata = (short *)djvu_alloc(ctx, sizeof(short) * datasize);
+            if (fg->colordata) {
+                for (i = 0; i < datasize; i++)
+                    fg->colordata[i] = (short)((dd[i * 2] << 8) | dd[i * 2 + 1]);
+                fg->ncolor = datasize;
+            }
+        }
+        djvu_free(ctx, dd);
+    }
+    return 0;
+}
+
+static int compose_background_topdown_rgb(djvu_doc *doc, uint32_t form_off,
+                                          int width, int height,
+                                          uint8_t *dst, int stride,
+                                          djvu_render_timings *t)
+{
+    djvu_ctx *ctx = doc->ctx;
+    iw_pixmap *pm;
+    djvu_cpix native;
+    int bw, bh, red, pm_owned = 0, rc = -1;
+    double t0 = 0.0;
+
+    memset(&native, 0, sizeof(native));
+    if (t) t0 = djvu_bench_now_ms();
+    pm = djvu_doc_iw44_by_form_acquire(doc, form_off, "BG44", &pm_owned);
+    if (!pm) goto done;
+    bw = djvu_iw44_width(pm);
+    bh = djvu_iw44_height(pm);
+    red = djvu_compute_red(width, height, bw, bh);
+    if (red < 1) goto done;
+    if (djvu_cpix_init(ctx, &native, bw, bh) != 0) goto done;
+    if (djvu_iw44_render_rgb_raw(pm, native.d) != 0) goto done;
+    if (red == 1 && bw == width && bh == height) {
+        size_t row = (size_t)width * 3;
+        int y;
+        for (y = 0; y < height; y++)
+            memcpy(dst + (size_t)y * stride,
+                   native.d + (size_t)(height - 1 - y) * row, row);
+        rc = 0;
+    } else {
+        rc = djvu_cpix_scale_to_topdown_rgb(ctx, &native, dst, stride,
+                                            width, height, red);
+    }
+done:
+    if (t) t->iw44_ms += djvu_bench_now_ms() - t0;
+    djvu_cpix_free(ctx, &native);
+    djvu_doc_iw44_release(ctx, pm, pm_owned);
+    return rc;
+}
+
+static int compose_read_bm_run(const uint8_t **data)
+{
+    int z = *(*data)++;
+    if (z >= 0xc0)
+        z = ((z & ~0xc0) << 8) | (int)(*(*data)++);
+    return z;
+}
+
+static void compose_fill_rgb_run(uint8_t *d, int n, int r, int g, int b)
+{
+    while (n-- > 0) {
+        d[0] = (uint8_t)r;
+        d[1] = (uint8_t)g;
+        d[2] = (uint8_t)b;
+        d += 3;
+    }
+}
+
+static void compose_stamp_bitmap_topdown_rgb(const djvu_bitmap *src,
+                                             int left, int bottom,
+                                             int outw, int outh,
+                                             uint8_t *dst, int stride,
+                                             int r, int g, int b)
+{
+    if (!src || outw <= 0 || outh <= 0) return;
+    if (src->rle) {
+        const uint8_t *runs = src->rle;
+        const uint8_t *runs_end = src->rle + src->rle_len;
+        int sr = src->height - 1;
+        int sc = 0, p = 0;
+
+        while (runs < runs_end && sr >= 0) {
+            int z = compose_read_bm_run(&runs);
+            int nc;
+
+            if (sc + z > src->width) return;
+            nc = sc + z;
+            if (p) {
+                int py = bottom + sr;
+                if (py >= 0 && py < outh) {
+                    int x0 = left + sc;
+                    int x1 = left + nc;
+                    if (x0 < 0) x0 = 0;
+                    if (x1 > outw) x1 = outw;
+                    if (x0 < x1) {
+                        uint8_t *d = dst + (size_t)(outh - 1 - py) * stride
+                                   + (size_t)x0 * 3;
+                        compose_fill_rgb_run(d, x1 - x0, r, g, b);
+                    }
+                }
+            }
+            sc = nc;
+            p = 1 - p;
+            if (sc >= src->width) {
+                sc = 0;
+                p = 0;
+                sr--;
+            }
+        }
+    } else if (src->data) {
+        int rr;
+        for (rr = 0; rr < src->height; rr++) {
+            int py = bottom + rr;
+            int cc;
+            const uint8_t *srow;
+            if (py < 0 || py >= outh) continue;
+            srow = src->data + djvu_bm_rowoffset(src, rr);
+            for (cc = 0; cc < src->width; cc++) {
+                int px = left + cc;
+                if (px >= 0 && px < outw && srow[cc]) {
+                    uint8_t *d = dst + (size_t)(outh - 1 - py) * stride
+                               + (size_t)px * 3;
+                    d[0] = (uint8_t)r;
+                    d[1] = (uint8_t)g;
+                    d[2] = (uint8_t)b;
+                }
+            }
+        }
+    }
+}
+
+static int compose_fgbz_stencil_topdown_rgb(jb2_image *mask,
+                                            const fgbz_palette *fg,
+                                            int width, int height,
+                                            uint8_t *dst, int stride)
+{
+    int i;
+
+    for (i = 0; mask && i < mask->nblits; i++) {
+        jb2_blit *b = &mask->blits[i];
+        jb2_shape *s = djvu_jb2_get_shape(mask, b->shapeno);
+        int r = 0, g = 0, bl = 0;
+
+        if (!s || !djvu_bm_has_pixels(&s->bm)) continue;
+        if (fg->pal && fg->colordata && i < fg->ncolor) {
+            int ci = fg->colordata[i];
+            if (ci >= 0 && ci < fg->palsize) {
+                bl = fg->pal[ci * 3 + 0];
+                g  = fg->pal[ci * 3 + 1];
+                r  = fg->pal[ci * 3 + 2];
+            }
+        }
+        compose_stamp_bitmap_topdown_rgb(&s->bm, b->left, b->bottom,
+                                         width, height, dst, stride, r, g, bl);
+    }
+    return 0;
 }
 
 /* Composite a page into *bg (bottom-up RGB; caller frees via djvu_cpix_free).
@@ -313,6 +521,43 @@ static int compose_gamma_lut(djvu_doc *doc, uint32_t form_off, unsigned char *lu
     return build_gamma_lut(2.2 / page_gamma(doc, form_off), lut);
 }
 
+static int compose_page_fgbz_direct_rgb(djvu_doc *doc, int page_no,
+                                        jb2_image *mask,
+                                        int width, int height,
+                                        uint8_t *dst, int stride,
+                                        djvu_render_timings *t)
+{
+    djvu_ctx *ctx = doc->ctx;
+    uint32_t form_off = doc->pages[page_no].form_off;
+    uint32_t sz;
+    const uint8_t *fgbz;
+    unsigned char lut[256];
+    fgbz_palette fg;
+    double t0 = 0.0;
+    int rc = -1;
+
+    memset(&fg, 0, sizeof(fg));
+    if (!mask || ctx->bgr) return -1;
+    if (compose_gamma_lut(doc, form_off, lut)) return -1;
+    if (djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL) != NULL)
+        return -1;
+    fgbz = djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL);
+    if (fgbz_palette_parse(ctx, fgbz, sz, &fg) != 0)
+        return -1;
+
+    if (compose_background_topdown_rgb(doc, form_off, width, height,
+                                       dst, stride, t) != 0)
+        goto done;
+
+    if (t) t0 = djvu_bench_now_ms();
+    rc = compose_fgbz_stencil_topdown_rgb(mask, &fg, width, height, dst, stride);
+    if (t) t->composite_ms += djvu_bench_now_ms() - t0;
+
+done:
+    fgbz_palette_free(ctx, &fg);
+    return rc;
+}
+
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
                              int width, int height, djvu_render_timings *t)
 {
@@ -322,6 +567,30 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
     unsigned char lut[256]; const unsigned char *lp = NULL;
 
     memset(&bg, 0, sizeof(bg));
+    if (mask && !ctx->bgr &&
+        djvu_form_find_chunk(doc, form_off, "FGbz", NULL, NULL) != NULL &&
+        djvu_form_find_chunk(doc, form_off, "FG44", NULL, NULL) == NULL &&
+        !compose_gamma_lut(doc, form_off, lut)) {
+        out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
+        if (out) {
+            out->width = width;
+            out->height = height;
+            out->format = DJVU_FORMAT_RGB24;
+            out->stride = width * 3;
+            out->data = (uint8_t *)djvu_alloc(ctx, (size_t)width * height * 3);
+            if (!out->data) {
+                djvu_free(ctx, out);
+                out = NULL;
+            } else if (compose_page_fgbz_direct_rgb(doc, page_no, mask, width, height,
+                                                    out->data, out->stride, t) == 0) {
+                return out;
+            } else {
+                djvu_image_destroy(ctx, out);
+                out = NULL;
+            }
+        }
+    }
+
     if (compose_to_bg(doc, page_no, mask, width, height, t, &bg) != 0)
         return NULL;
     if (compose_gamma_lut(doc, form_off, lut)) lp = lut;
@@ -348,6 +617,9 @@ int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
     unsigned char lut[256]; const unsigned char *lp = NULL;
 
     memset(&bg, 0, sizeof(bg));
+    if (compose_page_fgbz_direct_rgb(doc, page_no, mask, width, height,
+                                     dst, stride, NULL) == 0)
+        return 0;
     if (compose_to_bg(doc, page_no, mask, width, height, NULL, &bg) != 0)
         return -1;
     if (compose_gamma_lut(doc, form_off, lut)) lp = lut;

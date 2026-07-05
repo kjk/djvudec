@@ -112,18 +112,20 @@ static int cpix_init_uninit(djvu_ctx *ctx, djvu_cpix *p, int w, int h)
     return p->d ? 0 : -1;
 }
 
-static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
+static int scaler_scale_into(scaler *s, const djvu_cpix *in,
+                             uint8_t *dst0, int stride, int topdown)
 {
     djvu_ctx *ctx = s->ctx;
     int bufw, y;
     uint8_t *lbuf;
     uint8_t *p1 = NULL, *p2 = NULL; int l1 = -1, l2 = -1;
     int red_xmin = 0, red_xmax = s->redw;
+    uint16_t *hinfo16 = NULL;
+    uint32_t *hinfo32 = NULL;
 
     prepare_interp();
     if (!s->hcoord) scaler_set_h(s, 0, 0);
     if (!s->vcoord) scaler_set_v(s, 0, 0);
-    if (cpix_init_uninit(ctx, out, s->outw, s->outh) != 0) return -1;
     bufw = s->redw;
     lbuf = (uint8_t *)djvu_alloc(ctx, (size_t)(bufw + 2) * 3);
     if (!lbuf) return -1;
@@ -132,14 +134,43 @@ static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
         p2 = (uint8_t *)djvu_alloc(ctx, (size_t)bufw * 3);
         if (!p1 || !p2) { djvu_free(ctx, lbuf); djvu_free(ctx, p1); djvu_free(ctx, p2); return -1; }
     }
+    if (red_xmin == 0) {
+        int x;
+        int use16 = (s->redw * 3) <= 0x0fff;
+        if (use16)
+            hinfo16 = (uint16_t *)djvu_alloc(ctx, sizeof(uint16_t) * s->outw);
+        else
+            hinfo32 = (uint32_t *)djvu_alloc(ctx, sizeof(uint32_t) * s->outw);
+        if ((use16 && !hinfo16) || (!use16 && !hinfo32)) {
+            djvu_free(ctx, hinfo16);
+            djvu_free(ctx, hinfo32);
+            djvu_free(ctx, lbuf);
+            djvu_free(ctx, p1);
+            djvu_free(ctx, p2);
+            return -1;
+        }
+        if (use16) {
+            for (x = 0; x < s->outw; x++) {
+                int n = s->hcoord[x];
+                int off = (1 + (n >> FRACBITS)) * 3;
+                hinfo16[x] = (uint16_t)((off << FRACBITS) | (n & FRACMASK));
+            }
+        } else {
+            for (x = 0; x < s->outw; x++) {
+                int n = s->hcoord[x];
+                int off = (1 + (n >> FRACBITS)) * 3;
+                hinfo32[x] = (uint32_t)((off << FRACBITS) | (n & FRACMASK));
+            }
+        }
+    }
 
     for (y = 0; y < s->outh; y++) {
         int fy = s->vcoord[y];
         int fy1 = fy >> FRACBITS, fy2 = fy1 + 1;
         const uint8_t *lower, *upper;
-        const short *deltas;
         uint8_t *dest;
         int x;
+        int vf;
 
         if (s->xshift > 0 || s->yshift > 0) {
             int want1 = fy1 < 0 ? 0 : (fy1 >= s->redh ? s->redh - 1 : fy1);
@@ -156,41 +187,66 @@ static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
             lower = in->d + (size_t)fy1 * in->w * 3;
             upper = in->d + (size_t)fy2 * in->w * 3;
         }
-        deltas = &s_interp[fy & FRACMASK][256];
+        vf = fy & FRACMASK;
         for (x = 0; x < bufw; x++) {
             int lr = lower[x*3+0], lg = lower[x*3+1], lb = lower[x*3+2];
-            lbuf[(x+1)*3+0] = (uint8_t)(lr + deltas[upper[x*3+0] - lr]);
-            lbuf[(x+1)*3+1] = (uint8_t)(lg + deltas[upper[x*3+1] - lg]);
-            lbuf[(x+1)*3+2] = (uint8_t)(lb + deltas[upper[x*3+2] - lb]);
+            lbuf[(x+1)*3+0] = (uint8_t)(lr + (((upper[x*3+0] - lr) * vf + FRACSIZE2) >> FRACBITS));
+            lbuf[(x+1)*3+1] = (uint8_t)(lg + (((upper[x*3+1] - lg) * vf + FRACSIZE2) >> FRACBITS));
+            lbuf[(x+1)*3+2] = (uint8_t)(lb + (((upper[x*3+2] - lb) * vf + FRACSIZE2) >> FRACBITS));
         }
         lbuf[0]=lbuf[3]; lbuf[1]=lbuf[4]; lbuf[2]=lbuf[5];
         lbuf[(bufw+1)*3+0]=lbuf[bufw*3+0]; lbuf[(bufw+1)*3+1]=lbuf[bufw*3+1]; lbuf[(bufw+1)*3+2]=lbuf[bufw*3+2];
-        dest = out->d + (size_t)y * s->outw * 3;
-        if (red_xmin == 0) {
+        dest = dst0 + (size_t)(topdown ? (s->outh - 1 - y) : y) * stride;
+        if (hinfo16) {
+            uint8_t *dp = dest;
             for (x = 0; x < s->outw; x++) {
-                int n = s->hcoord[x];
-                const uint8_t *lo = lbuf + (1 + (n >> FRACBITS)) * 3;
-                const short *dh = &s_interp[n & FRACMASK][256];
+                int n = hinfo16[x];
+                const uint8_t *lo = lbuf + (n >> FRACBITS);
+                int hf = n & FRACMASK;
                 int lr = lo[0], lg = lo[1], lb = lo[2];
                 int dr = lo[3] - lr, dg = lo[4] - lg, db = lo[5] - lb;
-                dest[x*3+0] = (uint8_t)(lr + dh[dr]);
-                dest[x*3+1] = (uint8_t)(lg + dh[dg]);
-                dest[x*3+2] = (uint8_t)(lb + dh[db]);
+                dp[0] = (uint8_t)(lr + ((dr * hf + FRACSIZE2) >> FRACBITS));
+                dp[1] = (uint8_t)(lg + ((dg * hf + FRACSIZE2) >> FRACBITS));
+                dp[2] = (uint8_t)(lb + ((db * hf + FRACSIZE2) >> FRACBITS));
+                dp += 3;
+            }
+        } else if (hinfo32) {
+            uint8_t *dp = dest;
+            for (x = 0; x < s->outw; x++) {
+                int n = (int)hinfo32[x];
+                const uint8_t *lo = lbuf + (n >> FRACBITS);
+                int hf = n & FRACMASK;
+                int lr = lo[0], lg = lo[1], lb = lo[2];
+                int dr = lo[3] - lr, dg = lo[4] - lg, db = lo[5] - lb;
+                dp[0] = (uint8_t)(lr + ((dr * hf + FRACSIZE2) >> FRACBITS));
+                dp[1] = (uint8_t)(lg + ((dg * hf + FRACSIZE2) >> FRACBITS));
+                dp[2] = (uint8_t)(lb + ((db * hf + FRACSIZE2) >> FRACBITS));
+                dp += 3;
             }
         } else {
+            uint8_t *dp = dest;
             for (x = 0; x < s->outw; x++) {
                 int n = s->hcoord[x];
                 const uint8_t *lo = lbuf + (1 + (n >> FRACBITS) - red_xmin) * 3;
-                const short *dh = &s_interp[n & FRACMASK][256];
+                int hf = n & FRACMASK;
                 int lr = lo[0], lg = lo[1], lb = lo[2];
-                dest[x*3+0] = (uint8_t)(lr + dh[lo[3] - lr]);
-                dest[x*3+1] = (uint8_t)(lg + dh[lo[4] - lg]);
-                dest[x*3+2] = (uint8_t)(lb + dh[lo[5] - lb]);
+                dp[0] = (uint8_t)(lr + (((lo[3] - lr) * hf + FRACSIZE2) >> FRACBITS));
+                dp[1] = (uint8_t)(lg + (((lo[4] - lg) * hf + FRACSIZE2) >> FRACBITS));
+                dp[2] = (uint8_t)(lb + (((lo[5] - lb) * hf + FRACSIZE2) >> FRACBITS));
+                dp += 3;
             }
         }
     }
+    djvu_free(ctx, hinfo16);
+    djvu_free(ctx, hinfo32);
     djvu_free(ctx, lbuf); djvu_free(ctx, p1); djvu_free(ctx, p2);
     return 0;
+}
+
+static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
+{
+    if (cpix_init_uninit(s->ctx, out, s->outw, s->outh) != 0) return -1;
+    return scaler_scale_into(s, in, out->d, s->outw * 3, 0);
 }
 
 static void scaler_free(scaler *s)
@@ -236,6 +292,27 @@ int djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
     scaler_set_h(&s, red, 1);
     scaler_set_v(&s, red, 1);
     if (scaler_scale(&s, in, out) != 0) { scaler_free(&s); return -1; }
+    scaler_free(&s);
+    return 0;
+}
+
+int djvu_cpix_scale_to_topdown_rgb(djvu_ctx *ctx, const djvu_cpix *in,
+                                   uint8_t *dst, int stride,
+                                   int outw, int outh, int red)
+{
+    scaler s;
+    memset(&s, 0, sizeof(s));
+    s.ctx = ctx;
+    s.inw = in->w;
+    s.inh = in->h;
+    s.outw = outw;
+    s.outh = outh;
+    scaler_set_h(&s, red, 1);
+    scaler_set_v(&s, red, 1);
+    if (scaler_scale_into(&s, in, dst, stride, 1) != 0) {
+        scaler_free(&s);
+        return -1;
+    }
     scaler_free(&s);
     return 0;
 }

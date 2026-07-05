@@ -327,13 +327,13 @@ static int bench_render_page(djvu_doc *doc, int page0, int warm,
 }
 
 /* Two timed renders per page (djvudec only; for bench_before/after). */
-static int run_bench_render(djvu_doc *doc, int warm, int layers,
+static int run_bench_render(djvu_doc *doc, int warm, int reps, int layers,
                             int page0, int single_page)
 {
     djvu_ctx *ctx = doc->ctx;
     int npages = djvu_doc_page_count(doc);
     int lo, hi, i, r;
-    const int reps = 2;
+    if (reps < 1) reps = 2;
 
     if (single_page) {
         if (page0 < 0 || page0 >= npages) {
@@ -348,23 +348,41 @@ static int run_bench_render(djvu_doc *doc, int warm, int layers,
     }
 
     for (i = lo; i <= hi; i++) {
-        double t[2];
-        djvu_render_timings lt[2];
+        double *t = (double *)calloc((size_t)reps, sizeof(*t));
+        djvu_render_timings *lt = layers
+            ? (djvu_render_timings *)calloc((size_t)reps, sizeof(*lt))
+            : NULL;
+        if (!t || (layers && !lt)) {
+            free(t);
+            free(lt);
+            return 1;
+        }
 
         for (r = 0; r < reps; r++) {
             if (bench_render_page(doc, i, warm, &t[r], layers ? &lt[r] : NULL) != 0)
+            {
+                free(t);
+                free(lt);
                 return 1;
+            }
         }
-        printf("p%d %.2f %.2f\n", i + 1, t[0], t[1]);
+        printf("p%d", i + 1);
+        for (r = 0; r < reps; r++)
+            printf(" %.2f", t[r]);
+        printf("\n");
         if (layers) {
-            printf("layer p%d jb2 %.2f %.2f iw44 %.2f %.2f "
-                   "composite %.2f %.2f rotate %.2f %.2f\n",
-                   i + 1,
-                   lt[0].jb2_ms, lt[1].jb2_ms,
-                   lt[0].iw44_ms, lt[1].iw44_ms,
-                   lt[0].composite_ms, lt[1].composite_ms,
-                   lt[0].rotate_ms, lt[1].rotate_ms);
+            printf("layer p%d jb2", i + 1);
+            for (r = 0; r < reps; r++) printf(" %.2f", lt[r].jb2_ms);
+            printf(" iw44");
+            for (r = 0; r < reps; r++) printf(" %.2f", lt[r].iw44_ms);
+            printf(" composite");
+            for (r = 0; r < reps; r++) printf(" %.2f", lt[r].composite_ms);
+            printf(" rotate");
+            for (r = 0; r < reps; r++) printf(" %.2f", lt[r].rotate_ms);
+            printf("\n");
         }
+        free(t);
+        free(lt);
     }
     (void)ctx;
     return 0;
@@ -385,6 +403,7 @@ typedef struct {
     int do_bench_render;
     int do_layers;
     int bench_warm;
+    int bench_reps;
     int page_explicit;
     int do_bzz;
     int do_iw;
@@ -422,6 +441,7 @@ static void usage(void)
         "  -bench-render      time 2 renders/page (pN t1 t2 ms; djvudec only)\n"
         "  -page N, -p N      with -bench-render: single page only (default: all)\n"
         "  -warm N            discard first N renders/page before timing (default 0)\n"
+        "  -reps N            timed renders/page for -bench-render (default 2)\n"
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
         "\n"
         "Codec layers (no full composite):\n"
@@ -444,6 +464,7 @@ static int parse_args(int argc, char **argv, opts_t *o)
     int i;
     memset(o, 0, sizeof(*o));
     o->page = 1;
+    o->bench_reps = 2;
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-help") || !strcmp(argv[i], "--help") ||
@@ -463,6 +484,8 @@ static int parse_args(int argc, char **argv, opts_t *o)
         else if (!strcmp(argv[i], "-layers")) o->do_layers = 1;
         else if (!strcmp(argv[i], "-warm") && i + 1 < argc)
             o->bench_warm = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-reps") && i + 1 < argc)
+            o->bench_reps = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-bzzdec")) o->do_bzz = 1;
         else if (!strcmp(argv[i], "-all")) o->do_all = 1;
         else if (!strcmp(argv[i], "-bg")) o->do_iw = 8;
@@ -640,7 +663,7 @@ int main(int argc, char **argv)
     }
 
     if (o.do_bench_render) {
-        rc = run_bench_render(doc, o.bench_warm, o.do_layers,
+        rc = run_bench_render(doc, o.bench_warm, o.bench_reps, o.do_layers,
                               o.page - 1, o.page_explicit);
         goto done;
     }

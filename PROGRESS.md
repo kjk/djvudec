@@ -139,6 +139,12 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- render-speed pass for palette compound pages: added `cmd/profile_render.ts`
+  for macOS `sample`/Xcode Time Profiler runs, a direct top-down RGB compositor
+  for identity-gamma `FGbz` pages, a caller-buffer scaler path, cached scaler
+  horizontal coordinates, and faster GBitmap RLE encoding via `memchr`. Target
+  page `djvulibre-book-ru.djvu` p39 went from slower than libdjvu to slightly
+  faster in `bun cmd/bench.ts`; clang corpus verification stayed byte-exact.
 - richer public API (modeled on SumatraPDF's ddjvuapi usage): structured text
   with bounding boxes (zone tree, src/text.c), document outline/bookmarks
   (NAVM, src/outline.c), page hyperlinks/annotations (ANTa/ANTz maparea,
