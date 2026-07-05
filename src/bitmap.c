@@ -398,6 +398,66 @@ void djvu_bm_visit_ink(const djvu_bitmap *src, int left, int bottom,
         bm_visit_ink_rle(src, left, bottom, fn, user);
 }
 
+static void bm_visit_ink_runs_bytes(const djvu_bitmap *src, int left, int bottom,
+                                    void (*fn)(void *, int, int, int), void *user)
+{
+    int rr, sw = src->width, sh = src->height;
+
+    for (rr = 0; rr < sh; rr++) {
+        const uint8_t *row = src->data + djvu_bm_rowoffset(src, rr);
+        const uint8_t *end = row + sw;
+        const uint8_t *p = row;
+        int py = bottom + rr;
+
+        while (p < end) {
+            const uint8_t *start;
+            const void *next = memchr(p, 1, (size_t)(end - p));
+            if (!next) break;
+            start = (const uint8_t *)next;
+            next = memchr(start, 0, (size_t)(end - start));
+            p = next ? (const uint8_t *)next : end;
+            fn(user, left + (int)(start - row), left + (int)(p - row), py);
+        }
+    }
+}
+
+static void bm_visit_ink_runs_rle(const djvu_bitmap *src, int left, int bottom,
+                                  void (*fn)(void *, int, int, int), void *user)
+{
+    const uint8_t *runs = src->rle;
+    const uint8_t *runs_end = src->rle + src->rle_len;
+    int sr = src->height - 1;
+    int sc = 0, p = 0;
+
+    while (runs < runs_end && sr >= 0) {
+        int z = bm_read_run(&runs);
+        int nc;
+
+        if (sc + z > src->width) return;
+        nc = sc + z;
+        if (p && nc > sc)
+            fn(user, left + sc, left + nc, bottom + sr);
+        sc = nc;
+        p = 1 - p;
+        if (sc >= src->width) {
+            sc = 0;
+            p = 0;
+            sr--;
+        }
+    }
+}
+
+void djvu_bm_visit_ink_runs(const djvu_bitmap *src, int left, int bottom,
+                            void (*fn)(void *user, int x0, int x1, int py),
+                            void *user)
+{
+    if (!src || !fn) return;
+    if (src->data)
+        bm_visit_ink_runs_bytes(src, left, bottom, fn, user);
+    else if (src->rle)
+        bm_visit_ink_runs_rle(src, left, bottom, fn, user);
+}
+
 static void bm_bbox_rle(const djvu_bitmap *bm, int *xmin, int *ymin, int *xmax, int *ymax)
 {
     const uint8_t *runs = bm->rle;

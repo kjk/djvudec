@@ -139,6 +139,14 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- render-speed pass for sparse JB2 direct bitmaps: profiled `djvu3spec.djvu`
+  p62 with Xcode Time Profiler (`xctrace`) plus `sample`; the hot path was
+  direct JB2 bitmap decode of large mostly-white 300x300 page-local tiles. Added
+  a ZP context-0 white-run fast path, row-run bitonal stamping, and selective
+  page-local shape compression (keep single-use shapes as bytes). Final
+  `bun cmd/bench.ts testfiles/djvu/djvu3spec.djvu`: p62 5.58 ms libdjvu vs
+  4.00 ms ours, with p61-p64 all faster than libdjvu; clang corpus verification
+  and `-verify-into` stayed byte-exact.
 - render-speed pass for palette compound pages: added `cmd/profile_render.ts`
   for macOS `sample`/Xcode Time Profiler runs, a direct top-down RGB compositor
   for identity-gamma `FGbz` pages, a caller-buffer scaler path, cached scaler

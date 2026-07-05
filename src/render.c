@@ -104,15 +104,19 @@ typedef struct {
     int w, h;
 } bitonal_stamp_ctx;
 
-/* Stamp one ink pixel into top-down gray8 (py is bottom-up page Y). */
-static void bitonal_stamp_ink(void *user, int px, int py)
+/* Stamp one bottom-up ink run into top-down gray8. */
+static void bitonal_stamp_run(void *user, int x0, int x1, int py)
 {
     bitonal_stamp_ctx *c = (bitonal_stamp_ctx *)user;
     int ty;
 
-    if (px < 0 || px >= c->w || py < 0 || py >= c->h) return;
+    if (py < 0 || py >= c->h) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 > c->w) x1 = c->w;
+    if (x0 >= x1) return;
     ty = c->h - 1 - py;
-    c->dst[(size_t)ty * (size_t)c->w + (size_t)px] = 0;
+    memset(c->dst + (size_t)ty * (size_t)c->w + (size_t)x0, 0,
+           (size_t)(x1 - x0));
 }
 
 typedef struct {
@@ -162,8 +166,8 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
             jb2_blit *b = &img->blits[i];
             jb2_shape *s = djvu_jb2_get_shape(img, b->shapeno);
             if (s && djvu_bm_has_pixels(&s->bm))
-                djvu_bm_visit_ink(&s->bm, b->left, b->bottom,
-                                  bitonal_stamp_ink, &stamp);
+                djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
+                                        bitonal_stamp_run, &stamp);
         }
         return out;
     }

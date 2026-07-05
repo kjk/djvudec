@@ -16,6 +16,24 @@
 #include <time.h>
 #endif
 
+#ifndef DJVU_RESTRICT
+#if defined(_MSC_VER)
+#define DJVU_RESTRICT __restrict
+#else
+#define DJVU_RESTRICT restrict
+#endif
+#endif
+
+#ifndef DJVU_LIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define DJVU_LIKELY(x) __builtin_expect(!!(x), 1)
+#define DJVU_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define DJVU_LIKELY(x) (x)
+#define DJVU_UNLIKELY(x) (x)
+#endif
+#endif
+
 /* ===================================================================== */
 /* core: context, document, chunk parsing, byte readers                  */
 /* ===================================================================== */
@@ -504,6 +522,10 @@ void djvu_bm_ensure_bytes(djvu_ctx *ctx, djvu_bitmap *bm);
 /* Call fn(user, px, py) for each ink pixel at page offset (left, bottom). */
 void djvu_bm_visit_ink(const djvu_bitmap *src, int left, int bottom,
                        void (*fn)(void *user, int px, int py), void *user);
+/* Call fn(user, x0, x1, py) for each contiguous ink run [x0,x1). */
+void djvu_bm_visit_ink_runs(const djvu_bitmap *src, int left, int bottom,
+                            void (*fn)(void *user, int x0, int x1, int py),
+                            void *user);
 
 /* ===================================================================== */
 /* bzz.c -- BZZ (Burrows-Wheeler + ZP) decompression.                     */
