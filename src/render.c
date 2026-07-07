@@ -126,18 +126,20 @@ typedef struct {
     int sub;        /* subsample factor */
 } bitonal_acc_ctx;
 
-/* Accumulate one ink pixel into its subsampled output cell. */
+/* Accumulate one ink pixel into its subsampled output cell. Cells group
+   bottom-up rows (py/sub, matching DjVuLibre, whose reduced masks put the
+   partial cell at the top when height % sub != 0); the cell row is then
+   flipped for the top-down output. */
 static void bitonal_accum_ink(void *user, int px, int py)
 {
     bitonal_acc_ctx *c = (bitonal_acc_ctx *)user;
-    int ty, cx, cy;
+    int cx, cy;
     size_t cell;
 
     if (px < 0 || py < 0 || py >= c->h) return;
-    ty = c->h - 1 - py;
     cx = px / c->sub;
-    cy = ty / c->sub;
-    if (cx >= c->sw || cy >= c->sh) return;
+    cy = c->sh - 1 - py / c->sub;
+    if (cx >= c->sw || cy < 0) return;
     cell = (size_t)cy * c->sw + cx;
     if (c->acc[cell] < 255) c->acc[cell]++;
 }
@@ -257,11 +259,13 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
         if (!mask) goto done;
     }
 
-    /* Full-res color composite when BG44 is present (compose_background requires it). */
-    if (!out && info_ok && subsample == 1 && !ctx->no_compose &&
+    /* Color composite when BG44 is present (compose_background requires it),
+       at any subsample: subsample>1 composes at the reduced size directly
+       (anti-aliased mask stencil) instead of rendering full-res. */
+    if (!out && info_ok && !ctx->no_compose &&
         (type == DJVU_PAGE_COMPOUND || type == DJVU_PAGE_PHOTO) &&
         djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL) {
-        out = djvu_compose_page(doc, page_no, mask, pi.width, pi.height, t);
+        out = djvu_compose_page(doc, page_no, mask, pi.width, pi.height, subsample, t);
         if (out) goto done;
     }
 
@@ -292,7 +296,7 @@ djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
 /* Decide a render's output geometry/format without decoding pixels, mirroring
    the branch selection in djvu_page_render_timed. Returns 0 and fills outputs
    on success; -1 if the page would not render. *color marks the RGB24 composite
-   path; *rotation is the INFO rotation (applied only at subsample==1). */
+   path (any subsample); *rotation is the INFO rotation. */
 static int render_plan(djvu_doc *doc, int page_no, int subsample,
                        int *pw, int *ph, djvu_format *pfmt, int *pcolor,
                        int *protation)
@@ -313,17 +317,19 @@ static int render_plan(djvu_doc *doc, int page_no, int subsample,
     has_bg = djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL;
     has_mask = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
 
-    color = subsample == 1 && !ctx->no_compose &&
+    color = !ctx->no_compose &&
             (type == DJVU_PAGE_COMPOUND || type == DJVU_PAGE_PHOTO) && has_bg;
 
     if (color) {
-        w = pi.width; h = pi.height; fmt = DJVU_FORMAT_RGB24;
+        w = (pi.width + subsample - 1) / subsample;
+        h = (pi.height + subsample - 1) / subsample;
+        fmt = DJVU_FORMAT_RGB24;
     } else if (type == DJVU_PAGE_UNKNOWN || has_mask) {
         w = (pi.width + subsample - 1) / subsample;
         h = (pi.height + subsample - 1) / subsample;
         fmt = DJVU_FORMAT_GRAY8;
     } else {
-        return -1; /* e.g. a photo page at subsample>1 renders nothing */
+        return -1; /* e.g. a photo page with no_compose renders nothing */
     }
 
     k = rotation_quarter_turns(pi.rotation); /* applied at every subsample */
@@ -377,19 +383,23 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
     k = rotation_quarter_turns(rotation); /* applied at every subsample */
 
     /* Zero-copy color path: compose straight into dst when no rotation is
-       needed (w,h are then the unrotated page dims). */
+       needed (works at any subsample; compose takes the full page dims). */
     if (color && k == 0) {
         uint32_t form_off = doc->pages[page_no].form_off;
         uint32_t sz;
         jb2_image *mask = NULL;
         int mask_owned = 0;
+        djvu_page_info pi;
 
+        if (djvu_doc_page_info(doc, page_no, &pi) != 0)
+            return -1;
         if (djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL)) {
             mask = djvu_doc_jb2_mask_acquire(doc, page_no, &mask_owned);
             if (!mask)
                 return -1;
         }
-        rc = djvu_compose_page_into(doc, page_no, mask, w, h, dst, stride);
+        rc = djvu_compose_page_into(doc, page_no, mask, pi.width, pi.height,
+                                    subsample, dst, stride);
         djvu_doc_jb2_mask_release(doc, mask, mask_owned);
         return rc;
     }

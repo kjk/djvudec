@@ -10,7 +10,7 @@
 // exe is relinked only when an object or libdjvu.lib is newer than the exe.
 // build() returns the exe path. Verification lives in tests.ts.
 import { $ } from "bun";
-import { existsSync, mkdirSync, rmSync, statSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "fs";
 import { DIST_C, DIST_H, ensureDist } from "./build_dist";
 import { DJVULIBRE_DIR, getDeps } from "./get_deps";
 
@@ -569,8 +569,27 @@ async function buildAsanWindows(): Promise<string> {
     built = true;
     await runCmd(`clang++ ${ASAN} ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${ASAN_EXE}`);
   }
+  await copyAsanRuntimeDll();
   console.log(built ? `built ${binName("djvu_test_clang_asan")}` : `${binName("djvu_test_clang_asan")} up to date`);
   return ASAN_EXE;
+}
+
+// The exe links the DYNAMIC asan runtime (clang_rt.asan_dynamic-x86_64.dll),
+// which lives in clang's resource dir (lib/clang/<ver>/lib/windows), not on
+// PATH; without a copy next to the exe the loader fails (bash exit 127 /
+// STATUS_DLL_NOT_FOUND) before main.
+async function copyAsanRuntimeDll(): Promise<void> {
+  const dllName = "clang_rt.asan_dynamic-x86_64.dll";
+  const dst = `${ASAN_DIR}/${dllName}`;
+  if (existsSync(dst)) return;
+  const proc = Bun.spawnSync(["clang", "-print-resource-dir"]);
+  const resDir = proc.stdout.toString().trim();
+  const src = `${resDir}/lib/windows/${dllName}`;
+  if (!existsSync(src)) {
+    console.warn(`warning: ${src} not found; ${dllName} must be on PATH`);
+    return;
+  }
+  copyFileSync(src, dst);
 }
 
 async function buildAsanMac(): Promise<string> {

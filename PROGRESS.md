@@ -139,6 +139,37 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- subsampled color composite: `djvu_page_render(_into)` now composes
+  compound/photo pages at the requested subsample instead of only at full
+  resolution (previously subsample>1 fell back to the gray mask on compound
+  pages and rendered nothing on photo pages). The background/FG44 layers are
+  scaled by the rational ratio red/subsample via the new
+  `djvu_cpix_scale_ratio` (for a typical BG44 at red=3 and screen-ish
+  subsample 3 the scale is a near-1:1 copy instead of a 3x upsample), and the
+  JB2 mask is stenciled anti-aliased by per-cell ink coverage
+  (`compose_stencil_sub`, the color counterpart of `render_bitonal`'s coverage
+  LUT; palette blits blend their FGbz color, FG44 pages sample the fg at each
+  cell center, edge cells use the true in-page cell area). The subsample==1
+  path is untouched (byte-exact vs the oracle); `djvu_compose_page(_into)` and
+  `djvu_compose_background` take an explicit subsample. Also fixed a latent
+  `render_bitonal` mismatch vs ddjvu: coverage cells grouped top-down rows
+  while DjVuLibre groups bottom-up (partial cell at the top), which shifted
+  reduced bitonal renders by up to sub-1 rows whenever height % sub != 0
+  (djvulibre-book-ru at sub 3: mean diff 4.7-9.0/255 -> 0.007-0.016/255).
+  Verification: corpus 399/399 MATCH (sub==1 unchanged); `-verify-into` now
+  checks subsamples 1-3 per page (render == render_into == render_info on all
+  color/bitonal corpus files); new `bun cmd/verify_subsample.ts` compares
+  reduced renders against `ddjvu -subsample=N -aspect=no` statistically
+  (24 page renders across 4 color files: mean abs diff <= 0.05/255, most
+  <= 0.02; NB the ddjvu CLI default shrinks one dim post-ceil for aspect,
+  hence -aspect=no). Perf (djvudec_dump -bench-render -sub, uncached, so JB2 +
+  IW44 decode dominate): 1998_compression p13 ~94 -> ~58 ms at sub 3
+  (iw44+scale 40 -> 26 ms); Mcguffey p31 ~75 -> ~47 ms. The bigger win is on
+  the caller side: SumatraPDF's engine had to force compound pages to
+  subsample=1 and bilinearly downscale a full-res composite (~10x more pixel
+  work + a ~25 MB intermediate RGB for a 300-dpi letter page at screen zoom);
+  it can now render color pages at the reduced size directly. `-sub N` added
+  to `djvudec_dump -bench-render`.
 - investigated `slower-win-msvc.txt` residuals `djvu3spec.djvu` p61 and
   `djvulibre-book-ru.djvu` p26 and found the -bench harness was systematically
   unfair to us in three ways; none of the flagged pages were actually slower:

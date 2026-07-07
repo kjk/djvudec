@@ -303,7 +303,7 @@ static int run_dump_features(djvu_doc *doc)
     return 0;
 }
 
-static int bench_render_page(djvu_doc *doc, int page0, int warm,
+static int bench_render_page(djvu_doc *doc, int page0, int warm, int sub,
                              double *total_ms, djvu_render_timings *layer)
 {
     djvu_ctx *ctx = doc->ctx;
@@ -311,14 +311,14 @@ static int bench_render_page(djvu_doc *doc, int page0, int warm,
     double t0;
 
     for (w = 0; w < warm; w++) {
-        djvu_image *img = djvu_page_render_timed(doc, page0, 1, NULL);
+        djvu_image *img = djvu_page_render_timed(doc, page0, sub, NULL);
         if (!img) return 1;
         djvu_image_destroy(ctx, img);
     }
 
     t0 = djvu_bench_now_ms();
     {
-        djvu_image *img = djvu_page_render_timed(doc, page0, 1, layer);
+        djvu_image *img = djvu_page_render_timed(doc, page0, sub, layer);
         if (!img) return 1;
         djvu_image_destroy(ctx, img);
     }
@@ -328,7 +328,7 @@ static int bench_render_page(djvu_doc *doc, int page0, int warm,
 
 /* Two timed renders per page (djvudec only; for bench_before/after). */
 static int run_bench_render(djvu_doc *doc, int warm, int reps, int layers,
-                            int page0, int single_page)
+                            int sub, int page0, int single_page)
 {
     djvu_ctx *ctx = doc->ctx;
     int npages = djvu_doc_page_count(doc);
@@ -359,7 +359,7 @@ static int run_bench_render(djvu_doc *doc, int warm, int reps, int layers,
         }
 
         for (r = 0; r < reps; r++) {
-            if (bench_render_page(doc, i, warm, &t[r], layers ? &lt[r] : NULL) != 0)
+            if (bench_render_page(doc, i, warm, sub, &t[r], layers ? &lt[r] : NULL) != 0)
             {
                 free(t);
                 free(lt);
@@ -404,6 +404,7 @@ typedef struct {
     int do_layers;
     int bench_warm;
     int bench_reps;
+    int bench_sub;
     int page_explicit;
     int do_bzz;
     int do_iw;
@@ -442,6 +443,7 @@ static void usage(void)
         "  -page N, -p N      with -bench-render: single page only (default: all)\n"
         "  -warm N            discard first N renders/page before timing (default 0)\n"
         "  -reps N            timed renders/page for -bench-render (default 2)\n"
+        "  -sub N             with -bench-render: render at subsample N (default 1)\n"
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
         "\n"
         "Codec layers (no full composite):\n"
@@ -486,6 +488,8 @@ static int parse_args(int argc, char **argv, opts_t *o)
             o->bench_warm = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-reps") && i + 1 < argc)
             o->bench_reps = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-sub") && i + 1 < argc)
+            o->bench_sub = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-bzzdec")) o->do_bzz = 1;
         else if (!strcmp(argv[i], "-all")) o->do_all = 1;
         else if (!strcmp(argv[i], "-bg")) o->do_iw = 8;
@@ -664,6 +668,7 @@ int main(int argc, char **argv)
 
     if (o.do_bench_render) {
         rc = run_bench_render(doc, o.bench_warm, o.bench_reps, o.do_layers,
+                              o.bench_sub < 1 ? 1 : o.bench_sub,
                               o.page - 1, o.page_explicit);
         goto done;
     }

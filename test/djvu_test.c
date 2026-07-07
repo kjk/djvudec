@@ -600,12 +600,12 @@ static int sum_normalize_rotation(int r)
    division (dim/target) is off by one when target doesn't divide dim -- e.g.
    3597/1799 == 1 even though ceil(3597/2) == 1799 still covers 1799, which left
    high-dpi pages rendering at full resolution (4x the pixels) at zoom=1.
-   Compound (color) pages are forced to full resolution. */
+   Compound (color) pages subsample too now that the library composes color at
+   any subsample. */
 static int sum_pick_subsample(djvu_page_type t, int upW, int upH, int tdx, int tdy)
 {
     int s;
-    if (t == DJVU_PAGE_COMPOUND)
-        return 1;
+    (void)t;
     if (upW <= 0 || upH <= 0 || tdx <= 0 || tdy <= 0)
         return 1;
     s = 1;
@@ -753,44 +753,49 @@ static void bench_mem_report(const uint8_t *data, size_t len, int sum)
 }
 
 /* Verify djvu_page_render_into is byte-identical to djvu_page_render (+ matching
-   djvu_page_render_info geometry) for every page at subsample=1. */
+   djvu_page_render_info geometry) for every page at subsamples 1, 2 and 3 (the
+   reduced subsamples also exercise the subsampled color composite). */
 static int run_verify_into(djvu_doc *doc)
 {
     djvu_ctx *ctx = doc->ctx;
-    int n = djvu_doc_page_count(doc), i, mism = 0, checked = 0;
+    int n = djvu_doc_page_count(doc), i, si, mism = 0, checked = 0;
+    static const int subs[] = { 1, 2, 3 };
     for (i = 0; i < n; i++) {
-        djvu_render_info ri;
-        djvu_image *img;
-        uint8_t *dst;
-        int comp, stride, y, bad = 0;
-        if (djvu_page_render_info(doc, i, 1, &ri) != 0)
-            continue; /* page renders nothing at subsample 1 */
-        img = djvu_page_render(doc, i, 1);
-        if (!img)
-            continue;
-        if (img->width != ri.width || img->height != ri.height ||
-            img->format != ri.format) {
-            printf("page %d: render_info geometry mismatch\n", i + 1);
-            mism++; djvu_image_destroy(ctx, img); continue;
+        for (si = 0; si < (int)(sizeof(subs) / sizeof(subs[0])); si++) {
+            int sub = subs[si];
+            djvu_render_info ri;
+            djvu_image *img;
+            uint8_t *dst;
+            int comp, stride, y, bad = 0;
+            if (djvu_page_render_info(doc, i, sub, &ri) != 0)
+                continue; /* page renders nothing at this subsample */
+            img = djvu_page_render(doc, i, sub);
+            if (!img)
+                continue;
+            if (img->width != ri.width || img->height != ri.height ||
+                img->format != ri.format) {
+                printf("page %d sub %d: render_info geometry mismatch\n", i + 1, sub);
+                mism++; djvu_image_destroy(ctx, img); continue;
+            }
+            comp = (ri.format == DJVU_FORMAT_GRAY8) ? 1 : 3;
+            stride = ri.width * comp;
+            dst = (uint8_t *)malloc((size_t)stride * ri.height);
+            if (!dst) { djvu_image_destroy(ctx, img); continue; }
+            checked++;
+            if (djvu_page_render_into(doc, i, sub, dst, stride) != 0) {
+                printf("page %d sub %d: render_into failed\n", i + 1, sub); mism++;
+            } else {
+                for (y = 0; y < ri.height && !bad; y++)
+                    if (memcmp(dst + (size_t)y * stride,
+                               img->data + (size_t)y * img->stride, (size_t)stride) != 0)
+                        bad = 1;
+                if (bad) { printf("page %d sub %d: render_into bytes differ\n", i + 1, sub); mism++; }
+            }
+            free(dst);
+            djvu_image_destroy(ctx, img);
         }
-        comp = (ri.format == DJVU_FORMAT_GRAY8) ? 1 : 3;
-        stride = ri.width * comp;
-        dst = (uint8_t *)malloc((size_t)stride * ri.height);
-        if (!dst) { djvu_image_destroy(ctx, img); continue; }
-        checked++;
-        if (djvu_page_render_into(doc, i, 1, dst, stride) != 0) {
-            printf("page %d: render_into failed\n", i + 1); mism++;
-        } else {
-            for (y = 0; y < ri.height && !bad; y++)
-                if (memcmp(dst + (size_t)y * stride,
-                           img->data + (size_t)y * img->stride, (size_t)stride) != 0)
-                    bad = 1;
-            if (bad) { printf("page %d: render_into bytes differ\n", i + 1); mism++; }
-        }
-        free(dst);
-        djvu_image_destroy(ctx, img);
     }
-    printf("verify-into: %d/%d pages checked, %d mismatch\n", checked, n, mism);
+    printf("verify-into: %d/%d page renders checked, %d mismatch\n", checked, n * 3, mism);
     return mism ? 1 : 0;
 }
 

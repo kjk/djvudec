@@ -639,6 +639,10 @@ void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);
 int  djvu_compute_red(int w, int h, int rw, int rh);
 int  djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
                      int outw, int outh, int red);
+/* Scale by an arbitrary rational factor numer/denom (e.g. an IW44 layer at
+   reduction `red` to a subsampled target: numer=red, denom=subsample). */
+int  djvu_cpix_scale_ratio(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
+                           int outw, int outh, int numer, int denom);
 int  djvu_cpix_scale_to_topdown_rgb(djvu_ctx *ctx, const djvu_cpix *in,
                                     uint8_t *dst, int stride,
                                     int outw, int outh, int red);
@@ -649,8 +653,10 @@ void djvu_scaler_init(void);
 /* compose.c -- page compositing (IW44 bg + JB2 mask + fg)                 */
 /* ===================================================================== */
 
+/* Decode the BG44 background and scale it to ceil(width/subsample) x
+   ceil(height/subsample); width/height are the full page dims. */
 int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int height,
-                            djvu_cpix *out);
+                            int subsample, djvu_cpix *out);
 
 /* Per-stage render timings (bench -layers); milliseconds. */
 typedef struct {
@@ -665,13 +671,19 @@ static inline void djvu_render_timings_clear(djvu_render_timings *t)
     t->jb2_ms = t->iw44_ms = t->composite_ms = t->rotate_ms = 0.0;
 }
 
+/* Composite a color page at ceil(width/subsample) x ceil(height/subsample);
+   width/height are the full page dims. subsample==1 is the exact hard-stencil
+   composite; subsample>1 anti-aliases the mask by ink coverage. */
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
-                              int width, int height, djvu_render_timings *t);
+                              int width, int height, int subsample,
+                              djvu_render_timings *t);
 
 /* Composite a color page directly into a caller buffer (top-down, dst stride in
-   bytes); no intermediate djvu_image. dst must hold width*height*3. */
+   bytes); no intermediate djvu_image. Same geometry as djvu_compose_page; dst
+   must hold ceil(width/subsample) * ceil(height/subsample) * 3. */
 int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
-                           int width, int height, uint8_t *dst, int stride);
+                           int width, int height, int subsample,
+                           uint8_t *dst, int stride);
 
 /* Like djvu_page_render; optional per-stage timings when t != NULL. */
 djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,

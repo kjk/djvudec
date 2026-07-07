@@ -78,7 +78,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   **SumatraPDF** actually opens/renders pages instead of timing the bare
   `djvu_page_render(subsample=1)` (runs `djvu_test -bench-sum`):
   - ours → `EngineDjvuDec::RenderPage` (src/EngineDjvuDec.cpp): pick an integer
-    subsample (compound pages forced to full res), query `djvu_page_render_info`
+    subsample (any page type; color composes at the subsample too), query `djvu_page_render_info`
     then `djvu_page_render_into` a destination buffer with `djvu_ctx_set_bgr`
     on — color is composited straight into the buffer in BGR order, with no
     intermediate `djvu_image` and no separate convert/copy pass. The decoder
@@ -162,6 +162,13 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   real-world set) instead.
 - The old Python verifiers (`test/verify.py`, `test/verify_dir.py`) have been
   removed; `cmd/tests.ts` is their bun/TypeScript replacement.
+- `bun cmd/verify_subsample.ts [file.djvu ...] [-sub N] [-pages a,b,c]` —
+  compares reduced-size renders (subsamples 2/3 by default) against
+  `ddjvu -subsample=N -aspect=no` and reports mean/max abs channel diff (not
+  byte-exact by design: different scaler paths + mask anti-aliasing; corpus
+  color files sit at mean <= 0.05/255). `-aspect=no` matters: the ddjvu CLI
+  default shrinks one dimension after the ceil(dim/sub) rect to preserve
+  aspect, a tool-only behavior that would misreport as a size mismatch.
 
 The single render MISMATCH is `1998_compression.djvu` p19 — NOT a decode bug.
 It is a ddjvu three-layer-stencil quirk (ddjvu paints a few FG pixels ~1px off
@@ -287,13 +294,20 @@ Notes:
 - **Composite** (`DjvuImage::get_pixmap`): background (IW44, bilinear-upsampled
   via GPixmapScaler) + foreground (FGbz palette two-layer, or FG44 three-layer
   nearest-upsample) stenciled through the JB2 mask. At subsample=1 the mask is a
-  hard binary stencil. Color composites only at subsample==1 currently;
-  subsample>1 on a color page falls back to the gray mask (TODO: scale).
+  hard binary stencil (byte-exact vs the oracle). At subsample>1 the composite
+  runs at the reduced size: bg/fg are scaled by the rational ratio
+  red/subsample (`djvu_cpix_scale_ratio`) and the mask is stenciled
+  anti-aliased by per-cell ink coverage (`compose_stencil_sub`), like
+  `render_bitonal`'s coverage LUT. O(ink + output), not O(full-res): a compound
+  page no longer has to be composed at full resolution and downscaled by the
+  caller. Photo (BG44-only) pages also render at any subsample this way.
 - **Bitonal subsample>1** (`render_bitonal` in render.c): visits only ink pixels
   (`djvu_bm_visit_ink`) and accumulates coverage per output cell, then maps
   coverage→gray via a LUT. O(ink), not O(full-res): the old path built and
   box-filtered a full-res 1-byte/pixel bitmap, ~5x slower than the subsample==1
-  stamp, which made high-dpi subsampled rendering pathologically slow. Coverage
+  stamp, which made high-dpi subsampled rendering pathologically slow. Cells
+  group bottom-up rows (py/sub, partial cell at the top when height % sub != 0,
+  matching DjVuLibre), flipped to top-down output rows. Coverage
   matches ddjvu's reduced-size render (mean gray within ~0.02/255). The engine's
   subsample pick uses ceil(dim/(s+1))≥target (not floor dim/target) so a 600-dpi
   page at 100% zoom renders at subsample=2 (libdjvu's resolution), not full res.

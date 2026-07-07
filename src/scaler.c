@@ -397,6 +397,18 @@ int djvu_compute_red(int w, int h, int rw, int rh)
 int djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
                     int outw, int outh, int red)
 {
+    return djvu_cpix_scale_ratio(ctx, in, out, outw, outh, red, 1);
+}
+
+/* Scale by an arbitrary rational factor: output = input * numer/denom.
+   Generalizes djvu_cpix_scale (whose upscale factor `red` is numer/1) so a
+   reduced IW44 layer (reduction `red` vs the page) can be scaled straight to a
+   subsampled target with numer=red, denom=subsample -- including fractional
+   ratios (red=3, subsample=2) and downscales (subsample > red, handled by the
+   scaler's power-of-two pre-reduction). */
+int djvu_cpix_scale_ratio(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
+                          int outw, int outh, int numer, int denom)
+{
     scaler s;
     memset(&s, 0, sizeof(s));
     s.ctx = ctx;
@@ -404,8 +416,8 @@ int djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
     s.inh = in->h;
     s.outw = outw;
     s.outh = outh;
-    scaler_set_h(&s, red, 1);
-    scaler_set_v(&s, red, 1);
+    scaler_set_h(&s, numer, denom);
+    scaler_set_v(&s, numer, denom);
     if (scaler_scale(&s, in, out) != 0) { scaler_free(&s); return -1; }
     scaler_free(&s);
     return 0;

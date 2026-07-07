@@ -127,7 +127,7 @@ djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no)
     if (djvu_doc_page_info(doc, page_no, &info) != 0) return NULL;
     memset(&bg, 0, sizeof(bg));
     if (djvu_compose_background(doc, doc->pages[page_no].form_off,
-                               info.width, info.height, &bg) != 0) return NULL;
+                               info.width, info.height, 1, &bg) != 0) return NULL;
     out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
     if (!out) { djvu_cpix_free(ctx, &bg); return NULL; }
     out->width = bg.w; out->height = bg.h; out->format = DJVU_FORMAT_RGB24;
