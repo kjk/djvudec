@@ -400,6 +400,26 @@ static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
     *slot = pm;
 }
 
+iw_pixmap *djvu_doc_iw44_acquire_under_lock(djvu_doc *doc, djvu_page_int *pg,
+                                            const char *chunk_id)
+{
+    iw_pixmap **slot;
+
+    if (!doc || !pg || !chunk_id) return NULL;
+    if (chunk_id[0] == 'B' && chunk_id[1] == 'G' && chunk_id[2] == '4')
+        slot = &pg->iw_bg;
+    else if (chunk_id[0] == 'F' && chunk_id[1] == 'G' && chunk_id[2] == '4')
+        slot = &pg->iw_fg;
+    else
+        return NULL;
+
+    if (!djvu_cache_stores_page(doc->ctx))
+        return decode_iw_layer_fresh(doc, pg, chunk_id);
+    if (!*slot)
+        preload_iw_layer(doc, pg, chunk_id, slot);
+    return *slot;
+}
+
 void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0)
 {
     int i;

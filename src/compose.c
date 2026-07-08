@@ -40,7 +40,7 @@ static int compose_background_from_native(djvu_ctx *ctx, const djvu_cpix *native
     return djvu_cpix_scale_ratio(ctx, native, out, rw, rh, red, subsample);
 }
 
-static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
+static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg, int cache_locked)
 {
     djvu_ctx *ctx = doc->ctx;
     iw_pixmap *pm;
@@ -53,7 +53,10 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
         return -1;
     if (!djvu_form_find_chunk(doc, pg->form_off, "BG44", &sz, NULL))
         return -1;
-    pm = djvu_doc_iw44_by_form_acquire(doc, pg->form_off, "BG44", &pm_owned);
+    if (cache_locked)
+        pm = djvu_doc_iw44_acquire_under_lock(doc, pg, "BG44");
+    else
+        pm = djvu_doc_iw44_by_form_acquire(doc, pg->form_off, "BG44", &pm_owned);
     if (!pm) return -1;
     bw = djvu_iw44_width(pm);
     bh = djvu_iw44_height(pm);
@@ -91,7 +94,7 @@ void djvu_doc_preload_compose_bg_range(djvu_doc *doc, int lo0, int hi0)
     if (hi0 >= doc->npages) hi0 = doc->npages - 1;
     if (lo0 > hi0) return;
     for (i = lo0; i <= hi0; i++)
-        compose_bg_native_build(doc, &doc->pages[i]);
+        compose_bg_native_build(doc, &doc->pages[i], 0);
 }
 
 int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int height,
@@ -112,7 +115,7 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
         pg = &doc->pages[page_no];
         djvu_cache_lock(ctx);
         if (!pg->bg_native.d)
-            compose_bg_native_build(doc, pg);
+            compose_bg_native_build(doc, pg, 1);
         if (pg->bg_scaled.d && pg->bg_scaled.w == rw && pg->bg_scaled.h == rh) {
             size_t n = (size_t)rw * (size_t)rh * 3;
             djvu_free(ctx, out->d);

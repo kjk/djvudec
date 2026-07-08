@@ -232,6 +232,9 @@ iw_pixmap *djvu_doc_iw44_acquire(djvu_doc *doc, int page_no, const char *chunk_i
 void djvu_doc_iw44_release(djvu_ctx *ctx, iw_pixmap *pm, int owned);
 iw_pixmap *djvu_doc_iw44_by_form_acquire(djvu_doc *doc, uint32_t form_off,
                                          const char *chunk_id, int *owned_out);
+/* Like djvu_doc_iw44_acquire but caller already holds djvu_cache_lock. */
+iw_pixmap *djvu_doc_iw44_acquire_under_lock(djvu_doc *doc, djvu_page_int *pg,
+                                            const char *chunk_id);
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
 jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out);
