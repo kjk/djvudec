@@ -139,6 +139,13 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- fuzz finding (timeout-b36526…): the IFF chunk walks clamped a chunk's size
+  with `if (cdata + csize > form_end)`, but csize is attacker-controlled and
+  the uint32 sum wraps (e.g. csize=0xffffffef advances pos by -8 mod 2^32),
+  dodging the clamp and walking the chunk list backwards forever. Rewrote the
+  clamp overflow-free (`csize > form_end - cdata`; cdata <= form_end holds
+  from the loop bound) in all three walkers: page_load_info,
+  djvu_form_find_chunk, and the DJVM DIRM scan in djvu_doc_open.
 - fuzz OOM triage (oom-9e1907…): not a leak — a crafted INFO chunk can declare
   a ~1-gigapixel page (25237x36955 @ dpi 6344) and the decoder faithfully
   allocates what the header says (mask + render buffers = multi-GB per input),

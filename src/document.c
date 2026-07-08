@@ -132,7 +132,10 @@ static int page_load_info(djvu_doc *doc, djvu_page_int *pg)
         const uint8_t *id = data + pos;
         uint32_t csize = djvu_rd_u32be(data + pos + 4);
         uint32_t cdata = pos + 8;
-        if (cdata + csize > form_end) csize = form_end - cdata;
+        /* csize is attacker-controlled; cdata + csize can wrap uint32 and
+           dodge the clamp, sending pos backwards (infinite walk). cdata <=
+           form_end holds from the loop condition, so this form can't wrap. */
+        if (csize > form_end - cdata) csize = form_end - cdata;
         if (djvu_tag_eq(id, "INFO")) {
             if (parse_info(data + cdata, csize, &pg->info) == 0) {
                 pg->has_info = 1;
@@ -895,7 +898,7 @@ const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
         uint32_t csize = djvu_rd_u32be(data + pos + 4);
         uint32_t cdata = pos + 8;
         uint32_t next;
-        if (cdata + csize > form_end) csize = form_end - cdata;
+        if (csize > form_end - cdata) csize = form_end - cdata; /* overflow-safe clamp */
         next = cdata + csize + (csize & 1);
         if (djvu_tag_eq(cid, id)) {
             if (out_size) *out_size = csize;
@@ -953,7 +956,7 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
             const uint8_t *id = data + p;
             uint32_t csize = djvu_rd_u32be(data + p + 4);
             uint32_t cdata = p + 8;
-            if (cdata + csize > form_end) csize = form_end - cdata;
+            if (csize > form_end - cdata) csize = form_end - cdata; /* overflow-safe clamp */
             if (djvu_tag_eq(id, "DIRM")) {
                 if (load_djvm(doc, cdata, csize) != 0) {
                     djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "bad DIRM directory");
