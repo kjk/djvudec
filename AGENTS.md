@@ -155,6 +155,29 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   `djvused -e 'select N; print-ant'` (hyperlinks; inject test annotations with
   `set-ant` via `djvused in.djvu -f script.dsed`).
 
+### Stress & fuzzing (memory-safety)
+- `bun cmd/stress-test.ts <dir>` — renders every page of every `.djvu` under
+  `<dir>` (recursively) from N worker threads with per-page caching + lock
+  callbacks, mimicking SumatraPDF's concurrent render path. Finds thread-safety
+  bugs the single-threaded verifier can't. **ASan build is the default**
+  (`out/clang_asan/djvudec_stress_asan.exe`); `-no-asan` gives a plain release
+  build (`out/msvc/djvudec_stress.exe`), `-cpu N` sets threads (default
+  `cores-2`, min 2), `-clean` rebuilds from scratch. Files that open to zero
+  pages are reported as `skipped`, not failures. (This caught the shared-dict
+  JB2 shape heap-use-after-free: page renders read dict-shape RLE lock-free
+  while another thread's `MatchedRefine` uncompressed the same shared shape
+  in place.)
+- `bun cmd/fuzz.ts` — coverage-guided fuzzing (libFuzzer + ASan, both bundled
+  with the VS clang; nothing to install). `test/fuzz_target.c` opens each input
+  as a `.djvu` and drives the full decode surface (page info, render at full +
+  4x subsample, page text, outline), capped at 20 pages/input. Builds into
+  `out/fuzz/djvudec_fuzz.exe` via `buildFuzz()`. First run seeds `fuzz/corpus/`
+  from `testfiles/subset`; the corpus dir **is** the checkpoint — kill to stop,
+  rerun to resume. Flags: `-jobs N` (parallel workers), `-repro FILE` (replay a
+  crash with a stack trace), `-minimize` (`-merge=1` corpus shrink), `-clean`,
+  `-max-len N`. `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so
+  crash inputs become regression seeds.
+
 ### Verification scripts
 - `bun cmd/tests.ts` — corpus verifier (builds first). mask→pgm, bg/color→ppm,
   plus text. Scans every `.djvu` under `testfiles/` **recursively**; set the
