@@ -667,6 +667,8 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
     case REC_MatchedRefineLibraryOnly:
     case REC_MatchedRefineImageOnly: {
         djvu_bitmap *cbm;
+        djvu_bitmap cbm_copy;
+        int cbm_owned = 0;
         int cw, ch;
         if (rectype == REC_MatchedRefine) { need_add_blit = need_add_library = 1; }
         else if (rectype == REC_MatchedRefineLibraryOnly) { need_add_library = 1; }
@@ -675,11 +677,24 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
         parent = c->lib2shape[match];
         tmp_shape.parent = parent;
         cbm = &djvu_jb2_get_shape(jim, parent)->bm;
-        djvu_bm_ensure_bytes(c->ctx, cbm);
+        /* A compressed reference shape lives in a shared dict, which
+           concurrent renders read lock-free — never mutate it in place
+           (uncompress frees its RLE mid-read; code_bitmap_cross's
+           set_min_border reallocs its data). Refine against a private
+           uncompressed copy instead. */
+        if (!cbm->data && cbm->rle) {
+            if (djvu_bm_uncompress_copy(c->ctx, cbm, &cbm_copy) != 0) {
+                c->error = 1;
+                break;
+            }
+            cbm = &cbm_copy;
+            cbm_owned = 1;
+        }
         cw = (1 + c->libinfo[match * 4 + 2]) - c->libinfo[match * 4 + 0];
         ch = (1 + c->libinfo[match * 4 + 3]) - c->libinfo[match * 4 + 1];
         code_rel_mark_size(c, &tmp_shape.bm, cw, ch, 4);
         code_bitmap_cross(c, &tmp_shape.bm, cbm, match);
+        if (cbm_owned) djvu_bm_free(c->ctx, &cbm_copy);
         if (rectype != REC_MatchedRefineLibraryOnly)
             code_rel_location(c, &blit, tmp_shape.bm.height, tmp_shape.bm.width);
         break;

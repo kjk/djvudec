@@ -539,6 +539,9 @@ void djvu_bm_compress(djvu_ctx *ctx, djvu_bitmap *bm);
 void djvu_bm_uncompress(djvu_ctx *ctx, djvu_bitmap *bm);
 /* Uncompress when only RLE is present (no-op if bytes already exist). */
 void djvu_bm_ensure_bytes(djvu_ctx *ctx, djvu_bitmap *bm);
+/* Uncompress into a fresh private copy, leaving src untouched (for shared-dict
+   shapes, which concurrent renders read lock-free). Free with djvu_bm_free. */
+int djvu_bm_uncompress_copy(djvu_ctx *ctx, const djvu_bitmap *src, djvu_bitmap *dst);
 
 /* Call fn(user, px, py) for each ink pixel at page offset (left, bottom). */
 void djvu_bm_visit_ink(const djvu_bitmap *src, int left, int bottom,

@@ -155,11 +155,27 @@ void djvu_bm_free(djvu_ctx *ctx, djvu_bitmap *bm)
     }
 }
 
+static void bm_decode_rle_rows(djvu_bitmap *bm, const uint8_t *runs)
+{
+    int c = 0, n = bm->height - 1, p = 0, x;
+
+    while (n >= 0) {
+        x = bm_read_run(&runs);
+        if (c + x > bm->width)
+            break;
+        while (x-- > 0)
+            bm->data[djvu_bm_rowoffset(bm, n) + c++] = (uint8_t)p;
+        p = 1 - p;
+        if (c >= bm->width) {
+            c = 0;
+            p = 0;
+            n--;
+        }
+    }
+}
+
 void djvu_bm_uncompress(djvu_ctx *ctx, djvu_bitmap *bm)
 {
-    const uint8_t *runs;
-    int c, n, p, x;
-
     if (!bm || bm->data || !bm->rle || bm->width <= 0 || bm->height <= 0)
         return;
 
@@ -174,27 +190,39 @@ void djvu_bm_uncompress(djvu_ctx *ctx, djvu_bitmap *bm)
         return;
     }
 
-    runs = bm->rle;
-    n = bm->height - 1;
-    c = 0;
-    p = 0;
-    while (n >= 0) {
-        x = bm_read_run(&runs);
-        if (c + x > bm->width)
-            break;
-        while (x-- > 0)
-            bm->data[djvu_bm_rowoffset(bm, n) + c++] = (uint8_t)p;
-        p = 1 - p;
-        if (c >= bm->width) {
-            c = 0;
-            p = 0;
-            n--;
-        }
-    }
+    bm_decode_rle_rows(bm, bm->rle);
 
     djvu_free(ctx, bm->rle);
     bm->rle = NULL;
     bm->rle_len = 0;
+}
+
+/* Decode a compressed bitmap into a fresh private copy, leaving src untouched.
+   Needed when the source is a shared-dict shape: those are read lock-free by
+   concurrent renders, so they must stay immutable (djvu_bm_uncompress frees
+   src->rle in place). Free the copy with djvu_bm_free. Returns 0 on success. */
+int djvu_bm_uncompress_copy(djvu_ctx *ctx, const djvu_bitmap *src, djvu_bitmap *dst)
+{
+    memset(dst, 0, sizeof(*dst));
+    if (!src || !src->rle || src->width <= 0 || src->height <= 0)
+        return -1;
+
+    dst->width = src->width;
+    dst->height = src->height;
+    dst->border = src->border;
+    dst->bytes_per_row = src->width + src->border;
+    dst->max_offset = src->height * dst->bytes_per_row + dst->border;
+    dst->data = (uint8_t *)djvu_alloc(ctx, (size_t)dst->max_offset);
+    if (!dst->data) return -1;
+    memset(dst->data, 0, (size_t)dst->max_offset);
+    if (djvu_bm_alloc_guard(ctx, dst) != 0) {
+        djvu_free(ctx, dst->data);
+        memset(dst, 0, sizeof(*dst));
+        return -1;
+    }
+
+    bm_decode_rle_rows(dst, src->rle);
+    return 0;
 }
 
 void djvu_bm_ensure_bytes(djvu_ctx *ctx, djvu_bitmap *bm)
