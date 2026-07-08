@@ -1281,8 +1281,14 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
     j2 = 0;
     last = size - 1;
     while (last > 0) {
-        int n = d->pos[j2];
-        signed char c = (signed char)(d->pos[j2] >> 24);
+        int n, c;
+
+        if (j2 < 0 || j2 >= size) {
+            djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "bzz: corrupt (BWT index)");
+            return -1;
+        }
+        n = d->pos[j2];
+        c = (signed char)(d->pos[j2] >> 24);
         data[--last] = (uint8_t)c;
         j2 = count[0xff & c] + (n & 0xffffff);
     }
@@ -1979,8 +1985,13 @@ static int img_shapecount(jb2_image *im)
 
 jb2_shape *djvu_jb2_get_shape(jb2_image *im, int n)
 {
-    if (n >= im->inherited_shapes)
-        return &im->shapes[n - im->inherited_shapes];
+    if (n < 0) return NULL;
+    if (n >= im->inherited_shapes) {
+        int local = n - im->inherited_shapes;
+
+        if (local >= im->nshapes) return NULL;
+        return &im->shapes[local];
+    }
     if (im->inherited_dict)
         return djvu_jb2_get_shape(im->inherited_dict, n);
     return NULL;
@@ -2694,6 +2705,8 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
             rectype = code_record(c, jim, is_image);
             if (rectype >= 0 && rectype < 12) hist[rectype]++;
             if (c->error) break;
+
+            if (c->zp.eof) break;
         } while (rectype != REC_EndOfData);
         if (dbg) {
             fprintf(stderr, "JB2 rectypes: SOD=%d NM=%d NMlib=%d NMimg=%d MR=%d "
