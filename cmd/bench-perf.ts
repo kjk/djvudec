@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
-// bench_perf.ts -- compare per-page render times (bench_before vs bench_after).
+// bench-perf.ts -- compare per-page render times (bench_before vs bench_after).
 //
-//   bun cmd/bench_perf.ts file.djvu              run both + compare
-//   bun cmd/bench_perf.ts -p 3 file.djvu        single page only
-//   bun cmd/bench_perf.ts -warm 1 -layers file.djvu
-//   bun cmd/bench_perf.ts run before file.djvu   capture timings to stdout
-//   bun cmd/bench_perf.ts compare before.txt after.txt
+//   bun cmd/bench-perf.ts file.djvu              run both + compare
+//   bun cmd/bench-perf.ts -p 3 file.djvu        single page only
+//   bun cmd/bench-perf.ts -warm 1 -layers file.djvu
+//   bun cmd/bench-perf.ts run before file.djvu   capture timings to stdout
+//   bun cmd/bench-perf.ts compare before.txt after.txt
 //
 // Builds bench_before / bench_after automatically when missing or stale.
 // Each timing line: pN t1 t2 (ms, from -bench-render). Comparison uses the
@@ -13,7 +13,7 @@
 //   layer pN jb2 t1 t2 iw44 t1 t2 composite t1 t2 rotate t1 t2
 import { existsSync, readFileSync } from "fs";
 import { defaultUseClang } from "./build";
-import { benchTarget, buildLibTool } from "./build_lib";
+import { benchTarget, buildLibTool } from "./build-lib";
 
 export type PageTimings = Map<number, [number, number]>;
 
@@ -239,7 +239,7 @@ async function main(): Promise<number> {
   if (args[0] === "compare") {
     const [beforePath, afterPath] = args.slice(1);
     if (!beforePath || !afterPath) {
-      console.error("usage: bun cmd/bench_perf.ts compare before.txt after.txt");
+      console.error("usage: bun cmd/bench-perf.ts compare before.txt after.txt");
       return 1;
     }
     const beforeText = readFileSync(beforePath, "utf8");
@@ -261,7 +261,7 @@ async function main(): Promise<number> {
     const file = args[2];
     if ((variant !== "before" && variant !== "after") || !file) {
       console.error(
-        "usage: bun cmd/bench_perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]",
+        "usage: bun cmd/bench-perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]",
       );
       return 1;
     }
@@ -277,9 +277,9 @@ async function main(): Promise<number> {
   const file = args.find((a) => !a.startsWith("-"));
   if (!file) {
     console.error(
-      "usage: bun cmd/bench_perf.ts file.djvu [-warm N] [-layers] [-p N]\n" +
-        "       bun cmd/bench_perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]\n" +
-        "       bun cmd/bench_perf.ts compare before.txt after.txt",
+      "usage: bun cmd/bench-perf.ts file.djvu [-warm N] [-layers] [-p N]\n" +
+        "       bun cmd/bench-perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]\n" +
+        "       bun cmd/bench-perf.ts compare before.txt after.txt",
     );
     return 1;
   }

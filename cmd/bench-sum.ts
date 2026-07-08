@@ -1,6 +1,6 @@
-// bench_sum.ts -- benchmark replicating SumatraPDF's DjVu engines.
+// bench-sum.ts -- benchmark replicating SumatraPDF's DjVu engines.
 //
-//   bun cmd/bench_sum.ts [file.djvu] [-clang] [-full] [-clean]
+//   bun cmd/bench-sum.ts [file.djvu] [-clang] [-full] [-clean]
 //
 // Same harness as cmd/bench.ts, but instead of timing the bare
 // djvu_page_render(subsample=1) it replicates how SumatraPDF actually opens
@@ -24,8 +24,8 @@
 // file, picks a random .djvu from testfiles/subset (`-full` -> testfiles/full).
 import { existsSync, readdirSync, statSync } from "fs";
 import { join, dirname } from "path";
-import { getDeps } from "./get_deps";
-import { buildDist } from "./build_dist";
+import { getDeps } from "./get-deps";
+import { buildDist } from "./build-dist";
 import { buildRef, buildBench, cleanBuildOutput, defaultUseClang } from "./build";
 import { corpusDir } from "./corpus";
 
@@ -53,7 +53,7 @@ if (!file) {
   const corpus = corpusDir(ROOT);
   const all = walkDjvu(corpus);
   if (all.length === 0) {
-    console.error(`no .djvu files under ${corpus} (run cmd/get_deps.ts or cmd/dump_features.ts --pick)`);
+    console.error(`no .djvu files under ${corpus} (run cmd/get-deps.ts or cmd/dump-features.ts --pick)`);
     process.exit(1);
   }
   file = all[Math.floor(Math.random() * all.length)];

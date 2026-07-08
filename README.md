@@ -1,7 +1,7 @@
 # djvudec — a plain-C DjVu decoder
 
 This is a djvu format decoder, like [libdjvu](https://github.com/barak/djvulibre), but better:
-* smaller `bun cmd/compare_code_sizes.ts` shows 100 kB (us) vs. 720 kB of libdjvue
+* smaller `bun cmd/compare-code-sizes.ts` shows 100 kB (us) vs. 720 kB of libdjvue
 * plain C, no dependencies (vs. C++)
 * simpler API
 * simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite
@@ -21,11 +21,11 @@ char *txt = djvu_page_text(doc, 0);
 ```
 
 ## Build & test
-Requires `clang`, `bun`, and `git`. `cmd/get_deps.ts` clones the DjvuNet and
+Requires `clang`, `bun`, and `git`. `cmd/get-deps.ts` clones the DjvuNet and
 DjVuLibre repos into `deps/` and assembles the test corpus into
 `testfiles/djvu/`; `build.ts` and `tests.ts` call it automatically.
 ```
-bun cmd/get_deps.ts     # clone deps + assemble testfiles/djvu (auto-run below)
+bun cmd/get-deps.ts     # clone deps + assemble testfiles/djvu (auto-run below)
 bun cmd/build.ts        # build reference tools + the C library and djvu_test.exe
 bun cmd/tests.ts        # build, then verify render + text against DjVuLibre
 ```

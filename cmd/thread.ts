@@ -5,7 +5,7 @@
 //   bun cmd/thread.ts -clang testfiles/subset/djvu3spec.djvu
 import { $ } from "bun";
 import { defaultUseClang } from "./build";
-import { buildThread } from "./build_thread";
+import { buildThread } from "./build-thread";
 
 const args = process.argv.slice(2);
 const useClang = args.includes("-clang") || defaultUseClang;

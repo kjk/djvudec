@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-// profile_render.ts -- collect a single-page render profile.
+// profile-render.ts -- collect a single-page render profile.
 //
-//   bun cmd/profile_render.ts file.djvu -p 39
-//   bun cmd/profile_render.ts file.djvu -p 39 -reps 180 -seconds 8
-//   bun cmd/profile_render.ts file.djvu -p 39 -tool xctrace
-//   bun cmd/profile_render.ts file.djvu -p 39 -variant before
+//   bun cmd/profile-render.ts file.djvu -p 39
+//   bun cmd/profile-render.ts file.djvu -p 39 -reps 180 -seconds 8
+//   bun cmd/profile-render.ts file.djvu -p 39 -tool xctrace
+//   bun cmd/profile-render.ts file.djvu -p 39 -variant before
 //
 // The default uses macOS `sample` and writes a text call tree under out/profile/.
 // `-tool xctrace` records an Instruments Time Profiler trace when full Xcode is
@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync } from "fs";
 import { basename } from "path";
 import { defaultUseClang } from "./build";
-import { benchTarget, buildLibTool, DUMP_TARGET } from "./build_lib";
+import { benchTarget, buildLibTool, DUMP_TARGET } from "./build-lib";
 
 type Tool = "sample" | "xctrace";
 type Variant = "dump" | "before" | "after";
@@ -21,7 +21,7 @@ const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 
 function usage(): never {
   console.error(
-    "usage: bun cmd/profile_render.ts file.djvu -p N " +
+    "usage: bun cmd/profile-render.ts file.djvu -p N " +
       "[-reps N] [-warm N] [-seconds N] [-tool sample|xctrace] " +
       "[-variant dump|before|after] [-clang]",
   );
@@ -157,7 +157,7 @@ async function main(): Promise<number> {
   if (tool !== "sample" && tool !== "xctrace") usage();
   if (variant !== "dump" && variant !== "before" && variant !== "after") usage();
   if (process.platform !== "darwin") {
-    console.error("profile_render.ts currently supports macOS profiling tools only");
+    console.error("profile-render.ts currently supports macOS profiling tools only");
     return 1;
   }
   if (tool === "sample" && !existsSync("/usr/bin/sample")) {

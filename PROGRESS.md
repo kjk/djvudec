@@ -106,7 +106,7 @@ whose INFO gamma != 2.2.
 - DJVU_JB2_DEBUG=1 env prints a per-stream record-type histogram.
 
 ## Build / test
-`bun cmd/get_deps.ts` — clones DjvuNet + DjVuLibre into deps/, assembles testfiles/djvu.
+`bun cmd/get-deps.ts` — clones DjvuNet + DjVuLibre into deps/, assembles testfiles/djvu.
 `bun cmd/build.ts` — builds ref tools (once), the C library + test harness with clang.
 `bun cmd/tests.ts` — the test driver: ensures deps, builds, then verifies over
 every .djvu under testfiles/ (recursively).
@@ -158,7 +158,7 @@ NB: we render INFO rotation (compose.c); the C# port does not.
   (djvulibre-book-ru at sub 3: mean diff 4.7-9.0/255 -> 0.007-0.016/255).
   Verification: corpus 399/399 MATCH (sub==1 unchanged); `-verify-into` now
   checks subsamples 1-3 per page (render == render_into == render_info on all
-  color/bitonal corpus files); new `bun cmd/verify_subsample.ts` compares
+  color/bitonal corpus files); new `bun cmd/verify-subsample.ts` compares
   reduced renders against `ddjvu -subsample=N -aspect=no` statistically
   (24 page renders across 4 color files: mean abs diff <= 0.05/255, most
   <= 0.02; NB the ddjvu CLI default shrinks one dim post-ceil for aspect,
@@ -180,11 +180,11 @@ NB: we render INFO rotation (compose.c); the C# port does not.
      sizes <= 0 — so the old "cold" flag never worked either.)
      `bench_ddjvu_reset` now calls `ddjvu_cache_clear`. Proof via new
      `test/jb2prof.cpp` (ref tool, times DjVuLibre's raw JB2 dict/page/render
-     phases on chunks extracted with `cmd/extract_chunk.ts`): djvu3spec p61
+     phases on chunks extracted with `cmd/extract-chunk.ts`): djvu3spec p61
      Sjbz decode is 10.6 ms in DjVuLibre vs ~2.9 ms ours; ddjvu re-open showed
      create+decode 15.0 ms cold -> 0.02 ms cached.
   2. **phase ordering**: -bench ran both djvudec sessions, then both libdjvu
-     sessions; with `find_slower_pages.ts` running 12 files in parallel the
+     sessions; with `find-slower-pages.ts` running 12 files in parallel the
      late-finishing files timed their djvudec phase under heavier ambient load.
      Sessions are now interleaved (ours, lib, ours, lib).
   3. **eager dict decode at open**: `djvu_doc_open` pre-decoded every shared
@@ -226,7 +226,7 @@ NB: we render INFO rotation (compose.c); the C# port does not.
   `bun cmd/bench.ts testfiles/djvu/djvu3spec.djvu`: p62 5.58 ms libdjvu vs
   4.00 ms ours, with p61-p64 all faster than libdjvu; clang corpus verification
   and `-verify-into` stayed byte-exact.
-- render-speed pass for palette compound pages: added `cmd/profile_render.ts`
+- render-speed pass for palette compound pages: added `cmd/profile-render.ts`
   for macOS `sample`/Xcode Time Profiler runs, a direct top-down RGB compositor
   for identity-gamma `FGbz` pages, a caller-buffer scaler path, cached scaler
   horizontal coordinates, and faster GBitmap RLE encoding via `memchr`. Target

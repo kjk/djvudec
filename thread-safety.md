@@ -91,7 +91,7 @@ INFO is now parsed for all pages inside `djvu_doc_open`.
 ## Stress harness
 
 ```text
-bun cmd/build_thread.ts
+bun cmd/build-thread.ts
 bun cmd/thread.ts testfiles/subset/djvu3spec.djvu
 bun cmd/thread.ts -cpu 4 -nops 512 testfiles/subset/foo.djvu
 ```

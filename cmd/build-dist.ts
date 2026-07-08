@@ -1,6 +1,6 @@
-// build_dist.ts -- produce an SQLite-style single-file amalgamation in dist/.
+// build-dist.ts -- produce an SQLite-style single-file amalgamation in dist/.
 //
-//   bun cmd/build_dist.ts
+//   bun cmd/build-dist.ts
 //
 // Emits:
 //   dist/djvu.h  -- the public API header (verbatim copy of src/djvu.h)
@@ -20,7 +20,7 @@ import { $ } from "bun";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, rmSync } from "fs";
 import { join } from "path";
 import { clangCFlags, DJVUDEC_MSVC_CL_C, isWindows } from "./build";
-import { buildWasm } from "./build_wasm";
+import { buildWasm } from "./build-wasm";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const SRC = join(ROOT, "src");

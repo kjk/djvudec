@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// extract_chunk.ts -- dump a raw chunk payload from a FORM inside a .djvu file.
+// extract-chunk.ts -- dump a raw chunk payload from a FORM inside a .djvu file.
 //
-//   bun cmd/extract_chunk.ts file.djvu <form_offset> <chunk_id> <out.raw>
+//   bun cmd/extract-chunk.ts file.djvu <form_offset> <chunk_id> <out.raw>
 //
 // form_offset is the component offset as printed by `djvudec_dump -comps`
 // (points at the "FORM" tag). Writes the first chunk with the given 4-char id.
@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from "fs";
 
 const [file, offStr, chunkId, out] = process.argv.slice(2);
 if (!file || !offStr || !chunkId || !out) {
-  console.error("usage: bun cmd/extract_chunk.ts file.djvu <form_offset> <chunk_id> <out.raw>");
+  console.error("usage: bun cmd/extract-chunk.ts file.djvu <form_offset> <chunk_id> <out.raw>");
   process.exit(2);
 }
 const data = readFileSync(file);

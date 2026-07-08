@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
-// dump_features.ts -- scan .djvu files and dump per-file/page features + render times.
+// dump-features.ts -- scan .djvu files and dump per-file/page features + render times.
 //
-//   bun cmd/dump_features.ts [dir]              dump to features.jsonl (default: testfiles/full)
-//   bun cmd/dump_features.ts --pick [dir]       dump, pick minimal subset, copy to testfiles/subset
-//   bun cmd/dump_features.ts --pick-only file   pick subset from existing features.jsonl
+//   bun cmd/dump-features.ts [dir]              dump to features.jsonl (default: testfiles/full)
+//   bun cmd/dump-features.ts --pick [dir]       dump, pick minimal subset, copy to testfiles/subset
+//   bun cmd/dump-features.ts --pick-only file   pick subset from existing features.jsonl
 //
 // Uses djvu_test -dump-features (one doc open per file). Output: features.jsonl plus
 // features_summary.txt listing unique feature tags across the corpus.
@@ -19,7 +19,7 @@ import {
 } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename, relative } from "path";
-import { getDeps } from "./get_deps";
+import { getDeps } from "./get-deps";
 import { build, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
@@ -365,7 +365,7 @@ function copySubset(picked: FileFeat[]) {
   }
   writeFileSync(
     join(SUBSET_DIR, "README.txt"),
-    "Curated subset copied by cmd/dump_features.ts --pick\n" +
+    "Curated subset copied by cmd/dump-features.ts --pick\n" +
       picked.map((f) => f.rel).join("\n") +
       "\n",
   );

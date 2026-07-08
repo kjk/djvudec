@@ -1,6 +1,6 @@
 # Curated test corpus (`testfiles/subset`)
 
-Twelve `.djvu` files copied from `testfiles/full` by `cmd/dump_features.ts --pick`.
+Twelve `.djvu` files copied from `testfiles/full` by `cmd/dump-features.ts --pick`.
 Together they exercise every feature tag observed across the 726-file full corpus
 (20 unique tags). `bgjp` and `fgjp` do not appear anywhere in `full`.
 
@@ -12,8 +12,8 @@ Pass `-full` to scan `testfiles/full` instead, or set `DJVU_SPECS` to any path.
 ## Regenerating the subset
 
 ```bash
-bun cmd/dump_features.ts testfiles/full    # scan → features.jsonl
-bun cmd/dump_features.ts --pick-only        # re-pick + copy to testfiles/subset
+bun cmd/dump-features.ts testfiles/full    # scan → features.jsonl
+bun cmd/dump-features.ts --pick-only        # re-pick + copy to testfiles/subset
 ```
 
 ## Feature coverage

@@ -1,6 +1,6 @@
-// perf_mac.ts -- profile Sumatra-style page render on macOS using `sample`.
+// perf-mac.ts -- profile Sumatra-style page render on macOS using `sample`.
 //
-//   bun cmd/perf_mac.ts <file.djvu> <page-no>
+//   bun cmd/perf-mac.ts <file.djvu> <page-no>
 //
 // Builds djvu_test with debug symbols (-g), runs -profile-sum in a tight render
 // loop (one doc open, cached JB2 masks), records a `sample` stack trace, and
@@ -14,12 +14,12 @@ const SAMPLE_SEC = 10;
 const READY = /profile-sum: ready/;
 
 function usage(): never {
-  console.error("usage: bun cmd/perf_mac.ts <file.djvu> <page-no>");
+  console.error("usage: bun cmd/perf-mac.ts <file.djvu> <page-no>");
   process.exit(2);
 }
 
 if (process.platform !== "darwin") {
-  console.error("perf_mac.ts requires macOS (`sample` profiler)");
+  console.error("perf-mac.ts requires macOS (`sample` profiler)");
   process.exit(1);
 }
 

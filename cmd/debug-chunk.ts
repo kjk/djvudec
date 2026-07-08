@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 // Run one -verify-render chunk with live RSS monitoring + djvu_test mem stderr.
 //
-//   bun cmd/debug_chunk.ts [lo] [hi]
-//   bun cmd/debug_chunk.ts 1 16
+//   bun cmd/debug-chunk.ts [lo] [hi]
+//   bun cmd/debug-chunk.ts 1 16
 //
 // Env forwarded: DJVU_VERIFY_MEM_MB (default 4096 in harness), DJVU_VERIFY_OURS_ONLY, etc.
 import { join, dirname } from "path";
 import { mkdirSync } from "fs";
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { fmtBytes } from "./win_proc_mem";
+import { fmtBytes } from "./win-proc-mem";
 import { build, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
@@ -45,7 +45,7 @@ function processMem(pid: number): { ws: number; commit: number } {
 }
 
 const TEST = await build(defaultUseClang);
-const DIFF = join(ROOT, "verify_diffs", "debug_chunk");
+const DIFF = join(ROOT, "verify_diffs", "debug-chunk");
 mkdirSync(DIFF, { recursive: true });
 
 console.log(`chunk p${lo}-${hi} mem_limit=${memLimitMb} MB file=${FILE}`);

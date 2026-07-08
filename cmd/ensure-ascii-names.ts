@@ -1,8 +1,8 @@
-// ensure_ascii_names.ts -- recursively rename files whose names contain
+// ensure-ascii-names.ts -- recursively rename files whose names contain
 // non-ASCII characters to ASCII-only names, so C code that opens them by path
 // (the test harness uses fopen, which is ASCII-only on Windows) can do so.
 //
-//   bun cmd/ensure_ascii_names.ts <dir>
+//   bun cmd/ensure-ascii-names.ts <dir>
 //
 // Walks <dir> recursively. For each file or subdirectory with a non-ASCII name
 // it strips diacritics (NFKD) and replaces any remaining non-ASCII character
@@ -14,7 +14,7 @@ import { join, extname } from "path";
 
 const dir = process.argv[2];
 if (!dir) {
-  console.error("usage: bun cmd/ensure_ascii_names.ts <dir>");
+  console.error("usage: bun cmd/ensure-ascii-names.ts <dir>");
   process.exit(1);
 }
 if (!existsSync(dir) || !statSync(dir).isDirectory()) {

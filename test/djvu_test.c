@@ -837,7 +837,7 @@ static const char *container_kind(djvu_doc *doc)
     return "djvm";
 }
 
-/* Feature dump for cmd/dump_features.ts (tab-separated; one file per invocation). */
+/* Feature dump for cmd/dump-features.ts (tab-separated; one file per invocation). */
 static int run_dump_features(djvu_doc *doc)
 {
     djvu_ctx *ctx = doc->ctx;

@@ -1,7 +1,7 @@
-// copy_djvu_files.ts -- collect .djvu samples from arbitrary directories into
+// copy-djvu-files.ts -- collect .djvu samples from arbitrary directories into
 // testfiles/kjk/, skipping content-duplicates.
 //
-//   bun cmd/copy_djvu_files.ts <dir> [<dir> ...]
+//   bun cmd/copy-djvu-files.ts <dir> [<dir> ...]
 //
 // Traverses each given directory recursively and copies every .djvu file into
 // testfiles/kjk/. Dedup is size-first: at startup we index the name/size of
@@ -28,7 +28,7 @@ const DEST = join(TESTFILES, "kjk");
 
 const dirs = process.argv.slice(2);
 if (dirs.length === 0) {
-  console.error("usage: bun cmd/copy_djvu_files.ts <dir> [<dir> ...]");
+  console.error("usage: bun cmd/copy-djvu-files.ts <dir> [<dir> ...]");
   process.exit(1);
 }
 

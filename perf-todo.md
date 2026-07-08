@@ -7,7 +7,7 @@ Bench commands (from repo root):
 
 ```text
 bun cmd/bench.ts testfiles/subset/djvu3spec.djvu
-bun cmd/build_dump.ts
+bun cmd/build-dump.ts
 out/msvc/djvudec_dump.exe -bench-render -layers -warm 1 testfiles/subset/djvu3spec.djvu
 ```
 
@@ -233,4 +233,4 @@ are gather-bound.
 
 ## Verification
 - Byte-exact: `bun cmd/tests.ts` (corpus oracle), `djvu_test -verify-into`.
-- Speed: `cmd/build_bench.ts before/after` + `cmd/bench_perf.ts` (`-warm 1 -layers`).
+- Speed: `cmd/build-bench.ts before/after` + `cmd/bench-perf.ts` (`-warm 1 -layers`).

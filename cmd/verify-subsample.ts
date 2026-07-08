@@ -2,7 +2,7 @@
 // Not byte-exact by design (different scaler paths and mask anti-aliasing);
 // reports per-page mean/max abs channel diff, flags mean > threshold.
 //
-//   bun cmd/verify_subsample.ts [file.djvu ...] [-sub N] [-pages a,b,c]
+//   bun cmd/verify-subsample.ts [file.djvu ...] [-sub N] [-pages a,b,c]
 //
 // With no files, checks the color corpus files at subsamples 2 and 3.
 import { existsSync, mkdirSync, readFileSync } from "fs";

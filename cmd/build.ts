@@ -11,13 +11,13 @@
 // build() returns the exe path. Verification lives in tests.ts.
 import { $ } from "bun";
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "fs";
-import { DIST_C, DIST_H, ensureDist } from "./build_dist";
-import { DJVULIBRE_DIR, getDeps } from "./get_deps";
+import { DIST_C, DIST_H, ensureDist } from "./build-dist";
+import { DJVULIBRE_DIR, getDeps } from "./get-deps";
 
 // Forward slashes: Bun's shell treats backslashes as escapes, which breaks the
 // *.cpp / *.o globs below (import.meta.dir is backslashed on Windows).
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
-const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/"); // deps/ checkout (see get_deps.ts)
+const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/"); // deps/ checkout (see get-deps.ts)
 const OUT_ROOT = `${ROOT}/out`;
 const REF = `${ROOT}/ref_build`;
 const OBJDIR = `${REF}/djvuobj`;
@@ -569,7 +569,7 @@ async function buildAsanWindows(): Promise<string> {
     built = true;
     await runCmd(`clang++ ${ASAN} ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${ASAN_EXE}`);
   }
-  await copyAsanRuntimeDll();
+  await copyAsanRuntimeDll(ASAN_DIR);
   console.log(built ? `built ${binName("djvu_test_clang_asan")}` : `${binName("djvu_test_clang_asan")} up to date`);
   return ASAN_EXE;
 }
@@ -578,9 +578,9 @@ async function buildAsanWindows(): Promise<string> {
 // which lives in clang's resource dir (lib/clang/<ver>/lib/windows), not on
 // PATH; without a copy next to the exe the loader fails (bash exit 127 /
 // STATUS_DLL_NOT_FOUND) before main.
-async function copyAsanRuntimeDll(): Promise<void> {
+export async function copyAsanRuntimeDll(dir: string): Promise<void> {
   const dllName = "clang_rt.asan_dynamic-x86_64.dll";
-  const dst = `${ASAN_DIR}/${dllName}`;
+  const dst = `${dir}/${dllName}`;
   if (existsSync(dst)) return;
   const proc = Bun.spawnSync(["clang", "-print-resource-dir"]);
   const resDir = proc.stdout.toString().trim();

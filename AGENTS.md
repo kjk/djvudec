@@ -26,7 +26,7 @@ either. Don't re-investigate this.
 ## Reference checkouts (local)
 - C# source being ported:  `deps/DjvuNet/DjvuNet`  (DjvuNet repo)
 - Verification oracle:      `deps/DjVuLibre`        (DjVuLibre repo)
-- `bun cmd/get_deps.ts` clones both repos into `deps/` (skipped if present)
+- `bun cmd/get-deps.ts` clones both repos into `deps/` (skipped if present)
   and assembles the test corpus into `testfiles/djvu/*.djvu` by copying every
   `.djvu` from `deps/DjVuLibre/doc`, `deps/DjvuNet/Specs`, and
   `deps/DjvuNet/DjvuNetTest/TestFiles`. Exported as `getDeps()`; `build.ts`
@@ -69,11 +69,11 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   `ddjvu_cache_set_size(ctx, 0)` is a silent no-op, the API ignores sizes <= 0).
   `ref_build/jb2prof.exe` (test/jb2prof.cpp) times DjVuLibre's raw JB2 phases
   (dict decode / page decode / get_bitmap) on chunks extracted with
-  `bun cmd/extract_chunk.ts` — the tool that exposed the cache artifact.
+  `bun cmd/extract-chunk.ts` — the tool that exposed the cache artifact.
   After the timing lines, a `document, allocs N, total <bytes>, peak <bytes>`
   line reports the decoder's allocation stats for the whole document (gathered in
   one extra untimed tracked pass, so it doesn't skew the timings).
-- `bun cmd/bench_sum.ts [file.djvu] [-clang] [-full]` — same harness as
+- `bun cmd/bench-sum.ts [file.djvu] [-clang] [-full]` — same harness as
   `bench.ts` (same `-bench`-style per-page + document lines), but replicates how
   **SumatraPDF** actually opens/renders pages instead of timing the bare
   `djvu_page_render(subsample=1)` (runs `djvu_test -bench-sum`):
@@ -99,26 +99,26 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   libdjvu on color pages too. `djvu_test -verify-into` checks `render_into` is
   byte-identical to `djvu_page_render`.
 - **Before/after render perf** (djvudec only, no DjVuLibre):
-  1. `bun cmd/build_bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`
+  1. `bun cmd/build-bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`
   2. Edit `src/` (or regenerate `dist/djvu.c` if benchmarking the amalgamation)
-  3. `bun cmd/build_bench.ts after -clean` — build `out/bench_after/…/bench_after.exe`
-  4. `bun cmd/bench_perf.ts path/to/file.djvu` — runs both binaries with
+  3. `bun cmd/build-bench.ts after -clean` — build `out/bench_after/…/bench_after.exe`
+  4. `bun cmd/bench-perf.ts path/to/file.djvu` — runs both binaries with
      `-bench-render` (3 timed renders per page) and prints a per-page summary
      using the fastest of the three runs: `pN t_before => t_after, Δ ms, Δ%`
      (`+` = slower after). Optional capture/compare:
-     `bun cmd/bench_perf.ts run before file.djvu > before.txt`,
-     `bun cmd/bench_perf.ts run after file.djvu > after.txt`,
-     `bun cmd/bench_perf.ts compare before.txt after.txt`.
+     `bun cmd/bench-perf.ts run before file.djvu > before.txt`,
+     `bun cmd/bench-perf.ts run after file.djvu > after.txt`,
+     `bun cmd/bench-perf.ts compare before.txt after.txt`.
   **Warmup:** `-warm N` discards the first N renders per page before timing
   (cold cache dominates small files). Example:
-  `bun cmd/bench_perf.ts -warm 1 testfiles/subset/foo.djvu`.
+  `bun cmd/bench-perf.ts -warm 1 testfiles/subset/foo.djvu`.
   **Layer breakdown:** `-layers` adds per-stage timings (JB2 decode, IW44,
   composite, rotate) via `djvu_page_render_timed`. Raw lines:
   `pN t1 t2 t3` (total ms) and
   `layer pN jb2 t1 t2 t3 iw44 t1 t2 t3 composite t1 t2 t3 rotate t1 t2 t3`.
-  `bench_perf.ts` forwards `-warm`/`-layers` to the exe and, with `-layers`,
+  `bench-perf.ts` forwards `-warm`/`-layers` to the exe and, with `-layers`,
   prints a before/after breakdown per stage (fastest of 3 per stage).
-  Same flags on `djvudec_dump`: `bun cmd/build_dump.ts` /
+  Same flags on `djvudec_dump`: `bun cmd/build-dump.ts` /
   `djvudec_dump -bench-render -warm 1 -layers file.djvu`.
 - `bun cmd/tests.ts [-clang] [-cpu N] [-asan]` — the **test driver**: ensures deps,
   calls `buildRef()`+`build()` from `build.ts` (build first, then verify), and
@@ -162,7 +162,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   real-world set) instead.
 - The old Python verifiers (`test/verify.py`, `test/verify_dir.py`) have been
   removed; `cmd/tests.ts` is their bun/TypeScript replacement.
-- `bun cmd/verify_subsample.ts [file.djvu ...] [-sub N] [-pages a,b,c]` —
+- `bun cmd/verify-subsample.ts [file.djvu ...] [-sub N] [-pages a,b,c]` —
   compares reduced-size renders (subsamples 2/3 by default) against
   `ddjvu -subsample=N -aspect=no` and reports mean/max abs channel diff (not
   byte-exact by design: different scaler paths + mask anti-aliasing; corpus
@@ -176,7 +176,7 @@ from the JB2 mask). Verified our mask/bg/fg are byte-exact vs DjVuLibre
 internals. Our output is arguably more correct. Do not "fix" it.
 
 ### Amalgamation (single-file distribution)
-- `bun cmd/build_dist.ts` — generates an SQLite-style amalgamation in `dist/`:
+- `bun cmd/build-dist.ts` — generates an SQLite-style amalgamation in `dist/`:
   `dist/djvu.h` (verbatim public header) and `dist/djvu.c` (the public header +
   `djvu_internal.h` + every `src/*.c` concatenated into one translation unit,
   with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped). The
@@ -339,7 +339,7 @@ Notes:
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
   `-bench` times our render vs DjVuLibre `ddjvu_page_render` per page (see
   `bun cmd/bench.ts`); `-bench-sum` does the same for the SumatraPDF engine
-  render path (see `bun cmd/bench_sum.ts`). `-sub N` renders `-out` at subsample
+  render path (see `bun cmd/bench-sum.ts`). `-sub N` renders `-out` at subsample
   N (for inspecting the subsampled raster). `-verify-into` checks
   `djvu_page_render_into` is byte-identical to `djvu_page_render`.
 
@@ -353,7 +353,7 @@ milestone history and change log.
 in the working tree; only run `git commit` when the user explicitly asks. (The
 user reviews diffs and decides when to commit.) Never commit `dist/djvu.c` or
 `dist/djvu.h` — those files are always left for the user to commit manually
-after `bun cmd/build_dist.ts`.
+after `bun cmd/build-dist.ts`.
 
 ## Status
 Feature-complete; verified byte-for-byte vs DjVuLibre. All remaining

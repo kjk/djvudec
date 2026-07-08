@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// find_slower_pages.ts -- list pages where djvudec render is slower than libdjvu.
+// find-slower-pages.ts -- list pages where djvudec render is slower than libdjvu.
 //
-//   bun cmd/find_slower_pages.ts [-clang] [-full] [-clean] [-cpu N]
+//   bun cmd/find-slower-pages.ts [-clang] [-full] [-clean] [-cpu N]
 //
 // Runs djvu_test -bench on every .djvu under the test corpus (default
 // testfiles/djvu; -full -> testfiles/full; DJVU_SPECS overrides). Writes
@@ -10,7 +10,7 @@
 import { existsSync, readdirSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, relative } from "path";
-import { getDeps } from "./get_deps";
+import { getDeps } from "./get-deps";
 import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);

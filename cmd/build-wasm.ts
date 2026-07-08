@@ -1,7 +1,7 @@
-// build_wasm.ts — build a WebAssembly drop of the djvu decoder into wasm/.
+// build-wasm.ts — build a WebAssembly drop of the djvu decoder into wasm/.
 //
-//   bun cmd/build_wasm.ts            # incremental build (bootstraps emsdk once)
-//   bun cmd/build_wasm.ts -clean     # also wipe/re-activate the local emsdk
+//   bun cmd/build-wasm.ts            # incremental build (bootstraps emsdk once)
+//   bun cmd/build-wasm.ts -clean     # also wipe/re-activate the local emsdk
 //
 // Output: wasm/djvu.js  — a self-contained (SINGLE_FILE) Emscripten module that
 // embeds the .wasm as base64, so wasm/index.html works even from file://.
@@ -9,7 +9,7 @@
 //
 // Emscripten isn't assumed to be on PATH: if `emcc` is missing we git-clone the
 // emsdk into deps/emsdk and `install/activate latest` there (one-time, cached).
-// build_dist.ts calls buildWasm({ useDist: true }) to compile dist/djvu.c.
+// build-dist.ts calls buildWasm({ useDist: true }) to compile dist/djvu.c.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -112,7 +112,7 @@ const RUNTIME = ["HEAP8", "HEAPU8", "HEAP32", "HEAPU32"];
 
 function wasmInputMtime(useDist: boolean): number {
   if (useDist) {
-    if (!existsSync(DIST_C)) throw new Error("dist/djvu.c missing — run build_dist first");
+    if (!existsSync(DIST_C)) throw new Error("dist/djvu.c missing — run build-dist first");
     return statSync(DIST_C).mtimeMs;
   }
   let newest = 0;

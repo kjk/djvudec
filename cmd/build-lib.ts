@@ -1,7 +1,13 @@
 // Shared build for library-only tools (djvudec_dump, bench_before, bench_after).
 import { $ } from "bun";
 import { existsSync, mkdirSync, statSync } from "fs";
-import { clangCFlags, defaultUseClang, DJVUDEC_MSVC_CL_C } from "./build";
+import {
+  clangCFlags,
+  copyAsanRuntimeDll,
+  defaultUseClang,
+  DJVUDEC_MSVC_CL_C,
+  isWindows,
+} from "./build";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 
@@ -36,11 +42,11 @@ export type LibToolTarget = {
 const objBase = (src: string) => src.replace(/^src\//, "").replace(/\.c$/, "");
 
 function exeFile(base: string, useClang: boolean): string {
-  return useClang ? base : `${base}.exe`;
+  return useClang && !isWindows ? base : `${base}.exe`;
 }
 
-function toolDir(target: LibToolTarget, useClang: boolean): string {
-  return `${target.outRoot}/${useClang ? "clang" : "msvc"}`;
+function toolDir(target: LibToolTarget, useClang: boolean, asan = false): string {
+  return `${target.outRoot}/${asan ? "clang_asan" : useClang ? "clang" : "msvc"}`;
 }
 
 function needsRebuild(output: string, ...inputs: string[]): boolean {
@@ -69,22 +75,28 @@ function cUnits(dir: string, ext: string, testSrc: string): CompileUnit[] {
   ];
 }
 
-async function buildClang(target: LibToolTarget): Promise<string> {
-  const dir = toolDir(target, true);
+async function buildClang(target: LibToolTarget, asan = false): Promise<string> {
+  const dir = toolDir(target, true, asan);
   const exePath = `${dir}/${exeFile(target.exeBase, true)}`;
   mkdirSync(dir, { recursive: true });
 
+  // ASan: -O1 for readable traces, like buildAsan in build.ts.
+  const cflags = asan
+    ? `-fsanitize=address ${clangCFlags("-g -O1")}`
+    : clangCFlags();
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
   const units = cUnits(dir, "o", testSrc);
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src)) continue;
-    await $`clang ${{ raw: clangCFlags() }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+    await $`clang ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
   }
 
   const objs = units.map((u) => u.obj);
   if (needsRebuild(exePath, ...objs)) {
-    await $`clang ${{ raw: objs.join(" ") }} -o ${exePath}`;
+    const link = asan ? "-fsanitize=address " : "";
+    await $`clang ${{ raw: link }}${{ raw: objs.join(" ") }} -o ${exePath}`;
   }
+  if (asan && isWindows) await copyAsanRuntimeDll(dir);
   return exePath;
 }
 
@@ -114,18 +126,21 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
 export function libToolExePath(
   target: LibToolTarget,
   useClang = defaultUseClang,
+  asan = false,
 ): string {
-  return `${toolDir(target, useClang)}/${exeFile(target.exeBase, useClang)}`;
+  return `${toolDir(target, useClang, asan)}/${exeFile(target.exeBase, useClang || asan)}`;
 }
 
 export async function buildLibTool(
   target: LibToolTarget,
   useClang = defaultUseClang,
+  asan = false,
 ): Promise<string> {
+  if (asan) useClang = true; // ASan builds always use clang
   const name = exeFile(target.exeBase, useClang);
-  const exePath = libToolExePath(target, useClang);
+  const exePath = libToolExePath(target, useClang, asan);
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
-  const units = cUnits(toolDir(target, useClang), useClang ? "o" : "obj", testSrc);
+  const units = cUnits(toolDir(target, useClang, asan), useClang ? "o" : "obj", testSrc);
   const staleObj = units.some((u) => needsRebuild(u.obj, u.src));
   const staleExe = needsRebuild(exePath, ...units.map((u) => u.obj));
 
@@ -134,8 +149,8 @@ export async function buildLibTool(
     return exePath;
   }
 
-  console.log(`building ${name} (${useClang ? "clang" : "msvc"})...`);
-  const exe = useClang ? await buildClang(target) : await buildMsvc(target);
+  console.log(`building ${name} (${asan ? "clang+asan" : useClang ? "clang" : "msvc"})...`);
+  const exe = useClang ? await buildClang(target, asan) : await buildMsvc(target);
   console.log(`built ${name}`);
   return exe;
 }

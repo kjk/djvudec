@@ -1,6 +1,6 @@
-// get_deps.ts -- fetch the reference checkouts and assemble the test corpus.
+// get-deps.ts -- fetch the reference checkouts and assemble the test corpus.
 //
-//   bun cmd/get_deps.ts
+//   bun cmd/get-deps.ts
 //
 // Clones the two upstream repos into deps/ (skipped if already present), then
 // copies every .djvu sample out of them into testfiles/djvu/, testfiles/full/,

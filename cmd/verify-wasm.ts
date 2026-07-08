@@ -1,6 +1,6 @@
-// verify_wasm.ts — smoke-test wasm/djvu.js by decoding a file through the same
+// verify-wasm.ts — smoke-test wasm/djvu.js by decoding a file through the same
 // exports the web app uses, then cross-check dims against djvu_test.
-//   bun cmd/verify_wasm.ts [file.djvu]
+//   bun cmd/verify-wasm.ts [file.djvu]
 import path from "node:path";
 import { readFileSync } from "node:fs";
 
