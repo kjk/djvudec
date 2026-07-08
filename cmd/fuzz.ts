@@ -147,6 +147,9 @@ const fuzzArgs = [
   `-max_len=${maxLen}`,
   "-rss_limit_mb=4096",
   "-timeout=25",
+  // The biggest seed (2.9MB book) honestly costs ~5s under ASan; libFuzzer's
+  // default 10s slow-unit reporter flags its mutations under fuzzing load.
+  "-report_slow_units=20",
   "-print_final_stats=1",
   ...(jobs > 1 ? [`-jobs=${jobs}`, `-workers=${jobs}`] : []),
 ];

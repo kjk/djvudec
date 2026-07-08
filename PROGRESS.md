@@ -139,6 +139,15 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- fuzz finding: JB2 `code_match_index` now bounds-checks the decoded match
+  index (crash-06a772…: MatchedRefine before any shape exists →
+  `code_num(0,-1)` returns an unclamped value and `lib2shape` is still NULL →
+  NULL/OOB read). DjVuLibre is safe here only via GArray's throwing `[]`; the
+  C port needs the explicit check. Both call sites bail on `c->error` before
+  indexing. Also triaged two slow-unit artifacts: mutations of
+  `Mcguffey's_Primer.djvu` whose clean seed already costs ~5s under ASan —
+  not bugs; deleted, and `fuzz.ts` now passes `-report_slow_units=20` so the
+  big seed's honest cost stops tripping libFuzzer's 10s default.
 - subsampled color composite: `djvu_page_render(_into)` now composes
   compound/photo pages at the requested subsample instead of only at full
   resolution (previously subsample>1 fell back to the gray mask on compound
