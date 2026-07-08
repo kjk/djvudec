@@ -378,6 +378,7 @@ typedef struct {
     int ncpu;
     int nfiles;
     int nfailed;
+    int nskipped;
 } stress_ctx;
 
 static int stress_one(const char *path, void *user)
@@ -388,6 +389,18 @@ static int stress_one(const char *path, void *user)
     int rc;
 
     rc = stress_file(path, ctx->ncpu, &t);
+
+    /* rc < 0: nothing to render (unreadable, undecodable, or zero pages --
+       e.g. corrupt crash-repro files or indirect-document indexes). Not a
+       stress failure; report it and move on. */
+    if (rc < 0) {
+        printf("%s\n  skipped (no renderable pages)\n", path);
+        fflush(stdout);
+        ctx->nfiles++;
+        ctx->nskipped++;
+        return 0;
+    }
+
     format_duration_ms(t.load_ms, loadbuf, sizeof(loadbuf));
     format_duration_ms(t.render_ms, renderbuf, sizeof(renderbuf));
     format_duration_ms(t.close_ms, closebuf, sizeof(closebuf));
@@ -454,6 +467,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("done: %d file(s), %d failed\n", ctx.nfiles, ctx.nfailed);
+    printf("done: %d file(s), %d failed, %d skipped\n",
+           ctx.nfiles, ctx.nfailed, ctx.nskipped);
     return ctx.nfailed > 0 ? 1 : 0;
 }
