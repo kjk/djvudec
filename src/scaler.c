@@ -87,13 +87,20 @@ static void scaler_get_line(scaler *s, int fy, const djvu_cpix *in, int in_x0, i
     int ly0 = (fy << s->yshift);
     int ly1 = ((fy + 1) << s->yshift);
     int xmin = red_xmin << s->xshift, xmax = red_xmax << s->xshift;
-    if (ly1 > in->h + in_y0) ly1 = in->h + in_y0;
+    int xend = in_x0 + in->w, yend = in_y0 + in->h;
+    if (xmax > xend) xmax = xend;
+    if (ly0 < in_y0) ly0 = in_y0;
+    if (ly1 > yend) ly1 = yend;
     for (x = xmin; x < xmax; x += sw) {
         int r = 0, g = 0, b = 0, ss = 0, sy, sx;
         for (sy = ly0; sy < ly1; sy++) {
             int rowy = sy - in_y0;
+            if (rowy < 0 || rowy >= in->h)
+                continue;
             for (sx = x; sx < x + sw && sx < xmax; sx++) {
                 int px = sx - in_x0;
+                if (px < 0 || px >= in->w)
+                    continue;
                 const uint8_t *p = in->d + ((size_t)rowy * in->w + px) * 3;
                 r += p[0]; g += p[1]; b += p[2]; ss++;
             }
@@ -104,6 +111,19 @@ static void scaler_get_line(scaler *s, int fy, const djvu_cpix *in, int in_x0, i
             out[idx*3+0]=(uint8_t)((r+ss/2)/ss); out[idx*3+1]=(uint8_t)((g+ss/2)/ss); out[idx*3+2]=(uint8_t)((b+ss/2)/ss);
         }
         idx++;
+    }
+    {
+        int nout = red_xmax - red_xmin;
+        while (idx < nout) {
+            if (idx > 0) {
+                out[idx * 3 + 0] = out[(idx - 1) * 3 + 0];
+                out[idx * 3 + 1] = out[(idx - 1) * 3 + 1];
+                out[idx * 3 + 2] = out[(idx - 1) * 3 + 2];
+            } else {
+                out[0] = out[1] = out[2] = 0;
+            }
+            idx++;
+        }
     }
 }
 
@@ -225,6 +245,10 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
     djvu_ctx *ctx = s->ctx;
     int bufw, y;
     uint8_t *lbuf;
+
+    if (!in || !in->d || in->w <= 0 || in->h <= 0 ||
+        in->w != s->inw || in->h != s->inh)
+        return -1;
     uint8_t *p1 = NULL, *p2 = NULL; int l1 = -1, l2 = -1;
     int red_xmin = 0, red_xmax = s->redw;
     uint16_t *hinfo16 = NULL;
@@ -297,8 +321,12 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
             else { uint8_t *t = p1; p1 = p2; l1 = l2; p2 = t; l2 = want2;
                    scaler_get_line(s, want2, in, 0, 0, red_xmin, red_xmax, p2); upper = p2; }
         } else {
-            if (fy1 < 0) fy1 = 0; if (fy1 > s->redh - 1) fy1 = s->redh - 1;
-            if (fy2 < 0) fy2 = 0; if (fy2 > s->redh - 1) fy2 = s->redh - 1;
+            if (fy1 < 0) fy1 = 0;
+            if (fy2 < 0) fy2 = 0;
+            if (fy1 >= in->h) fy1 = in->h - 1;
+            if (fy2 >= in->h) fy2 = in->h - 1;
+            if (fy1 > s->redh - 1) fy1 = s->redh - 1;
+            if (fy2 > s->redh - 1) fy2 = s->redh - 1;
             lower = in->d + (size_t)fy1 * in->w * 3;
             upper = in->d + (size_t)fy2 * in->w * 3;
         }

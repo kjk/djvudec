@@ -151,6 +151,12 @@ export const THREAD_TARGET: LibToolTarget = {
   testSrc: `${ROOT}/test/djvudec_thread.c`,
 };
 
+export const STRESS_TARGET: LibToolTarget = {
+  outRoot: `${ROOT}/out`,
+  exeBase: "djvudec_stress",
+  testSrc: `${ROOT}/test/djvudec_stress.c`,
+};
+
 export function benchTarget(variant: "before" | "after"): LibToolTarget {
   return {
     outRoot: `${ROOT}/out/bench_${variant}`,

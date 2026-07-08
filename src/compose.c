@@ -110,6 +110,7 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
     page_no = compose_bg_page_no(doc, form_off);
     if (page_no >= 0 && djvu_cache_stores_page(ctx)) {
         pg = &doc->pages[page_no];
+        djvu_cache_lock(ctx);
         if (!pg->bg_native.d)
             compose_bg_native_build(doc, pg);
         if (pg->bg_scaled.d && pg->bg_scaled.w == rw && pg->bg_scaled.h == rh) {
@@ -118,13 +119,21 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
             out->w = rw;
             out->h = rh;
             out->d = (uint8_t *)djvu_alloc(ctx, n);
-            if (!out->d) return -1;
+            if (!out->d) {
+                djvu_cache_unlock(ctx);
+                return -1;
+            }
             memcpy(out->d, pg->bg_scaled.d, n);
+            djvu_cache_unlock(ctx);
             return 0;
         }
-        if (pg->bg_native.d)
-            return compose_background_from_native(ctx, &pg->bg_native, width, height,
-                                                  subsample, out);
+        if (pg->bg_native.d) {
+            rc = compose_background_from_native(ctx, &pg->bg_native, width, height,
+                                                subsample, out);
+            djvu_cache_unlock(ctx);
+            return rc;
+        }
+        djvu_cache_unlock(ctx);
     }
 
     pm = djvu_doc_iw44_by_form_acquire(doc, form_off, "BG44", &pm_owned);
