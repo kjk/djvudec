@@ -35,9 +35,14 @@ const q = (s: string) => {
 function sh(cmd: string, opts: { cwd?: string; allowFail?: boolean; quiet?: boolean } = {}) {
   const cwd = opts.cwd ?? ROOT;
   const stdio = opts.quiet ? ("pipe" as const) : ("inherit" as const);
+  // A git-bash parent leaks MSYSTEM into the env, which makes emsdk scripts
+  // think they run in an MSYS shell and print `export` lines instead of
+  // setting cmd.exe's PATH — emcc then never lands on PATH.
+  const env = { ...process.env };
+  delete env.MSYSTEM;
   const r = isWin
-    ? spawnSync("cmd.exe", ["/d", "/s", "/c", cmd], { cwd, stdio, encoding: "utf8" })
-    : spawnSync("bash", ["-lc", cmd], { cwd, stdio, encoding: "utf8" });
+    ? spawnSync("cmd.exe", ["/d", "/s", "/c", cmd], { cwd, stdio, encoding: "utf8", env })
+    : spawnSync("bash", ["-lc", cmd], { cwd, stdio, encoding: "utf8", env });
   if (!opts.allowFail && r.status !== 0) {
     if (opts.quiet) process.stderr.write(r.stderr ?? "");
     throw new Error(`command failed (${r.status}): ${cmd}`);
@@ -57,8 +62,11 @@ function findEmcc(): string | null {
   if (emccOnPath()) return "";
   if (!existsSync(EMSDK_ENV)) return null;
   if (isWin) {
+    const env = { ...process.env };
+    delete env.MSYSTEM; // see sh()
     const r = spawnSync("cmd.exe", ["/d", "/s", "/c", `call ${q(EMSDK_ENV)} >nul 2>&1 && where emcc`], {
       encoding: "utf8",
+      env,
     });
     if (r.status === 0) return `call ${q(EMSDK_ENV)} >nul 2>&1 && `;
   } else {
@@ -76,7 +84,9 @@ function bootstrapEmsdk() {
   if (!existsSync(path.join(EMSDK, ".git"))) {
     sh(`git clone --depth 1 https://github.com/emscripten-core/emsdk.git ${q(EMSDK)}`);
   }
-  const emsdk = isWin ? "emsdk.bat" : "./emsdk";
+  // Explicit path: with NoDefaultCurrentDirectoryInExePath set, cmd.exe won't
+  // resolve a bare "emsdk.bat" against the cwd.
+  const emsdk = isWin ? q(path.join(EMSDK, "emsdk.bat")) : "./emsdk";
   sh(`${emsdk} install latest`, { cwd: EMSDK });
   sh(`${emsdk} activate latest`, { cwd: EMSDK });
 }
