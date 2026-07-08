@@ -139,6 +139,16 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- fuzz OOM triage (oom-9e1907…): not a leak — a crafted INFO chunk can declare
+  a ~1-gigapixel page (25237x36955 @ dpi 6344) and the decoder faithfully
+  allocates what the header says (mask + render buffers = multi-GB per input),
+  which under ASan quarantine trips libFuzzer's 4GB RSS limit. Verified with
+  the tracking allocator: allocs==frees, live=0, no single over-limit malloc.
+  Fix in the harness, not the library: fuzz_target.c now installs a budgeted
+  allocator (1GB live per input, size stored in a 16-byte block header) so
+  oversized header-declared allocations fail cleanly through the library's
+  alloc-failure paths — which also puts those error paths under fuzz coverage.
+  The biggest legit seed (Mcguffey, peak ~484MB) still decodes fully.
 - fuzz finding: JB2 `code_match_index` now bounds-checks the decoded match
   index (crash-06a772…: MatchedRefine before any shape exists →
   `code_num(0,-1)` returns an unclamped value and `lib2shape` is still NULL →
