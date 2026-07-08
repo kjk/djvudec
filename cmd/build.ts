@@ -11,6 +11,7 @@
 // build() returns the exe path. Verification lives in tests.ts.
 import { $ } from "bun";
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "fs";
+import { resolve as resolvePath } from "path";
 import { DIST_C, DIST_H, ensureDist } from "./build-dist";
 import { DJVULIBRE_DIR, getDeps } from "./get-deps";
 
@@ -580,11 +581,13 @@ async function buildAsanWindows(): Promise<string> {
 // STATUS_DLL_NOT_FOUND) before main.
 export async function copyAsanRuntimeDll(dir: string): Promise<void> {
   const dllName = "clang_rt.asan_dynamic-x86_64.dll";
-  const dst = `${dir}/${dllName}`;
+  // Normalize: CopyFileW fails ENOENT on a path with a mixed-slash ".."
+  // segment (e.g. ".../cmd/../out/fuzz/...dll"), even when it resolves.
+  const dst = resolvePath(dir, dllName);
   if (existsSync(dst)) return;
   const proc = Bun.spawnSync(["clang", "-print-resource-dir"]);
   const resDir = proc.stdout.toString().trim();
-  const src = `${resDir}/lib/windows/${dllName}`;
+  const src = resolvePath(resDir, "lib/windows", dllName);
   if (!existsSync(src)) {
     console.warn(`warning: ${src} not found; ${dllName} must be on PATH`);
     return;

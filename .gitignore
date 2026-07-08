@@ -23,3 +23,8 @@ features_summary.txt
 *.pbm
 *.ilk
 /terminals
+# fuzzing: corpus + per-job logs are generated/large (cmd/fuzz.ts).
+# fuzz/crashes/ IS tracked (regression seeds); see the negation below.
+fuzz/corpus/
+fuzz/corpus.min/
+fuzz/*.log

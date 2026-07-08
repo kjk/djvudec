@@ -129,6 +129,46 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
   return exePath;
 }
 
+// libFuzzer target: LIB_SRCS + test/fuzz_target.c, instrumented with ASan +
+// fuzzer (-O1 for readable traces), no main() (libFuzzer provides it). Output
+// out/fuzz/djvudec_fuzz.exe. Driven by cmd/fuzz.ts.
+const FUZZ_DIR = `${ROOT}/out/fuzz`;
+export const FUZZ_EXE = `${FUZZ_DIR}/${isWindows ? "djvudec_fuzz.exe" : "djvudec_fuzz"}`;
+
+export async function buildFuzz(clean = false): Promise<string> {
+  mkdirSync(FUZZ_DIR, { recursive: true });
+  const testSrc = `${ROOT}/test/fuzz_target.c`;
+  const units = cUnits(FUZZ_DIR, "o", testSrc);
+  if (clean) {
+    for (const u of units) rmSync(u.obj, { force: true });
+    rmSync(FUZZ_EXE, { force: true });
+  }
+
+  const cflags = `-fsanitize=address,fuzzer ${clangCFlags("-g -O1")}`;
+  const staleObj = units.some((u) => needsRebuild(u.obj, u.src));
+  const staleExe = needsRebuild(FUZZ_EXE, ...units.map((u) => u.obj));
+  if (!staleObj && !staleExe && existsSync(FUZZ_EXE)) {
+    // Ensure the runtime DLL even on the up-to-date path: a prior run may have
+    // built the exe but failed the copy (idempotent -- no-op if already there).
+    if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
+    console.log("djvudec_fuzz up to date");
+    return FUZZ_EXE;
+  }
+
+  console.log("building djvudec_fuzz (clang+asan+fuzzer)...");
+  for (const u of units) {
+    if (!needsRebuild(u.obj, u.src)) continue;
+    await $`clang ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+  }
+  const objs = units.map((u) => u.obj);
+  if (needsRebuild(FUZZ_EXE, ...objs)) {
+    await $`clang -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }} -o ${FUZZ_EXE}`;
+  }
+  if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
+  console.log("built djvudec_fuzz");
+  return FUZZ_EXE;
+}
+
 export function libToolExePath(
   target: LibToolTarget,
   useClang = defaultUseClang,
