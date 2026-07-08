@@ -1,6 +1,6 @@
 // Shared build for library-only tools (djvudec_dump, bench_before, bench_after).
 import { $ } from "bun";
-import { existsSync, mkdirSync, statSync } from "fs";
+import { existsSync, mkdirSync, rmSync, statSync } from "fs";
 import {
   clangCFlags,
   copyAsanRuntimeDll,
@@ -45,6 +45,12 @@ function exeFile(base: string, useClang: boolean): string {
   return useClang && !isWindows ? base : `${base}.exe`;
 }
 
+// ASan exes get a distinct name (foo_asan) so a stale plain exe is never
+// mistaken for an instrumented one, and vice versa.
+function exeBase(target: LibToolTarget, asan: boolean): string {
+  return asan ? `${target.exeBase}_asan` : target.exeBase;
+}
+
 function toolDir(target: LibToolTarget, useClang: boolean, asan = false): string {
   return `${target.outRoot}/${asan ? "clang_asan" : useClang ? "clang" : "msvc"}`;
 }
@@ -77,7 +83,7 @@ function cUnits(dir: string, ext: string, testSrc: string): CompileUnit[] {
 
 async function buildClang(target: LibToolTarget, asan = false): Promise<string> {
   const dir = toolDir(target, true, asan);
-  const exePath = `${dir}/${exeFile(target.exeBase, true)}`;
+  const exePath = `${dir}/${exeFile(exeBase(target, asan), true)}`;
   mkdirSync(dir, { recursive: true });
 
   // ASan: -O1 for readable traces, like buildAsan in build.ts.
@@ -128,19 +134,24 @@ export function libToolExePath(
   useClang = defaultUseClang,
   asan = false,
 ): string {
-  return `${toolDir(target, useClang, asan)}/${exeFile(target.exeBase, useClang || asan)}`;
+  return `${toolDir(target, useClang, asan)}/${exeFile(exeBase(target, asan), useClang || asan)}`;
 }
 
 export async function buildLibTool(
   target: LibToolTarget,
   useClang = defaultUseClang,
   asan = false,
+  clean = false,
 ): Promise<string> {
   if (asan) useClang = true; // ASan builds always use clang
-  const name = exeFile(target.exeBase, useClang);
+  const name = exeFile(exeBase(target, asan), useClang);
   const exePath = libToolExePath(target, useClang, asan);
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
   const units = cUnits(toolDir(target, useClang, asan), useClang ? "o" : "obj", testSrc);
+  if (clean) {
+    for (const u of units) rmSync(u.obj, { force: true });
+    rmSync(exePath, { force: true });
+  }
   const staleObj = units.some((u) => needsRebuild(u.obj, u.src));
   const staleExe = needsRebuild(exePath, ...units.map((u) => u.obj));
 
