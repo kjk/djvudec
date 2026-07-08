@@ -94,8 +94,14 @@ static int img_shapecount(jb2_image *im)
 
 jb2_shape *djvu_jb2_get_shape(jb2_image *im, int n)
 {
-    if (n >= im->inherited_shapes)
-        return &im->shapes[n - im->inherited_shapes];
+    if (n < 0) return NULL;
+    if (n >= im->inherited_shapes) {
+        int local = n - im->inherited_shapes;
+        /* Upper-bound check: a corrupt blit can reference a shape past the
+           decoded set; without this the caller reads an OOB shape bitmap. */
+        if (local >= im->nshapes) return NULL;
+        return &im->shapes[local];
+    }
     if (im->inherited_dict)
         return djvu_jb2_get_shape(im->inherited_dict, n);
     return NULL;
@@ -839,6 +845,11 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
             rectype = code_record(c, jim, is_image);
             if (rectype >= 0 && rectype < 12) hist[rectype]++;
             if (c->error) break;
+            /* A crafted stream can omit EndOfData; once the ZP coder has run
+               past the input it emits deterministic filler that keeps decoding
+               phantom records (each allocating shapes/blits) -- a small input
+               then balloons memory unbounded. Stop when the coder is dry. */
+            if (c->zp.eof) break;
         } while (rectype != REC_EndOfData);
         if (dbg) {
             fprintf(stderr, "JB2 rectypes: SOD=%d NM=%d NMlib=%d NMimg=%d MR=%d "

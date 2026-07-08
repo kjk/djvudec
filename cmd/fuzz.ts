@@ -4,7 +4,11 @@
 //   bun cmd/fuzz.ts -jobs 8     run 8 parallel workers sharing the corpus
 //   bun cmd/fuzz.ts -repro F    replay a single crash artifact and exit
 //   bun cmd/fuzz.ts -minimize   shrink the corpus to a minimal covering set
-//   bun cmd/fuzz.ts -clean      wipe out/fuzz and rebuild the fuzzer
+//
+// The fuzzer is always rebuilt from scratch: build-lib.ts doesn't track header
+// dependencies, so an edit to djvu_internal.h could otherwise leave mixed
+// object files (some against the old struct layout) -- an ABI mismatch that
+// looks like a decoder crash. A clean build is cheap here and removes that trap.
 //
 // The corpus directory (fuzz/corpus) IS the checkpoint: stop by killing the
 // process, resume by running again -- libFuzzer reloads the corpus and keeps
@@ -38,7 +42,6 @@ function usage(): never {
   -max-len N     max input size in bytes (default 4000000)
   -repro FILE    replay a single crash artifact and exit
   -minimize      shrink the corpus to a minimal covering set
-  -clean         wipe out/fuzz and rebuild the fuzzer
   -h, --help`,
   );
   process.exit(2);
@@ -49,7 +52,6 @@ let jobs = 1;
 let maxLen = 4000000;
 let repro = "";
 let minimize = false;
-let clean = false;
 
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
@@ -57,7 +59,6 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "-max-len") maxLen = intArg(args[++i], "-max-len");
   else if (a === "-repro") repro = args[++i] ?? usage();
   else if (a === "-minimize") minimize = true;
-  else if (a === "-clean") clean = true;
   else if (a === "-h" || a === "--help") usage();
   else usage();
 }
@@ -89,7 +90,7 @@ async function run(argv: string[]): Promise<number> {
   return await proc.exited;
 }
 
-const exe = await buildFuzz(clean);
+const exe = await buildFuzz(true); // always clean-build (see header comment)
 
 mkdirSync(CORPUS, { recursive: true });
 mkdirSync(CRASHES, { recursive: true });
