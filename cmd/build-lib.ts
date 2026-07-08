@@ -65,7 +65,15 @@ function needsRebuild(output: string, ...inputs: string[]): boolean {
   return false;
 }
 
+// Every .c includes these; treat them as inputs so a header edit forces a
+// recompile. Without this, changing a struct layout in djvu_internal.h leaves
+// stale objects compiled against the old layout -> ABI mismatch at link time.
+const HEADERS = [`${ROOT}/src/djvu.h`, `${ROOT}/src/djvu_internal.h`];
+
 type CompileUnit = { src: string; obj: string };
+
+// An object is stale if older than its source OR any shared header.
+const objStale = (u: CompileUnit) => needsRebuild(u.obj, u.src, ...HEADERS);
 
 function cUnits(dir: string, ext: string, testSrc: string): CompileUnit[] {
   const testBase = testSrc.replace(/^.*\//, "").replace(/\.c$/, "");
@@ -93,7 +101,7 @@ async function buildClang(target: LibToolTarget, asan = false): Promise<string> 
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
   const units = cUnits(dir, "o", testSrc);
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src)) continue;
+    if (!objStale(u)) continue;
     await $`clang ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
   }
 
@@ -115,7 +123,7 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
   const units = cUnits(dir, "obj", testSrc);
   const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src)) continue;
+    if (!objStale(u)) continue;
     const rel = u.src.startsWith(`${ROOT}/`)
       ? u.src.slice(ROOT.length + 1)
       : u.src;
@@ -145,7 +153,7 @@ export async function buildFuzz(clean = false): Promise<string> {
   }
 
   const cflags = `-fsanitize=address,fuzzer ${clangCFlags("-g -O1")}`;
-  const staleObj = units.some((u) => needsRebuild(u.obj, u.src));
+  const staleObj = units.some(objStale);
   const staleExe = needsRebuild(FUZZ_EXE, ...units.map((u) => u.obj));
   if (!staleObj && !staleExe && existsSync(FUZZ_EXE)) {
     // Ensure the runtime DLL even on the up-to-date path: a prior run may have
@@ -157,7 +165,7 @@ export async function buildFuzz(clean = false): Promise<string> {
 
   console.log("building djvudec_fuzz (clang+asan+fuzzer)...");
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src)) continue;
+    if (!objStale(u)) continue;
     await $`clang ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
   }
   const objs = units.map((u) => u.obj);
@@ -192,7 +200,7 @@ export async function buildLibTool(
     for (const u of units) rmSync(u.obj, { force: true });
     rmSync(exePath, { force: true });
   }
-  const staleObj = units.some((u) => needsRebuild(u.obj, u.src));
+  const staleObj = units.some(objStale);
   const staleExe = needsRebuild(exePath, ...units.map((u) => u.obj));
 
   if (!staleObj && !staleExe && existsSync(exePath)) {
