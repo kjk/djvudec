@@ -170,8 +170,16 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
     j2 = 0;
     last = size - 1;
     while (last > 0) {
-        int n = d->pos[j2];
-        signed char c = (signed char)(d->pos[j2] >> 24);
+        int n, c;
+        /* j2 is derived from decoded counts; on corrupt input it can escape
+           [0,size). DjVuLibre trusts the BWT permutation, but adversarial
+           streams don't hold the invariant -- bound it to avoid an OOB read. */
+        if (j2 < 0 || j2 >= size) {
+            djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "bzz: corrupt (BWT index)");
+            return -1;
+        }
+        n = d->pos[j2];
+        c = (signed char)(d->pos[j2] >> 24);
         data[--last] = (uint8_t)c;
         j2 = count[0xff & c] + (n & 0xffffff);
     }
