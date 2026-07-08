@@ -493,7 +493,13 @@ static int code_record_type(jb2_codec *c)
 
 static int code_match_index(jb2_codec *c)
 {
-    return code_num(c, 0, c->nlib2shape - 1, &c->dist_match_index);
+    int match = code_num(c, 0, c->nlib2shape - 1, &c->dist_match_index);
+    /* code_num does not clamp to [low,high]; DjVuLibre relies on GArray's
+       throwing bounds check when indexing lib2shape. With an empty library
+       (nlib2shape==0) lib2shape is still NULL, so an unchecked index is a
+       NULL/OOB read on crafted streams. */
+    if (match < 0 || match >= c->nlib2shape) { c->error = 1; return 0; }
+    return match;
 }
 
 static int code_abs_mark_size(jb2_codec *c, djvu_bitmap *bm, int border)
@@ -680,6 +686,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
         else if (rectype == REC_MatchedRefineLibraryOnly) { need_add_library = 1; }
         else { need_add_blit = 1; }
         match = code_match_index(c);
+        if (c->error) break;
         parent = c->lib2shape[match];
         tmp_shape.parent = parent;
         cbm = &djvu_jb2_get_shape(jim, parent)->bm;
@@ -709,6 +716,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
     case REC_MatchedCopy: {
         int xmin, ymin, xmax, ymax;
         match = code_match_index(c);
+        if (c->error) break;
         blit.shapeno = c->lib2shape[match];
         xmin = c->libinfo[match * 4 + 0];
         ymin = c->libinfo[match * 4 + 1];
