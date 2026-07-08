@@ -576,6 +576,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     int i, stencil_rc = 0;
     double t0 = 0.0;
 
+    if (djvu_aborted(ctx)) return -1;
     if (subsample < 1) subsample = 1;
     memset(&bg, 0, sizeof(bg)); memset(&fgnat, 0, sizeof(fgnat));
     if (t) t0 = djvu_bench_now_ms();
@@ -636,6 +637,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
             jb2_blit *b = &mask->blits[i];
             jb2_shape *s = djvu_jb2_get_shape(mask, b->shapeno);
             compose_ink_ctx ink;
+            if ((i & 63) == 0 && djvu_aborted(ctx)) return -1;
             if (!s || !djvu_bm_has_pixels(&s->bm)) continue;
             ink.bg = &bg;
             ink.palr = ink.palg = ink.palb = 0;
@@ -772,6 +774,7 @@ int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
     djvu_cpix bg;
     unsigned char lut[256]; const unsigned char *lp = NULL;
 
+    if (djvu_aborted(ctx)) return -1;
     if (subsample < 1) subsample = 1;
     memset(&bg, 0, sizeof(bg));
     if (subsample == 1 &&

@@ -167,6 +167,11 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
         for (i = 0; i < img->nblits; i++) {
             jb2_blit *b = &img->blits[i];
             jb2_shape *s = djvu_jb2_get_shape(img, b->shapeno);
+            if ((i & 63) == 0 && djvu_aborted(ctx)) {
+                djvu_free(ctx, out->data);
+                djvu_free(ctx, out);
+                return NULL;
+            }
             if (s && djvu_bm_has_pixels(&s->bm))
                 djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
                                         bitonal_stamp_run, &stamp);
@@ -197,6 +202,12 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
         for (i = 0; i < img->nblits; i++) {
             jb2_blit *b = &img->blits[i];
             jb2_shape *s = djvu_jb2_get_shape(img, b->shapeno);
+            if ((i & 63) == 0 && djvu_aborted(ctx)) {
+                djvu_free(ctx, acc);
+                djvu_free(ctx, out->data);
+                djvu_free(ctx, out);
+                return NULL;
+            }
             if (s && djvu_bm_has_pixels(&s->bm))
                 djvu_bm_visit_ink(&s->bm, b->left, b->bottom,
                                   bitonal_accum_ink, &c);
@@ -242,9 +253,10 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     double t0 = 0.0;
 
     if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
+    ctx = doc->ctx;
+    djvu_render_begin(ctx);
     if (subsample < 1) subsample = 1;
     if (t) djvu_render_timings_clear(t);
-    ctx = doc->ctx;
     form_off = doc->pages[page_no].form_off;
     type = djvu_page_get_type(doc, page_no);
     info_ok = (djvu_doc_page_info(doc, page_no, &pi) == 0);
@@ -256,7 +268,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
         if (t) t0 = djvu_bench_now_ms();
         mask = djvu_doc_jb2_mask_acquire(doc, page_no, &mask_owned);
         if (t) t->jb2_ms += djvu_bench_now_ms() - t0;
-        if (!mask) goto done;
+        if (!mask || djvu_aborted(ctx)) goto done;
     }
 
     /* Color composite when BG44 is present (compose_background requires it),
@@ -376,10 +388,12 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
     djvu_image *img;
 
     if (!dst) return -1;
+    if (!doc || !doc->ctx) return -1;
     if (render_plan(doc, page_no, subsample, &w, &h, &fmt, &color, &rotation) != 0)
         return -1;
     if (subsample < 1) subsample = 1;
     ctx = doc->ctx;
+    djvu_render_begin(ctx);
     k = rotation_quarter_turns(rotation); /* applied at every subsample */
 
     /* Zero-copy color path: compose straight into dst when no rotation is

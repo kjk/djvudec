@@ -43,6 +43,7 @@ djvu_ctx *djvu_ctx_new(djvu_alloc_cb alloc, djvu_free_cb free_cb,
     ctx->no_compose = 0;
     ctx->iw_max_chunks = 0;
     ctx->bgr = 0;
+    djvu_atomic_epoch_init(&ctx->abort_epoch);
     return ctx;
 }
 
@@ -75,6 +76,12 @@ void djvu_ctx_set_bgr(djvu_ctx *ctx, int enable)
 void djvu_ctx_set_iw_max_chunks(djvu_ctx *ctx, int max_chunks)
 {
     if (ctx) ctx->iw_max_chunks = max_chunks < 0 ? 0 : max_chunks;
+}
+
+void djvu_request_abort(djvu_ctx *ctx)
+{
+    if (ctx)
+        djvu_atomic_epoch_bump(&ctx->abort_epoch);
 }
 
 /* ---- INFO chunk ---- */
@@ -654,6 +661,7 @@ static void preload_jb2_mask(djvu_doc *doc, djvu_page_int *pg)
     const uint8_t *sjbz;
     jb2_image *dict, *mask;
 
+    if (djvu_aborted(doc->ctx)) return;
     if (!djvu_cache_stores_page(doc->ctx)) return;
     if (!doc || !pg || pg->jb2_mask) return;
     sjbz = djvu_form_find_chunk(doc, pg->form_off, "Sjbz", &sz, NULL);

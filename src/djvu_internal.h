@@ -9,11 +9,13 @@
 
 #include "djvu.h"
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #if defined(_WIN32)
 #include <windows.h>
 #else
 #include <time.h>
+#include <stdatomic.h>
 #endif
 
 #ifndef DJVU_RESTRICT
@@ -38,6 +40,34 @@
 /* core: context, document, chunk parsing, byte readers                  */
 /* ===================================================================== */
 
+/* Cooperative render-abort generation counter (see djvu_request_abort). */
+#if defined(_WIN32)
+typedef struct { volatile LONG v; } djvu_atomic_epoch;
+static inline void djvu_atomic_epoch_init(djvu_atomic_epoch *a) { a->v = 0; }
+static inline uint32_t djvu_atomic_epoch_load(const djvu_atomic_epoch *a)
+{
+    return (uint32_t)InterlockedCompareExchange((LONG *)&a->v, 0, 0);
+}
+static inline void djvu_atomic_epoch_bump(djvu_atomic_epoch *a)
+{
+    InterlockedIncrement((LONG *)&a->v);
+}
+#else
+typedef struct { atomic_uint v; } djvu_atomic_epoch;
+static inline void djvu_atomic_epoch_init(djvu_atomic_epoch *a)
+{
+    atomic_init(&a->v, 0);
+}
+static inline uint32_t djvu_atomic_epoch_load(const djvu_atomic_epoch *a)
+{
+    return atomic_load_explicit(&a->v, memory_order_relaxed);
+}
+static inline void djvu_atomic_epoch_bump(djvu_atomic_epoch *a)
+{
+    atomic_fetch_add_explicit(&a->v, 1, memory_order_relaxed);
+}
+#endif
+
 struct djvu_ctx {
     djvu_alloc_cb alloc;
     djvu_free_cb  free;
@@ -45,11 +75,31 @@ struct djvu_ctx {
     djvu_unlock_cb unlock;
     djvu_error_cb error;
     void *user;
+    djvu_atomic_epoch abort_epoch;
     int cache_per_page;        /* retain page-local decoded layers on djvu_page_int */
     int no_compose;    /* skip color composite in render */
     int iw_max_chunks; /* cap IW44 chunks per layer (0 = unlimited) */
     int bgr;           /* emit color output as B,G,R instead of R,G,B */
 };
+
+#if defined(_MSC_VER)
+static __declspec(thread) uint32_t djvu_render_epoch_tls;
+#else
+static __thread uint32_t djvu_render_epoch_tls;
+#endif
+
+/* Called at public render entry (djvu_page_render_timed / render_into). */
+static inline void djvu_render_begin(djvu_ctx *ctx)
+{
+    if (ctx)
+        djvu_render_epoch_tls = djvu_atomic_epoch_load(&ctx->abort_epoch);
+}
+
+static inline int djvu_aborted(djvu_ctx *ctx)
+{
+    if (!ctx) return 0;
+    return djvu_atomic_epoch_load(&ctx->abort_epoch) != djvu_render_epoch_tls;
+}
 
 static inline int djvu_cache_stores_page(djvu_ctx *ctx)
 {
