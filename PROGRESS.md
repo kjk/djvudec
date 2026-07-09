@@ -139,6 +139,21 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- merged cmd/bench-sum.ts into cmd/bench.ts as the `-like-sumatra` flag
+  (runs `djvu_test -bench-sum`, the SumatraPDF engine render path, instead
+  of the bare full-res `djvu_test -bench`).
+- corpus tooling: `cmd/djvu-parse.ts` — pure-TS structural DjVu parser (IFF
+  walk + chunk headers only; no ZP/BZZ/JB2/IW44 decode): parseDjvu() returns
+  page count, per-page resolution/dpi/rotation/kind, chunk inventory, IW44
+  header info (dims, color vs gray, progressive chunks), FGbz palette,
+  text/anno/outline presence, shared/inline dicts, standalone PM44/BM44
+  forms, and a `features` fingerprint for picking a feature-covering test
+  subset. `cmd/djvu-info.ts` prints it (same selection flags as the other
+  scripts; `-features` for one-line-per-file). All 115 corpus files parse
+  clean. bench.ts (and bench-sum.ts) print each file's relative path + size
+  (human-readable and exact bytes) before benching; `bench.ts -list-files`
+  lists path/size/pages of the whole corpus; `-all` now works in every
+  .djvu-selecting script (handled centrally in corpus.ts selectFiles).
 - corpus rework: dropped the local `testfiles/` mirror and the full/subset
   split. `cmd/get-deps.ts` now also clones DjvuNet/artifacts (98 .djvu /
   ~95 MB, blobless + sparse so only the .djvu materialize) and the corpus is

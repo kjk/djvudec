@@ -41,7 +41,14 @@ either. Don't re-investigate this.
 - **Script convention:** every script that operates on `.djvu` files does
   nothing by default — it prints its options plus the available corpus file
   count. Select work explicitly: `file.djvu ...` args, `-rand N` (N random
-  corpus files), and for tests.ts/find-slower-pages.ts `-all`.
+  corpus files), or `-all` (every corpus file). `bun cmd/bench.ts -list-files`
+  lists every corpus file with relative path, size, and page count.
+- `cmd/djvu-parse.ts` — cheap structural DjVu parser in pure TS (no image
+  decode, no BZZ): `parseDjvu(Uint8Array)` returns a typed `DjvuInfo` (pages,
+  per-page resolution/dpi/rotation/kind, chunk inventory, IW44 headers, FGbz
+  palette, text/anno/outline presence, shared dicts, standalone PM44/BM44)
+  plus a `features` fingerprint for picking a feature-covering test subset.
+  `bun cmd/djvu-info.ts <selection> [-features]` prints it human-readably.
 - Spec: https://www.sndjvu.org/spec.html
   (the **code** — DjvuNet and especially DjVuLibre — is the more definitive
   reference; the spec text is incomplete.)
@@ -82,10 +89,11 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   After the timing lines, a `document, allocs N, total <bytes>, peak <bytes>`
   line reports the decoder's allocation stats for the whole document (gathered in
   one extra untimed tracked pass, so it doesn't skew the timings).
-- `bun cmd/bench-sum.ts <file.djvu ... | -rand N> [-clang]` — same harness as
-  `bench.ts` (same `-bench`-style per-page + document lines), but replicates how
+- `bun cmd/bench.ts -like-sumatra <file.djvu ... | -rand N | -all>` — same
+  harness (same `-bench`-style per-page + document lines), but replicates how
   **SumatraPDF** actually opens/renders pages instead of timing the bare
-  `djvu_page_render(subsample=1)` (runs `djvu_test -bench-sum`):
+  `djvu_page_render(subsample=1)` (runs `djvu_test -bench-sum`; formerly the
+  separate `cmd/bench-sum.ts`):
   - ours → `EngineDjvuDec::RenderPage` (src/EngineDjvuDec.cpp): pick an integer
     subsample (any page type; color composes at the subsample too), query `djvu_page_render_info`
     then `djvu_page_render_into` a destination buffer with `djvu_ctx_set_bgr`
@@ -104,9 +112,9 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   order), while our engine rendered into a `djvu_image` then copied/converted it
   into the DIB. Two fixes close it: `djvu_ctx_set_bgr` (emit BGR directly, no
   R→B swap) and `djvu_page_render_into` (composite straight into the caller
-  buffer, no intermediate image). With both, `bench-sum` shows us faster than
-  libdjvu on color pages too. `djvu_test -verify-into` checks `render_into` is
-  byte-identical to `djvu_page_render`.
+  buffer, no intermediate image). With both, `-like-sumatra` shows us faster
+  than libdjvu on color pages too. `djvu_test -verify-into` checks
+  `render_into` is byte-identical to `djvu_page_render`.
 - **Before/after render perf** (djvudec only, no DjVuLibre):
   1. `bun cmd/build-bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`
   2. Edit `src/` (or regenerate `dist/djvu.c` if benchmarking the amalgamation)
@@ -374,7 +382,7 @@ Notes:
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
   `-bench` times our render vs DjVuLibre `ddjvu_page_render` per page (see
   `bun cmd/bench.ts`); `-bench-sum` does the same for the SumatraPDF engine
-  render path (see `bun cmd/bench-sum.ts`). `-sub N` renders `-out` at subsample
+  render path (`bun cmd/bench.ts -like-sumatra`). `-sub N` renders `-out` at subsample
   N (for inspecting the subsampled raster). `-verify-into` checks
   `djvu_page_render_into` is byte-identical to `djvu_page_render`.
 
