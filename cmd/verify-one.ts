@@ -1,9 +1,14 @@
 import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { build } from "./build";
+import { corpusSummary, selectFiles } from "./corpus";
 
 const ROOT = dirname(import.meta.dir);
-const f = join(ROOT, "testfiles/full/Advances in Computers, Vol.03 (Elsevier, 1962)(ISBN 9780120121038)(T)(O)(376s)_CsAl_.djvu");
+const [f] = selectFiles(
+  `usage: bun cmd/verify-one.ts <file.djvu | -rand 1> [--bench] [--tofile] [--ours-only]
+
+${corpusSummary()}`,
+);
 const TEST = await build(false);
 const bench = process.argv.includes("--bench");
 const DUMP = join(ROOT, "out/msvc/djvudec_dump.exe");

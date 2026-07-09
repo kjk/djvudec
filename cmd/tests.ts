@@ -13,15 +13,14 @@
 // decodes IW44 per page (lazy) and opens a fresh ddjvuapi document per page so
 // multipage books do not retain every layer in RAM. Text uses
 // one `djvu_test -verify-text` per file (doc opened once)
-// with length-prefixed per-page djvutxt on stdin. Runs over every .djvu under
-// testfiles/subset by default (`-full` uses testfiles/full); set DJVU_SPECS to
-// override. See test/file_features.md for the curated subset. Files are tested
-// in parallel across one worker per CPU; `-cpu N`
-// overrides the count.
-// `-rand N` limits the run to N randomly chosen files from the corpus.
+// with length-prefixed per-page djvutxt on stdin. The corpus is the .djvu
+// files inside the deps/ reference checkouts (cmd/corpus.ts; DJVU_SPECS
+// overrides with any directory). With no selection argument it prints usage
+// and the available file count; run with `-all`, `-rand N`, explicit files,
+// or `-failures path`. Files are tested in parallel across one worker per
+// CPU; `-cpu N` overrides the count.
 // `-failout path` writes failing file paths (default: failures.txt in repo root);
 // each failure is appended as soon as it is found.
-// `-failures path` tests only paths listed in that file (one per line, # comments).
 // `-clean` deletes out/ before building, forcing a full harness rebuild.
 // After each djvu_test_* subprocess exits, Windows FFI enumerates processes; if
 // any djvu_test_* process exceeds 8 GB RAM, all are killed and the offending
@@ -32,7 +31,7 @@ import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
 import { buildRef, build, buildAsan, cleanBuildOutput, defaultUseClang, refToolPath } from "./build";
-import { corpusDir } from "./corpus";
+import { corpusFiles, corpusSummary, pickRandom } from "./corpus";
 import { trackDjvuTestProc, awaitDjvuTestProc } from "./win-proc-mem";
 
 const ROOT = dirname(import.meta.dir);
@@ -428,17 +427,6 @@ async function verifyFile(
   return { ...render, ...text };
 }
 
-// Every .djvu under dir, recursively (sorted by path).
-function walkDjvu(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...walkDjvu(p));
-    else if (name.toLowerCase().endsWith(".djvu")) out.push(p);
-  }
-  return out;
-}
 
 // Human-readable duration, e.g. 5018.3 -> "5s 18.3ms", 65018 -> "1m 5s 18.0ms".
 function humanMs(ms: number): string {
@@ -467,11 +455,67 @@ function readFailureList(path: string): string[] {
     .filter((l) => l.length > 0);
 }
 
+function usage(): never {
+  console.log(
+    `usage: bun cmd/tests.ts <selection> [options]
+selection (required; default prints this help):
+  -all             verify every corpus file
+  -rand N          verify N randomly chosen corpus files
+  -failures path   verify only paths listed in that file (one per line, # comments)
+  file.djvu ...    verify the given files
+options:
+  -clang           build the clang harness instead of MSVC
+  -asan            verify under AddressSanitizer (out/clang_asan)
+  -cpu N           worker count (default: one per CPU)
+  -failout path    where to write failing paths (default: failures.txt)
+  -clean           delete out/ before building
+
+${corpusSummary()}`,
+  );
+  process.exit(2);
+}
+
 async function main(): Promise<number> {
   await getDeps();
-  const SPECS = corpusDir(ROOT);
   ASAN = process.argv.includes("-asan");
   const useClang = process.argv.includes("-clang") || defaultUseClang;
+
+  const failOutPath = argPath("-failout") ?? join(ROOT, "failures.txt");
+  const failInPath = argPath("-failures");
+  const randArg = process.argv.indexOf("-rand");
+  const explicit = process.argv
+    .slice(2)
+    .filter((a, i, all) => !a.startsWith("-") && all[i - 1] !== "-rand" &&
+      all[i - 1] !== "-cpu" && all[i - 1] !== "-failout" && all[i - 1] !== "-failures");
+
+  let files: string[];
+  let totalFiles: number;
+  if (failInPath) {
+    if (!existsSync(failInPath)) {
+      console.error(`failures list not found: ${failInPath}`);
+      return 1;
+    }
+    files = readFailureList(failInPath);
+    totalFiles = files.length;
+    console.log(`testing ${files.length} files from ${failInPath}`);
+  } else if (explicit.length > 0) {
+    for (const f of explicit)
+      if (!existsSync(f)) { console.error(`no such file: ${f}`); return 1; }
+    files = explicit;
+    totalFiles = files.length;
+  } else if (randArg >= 0) {
+    const nRand = parseInt(process.argv[randArg + 1]);
+    if (!(nRand > 0)) usage();
+    const all = corpusFiles();
+    files = pickRandom(all, nRand);
+    totalFiles = all.length;
+  } else if (process.argv.includes("-all")) {
+    files = corpusFiles();
+    totalFiles = files.length;
+  } else {
+    usage();
+  }
+
   if (process.argv.includes("-clean")) cleanBuildOutput();
   await buildRef();
   // -asan: verify under a clang + AddressSanitizer build to catch memory bugs.
@@ -488,39 +532,6 @@ async function main(): Promise<number> {
   const tbad: string[] = [];
   const failedFiles = new Map<string, string[]>();
 
-  const failOutPath = argPath("-failout") ?? join(ROOT, "failures.txt");
-  const failInPath = argPath("-failures");
-
-  let files: string[];
-  let totalFiles: number;
-  if (failInPath) {
-    if (!existsSync(failInPath)) {
-      console.error(`failures list not found: ${failInPath}`);
-      return 1;
-    }
-    files = readFailureList(failInPath);
-    totalFiles = files.length;
-    console.log(`testing ${files.length} files from ${failInPath}`);
-  } else {
-    files = walkDjvu(SPECS).sort();
-    totalFiles = files.length;
-  }
-
-  const randArg = process.argv.indexOf("-rand");
-  if (randArg >= 0) {
-    const nRand = parseInt(process.argv[randArg + 1]);
-    if (nRand > 0 && nRand < files.length) {
-      const shuffled = [...files];
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      files = shuffled.slice(0, nRand);
-    } else if (nRand > 0) {
-      files = files.slice(0, nRand);
-    }
-  }
-
   const cpuArg = process.argv.indexOf("-cpu");
   const nWorkers = Math.max(
     1,
@@ -533,7 +544,6 @@ async function main(): Promise<number> {
     randArg >= 0 && files.length < totalFiles
       ? ` (${files.length} random of ${totalFiles})`
       : "";
-  console.log(`corpus: ${SPECS}`);
   console.log(`testing ${files.length} files${randNote} with ${nWorkers} workers`);
 
   writeFileSync(failOutPath, "");

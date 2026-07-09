@@ -7,7 +7,7 @@
 //
 //   bun cmd/compare-code-sizes.ts [file.djvu] [-clang] [-clean]
 //
-// With no file, uses the first .djvu under testfiles/djvu/.
+// With no file, uses the first corpus .djvu (deps/ checkouts).
 import { $ } from "bun";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
 import { join } from "path";
@@ -19,6 +19,7 @@ import {
 } from "./build";
 import { DJVULIBRE_DIR, getDeps } from "./get-deps";
 import { LIB_SRCS } from "./build-lib";
+import { corpusFiles } from "./corpus";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/");
@@ -86,17 +87,6 @@ async function runCmd(cmd: string, cwd?: string): Promise<void> {
   const shell = $`${{ raw: cmd }}`;
   if (cwd) await shell.cwd(cwd);
   else await shell;
-}
-
-function walkDjvu(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...walkDjvu(p));
-    else if (name.toLowerCase().endsWith(".djvu")) out.push(p);
-  }
-  return out;
 }
 
 function formatBytes(n: number): string {
@@ -408,9 +398,9 @@ async function main(): Promise<void> {
 
   let testFile = fileArg;
   if (!testFile) {
-    const files = walkDjvu(`${ROOT}/testfiles/djvu`).sort();
+    const files = corpusFiles();
     if (files.length === 0) {
-      console.error("no test .djvu found; pass a file path");
+      console.error("no corpus .djvu found; pass a file path");
       process.exit(1);
     }
     testFile = files[0]!;

@@ -1,11 +1,18 @@
 // verify-wasm.ts — smoke-test wasm/djvu.js by decoding a file through the same
 // exports the web app uses, then cross-check dims against djvu_test.
-//   bun cmd/verify-wasm.ts [file.djvu]
+//   bun cmd/verify-wasm.ts <file.djvu | -rand N>
 import path from "node:path";
 import { readFileSync } from "node:fs";
+import { getDeps } from "./get-deps";
+import { corpusSummary, selectFiles } from "./corpus";
 
 const ROOT = path.resolve(import.meta.dir, "..");
-const file = process.argv[2] ?? path.join(ROOT, "testfiles/full/lizard2002.djvu");
+await getDeps();
+const [file] = selectFiles(
+  `usage: bun cmd/verify-wasm.ts <file.djvu | -rand 1>
+
+${corpusSummary()}`,
+);
 
 // The glue is built for ENVIRONMENT=web; provide the browser globals it probes.
 globalThis.self = globalThis as any;

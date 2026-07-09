@@ -21,13 +21,14 @@ char *txt = djvu_page_text(doc, 0);
 ```
 
 ## Build & test
-Requires `clang`, `bun`, and `git`. `cmd/get-deps.ts` clones the DjvuNet and
-DjVuLibre repos into `deps/` and assembles the test corpus into
-`testfiles/djvu/`; `build.ts` and `tests.ts` call it automatically.
+Requires `clang`, `bun`, and `git`. `cmd/get-deps.ts` clones the DjvuNet,
+DjVuLibre, and DjvuNet/artifacts repos into `deps/`; the `.djvu` samples in
+those checkouts are the test corpus. `build.ts` and `tests.ts` call it
+automatically.
 ```
-bun cmd/get-deps.ts     # clone deps + assemble testfiles/djvu (auto-run below)
+bun cmd/get-deps.ts     # clone deps (the corpus; auto-run below)
 bun cmd/build.ts        # build reference tools + the C library and djvu_test.exe
-bun cmd/tests.ts        # build, then verify render + text against DjVuLibre
+bun cmd/tests.ts -all   # build, then verify render + text against DjVuLibre
 ```
 
 `djvu_test` CLI (jbig2dec-flavored):

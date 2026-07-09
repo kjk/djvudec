@@ -2,11 +2,14 @@
 // Not byte-exact by design (different scaler paths and mask anti-aliasing);
 // reports per-page mean/max abs channel diff, flags mean > threshold.
 //
-//   bun cmd/verify-subsample.ts [file.djvu ...] [-sub N] [-pages a,b,c]
+//   bun cmd/verify-subsample.ts <file.djvu ... | -rand N> [-sub N] [-pages a,b,c]
 //
-// With no files, checks the color corpus files at subsamples 2 and 3.
+// Default subsamples: 2 and 3. With no selection it prints usage + the
+// available corpus file count.
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { join, dirname, basename } from "path";
+import { getDeps } from "./get-deps";
+import { corpusSummary, selectFiles } from "./corpus";
 
 const ROOT = dirname(import.meta.dir);
 const TEST = join(ROOT, "out/msvc/djvu_test_msvc.exe");
@@ -108,21 +111,23 @@ async function comparePage(file: string, page: number, sub: number): Promise<voi
 const args = process.argv.slice(2);
 let subs = [2, 3];
 let pages: number[] | null = null;
-const files: string[] = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "-sub") subs = [parseInt(args[++i]!)];
   else if (args[i] === "-pages") pages = args[++i]!.split(",").map((s) => parseInt(s));
-  else files.push(args[i]!);
 }
-if (files.length === 0) {
-  for (const f of [
-    "testfiles/djvu/1998_compression.djvu", // FG44 + palette compound mix
-    "testfiles/djvu/1998_lossy_masked.djvu", // compound, photo bg
-    "testfiles/djvu/Mcguffey's_Primer.djvu", // palette compound
-    "testfiles/djvu/djvulibre-book-ru.djvu", // palette compound
-  ])
-    files.push(join(ROOT, f));
-}
+await getDeps();
+const files = selectFiles(
+  `usage: bun cmd/verify-subsample.ts <selection> [options]
+selection (required; default prints this help):
+  file.djvu ...   compare the given files
+  -rand N         compare N randomly selected corpus files
+options:
+  -sub N          check a single subsample (default: 2 and 3)
+  -pages a,b,c    check specific pages (default: first, middle, last)
+
+${corpusSummary()}`,
+  ["-rand", "-sub", "-pages"],
+);
 
 for (const file of files) {
   if (!existsSync(file)) {

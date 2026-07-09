@@ -6,9 +6,9 @@ Tracked regressions and ideas for closing the gap vs DjVuLibre (`ddjvuapi`
 Bench commands (from repo root):
 
 ```text
-bun cmd/bench.ts testfiles/subset/djvu3spec.djvu
+bun cmd/bench.ts deps/DjVuLibre/doc/djvu3spec.djvu
 bun cmd/build-dump.ts
-out/msvc/djvudec_dump.exe -bench-render -layers -warm 1 testfiles/subset/djvu3spec.djvu
+out/msvc/djvudec_dump.exe -bench-render -layers -warm 1 deps/DjVuLibre/doc/djvu3spec.djvu
 ```
 
 ---

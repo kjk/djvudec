@@ -139,6 +139,15 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- corpus rework: dropped the local `testfiles/` mirror and the full/subset
+  split. `cmd/get-deps.ts` now also clones DjvuNet/artifacts (98 .djvu /
+  ~95 MB, blobless + sparse so only the .djvu materialize) and the corpus is
+  enumerated in place from the deps/ checkouts by `cmd/corpus.ts` (~115
+  files; `DJVU_SPECS=<dir>` overrides). Every script that operates on .djvu
+  now does nothing by default — it prints usage + the corpus file count —
+  and takes explicit files or `-rand N` (tests.ts/find-slower-pages.ts also
+  `-all`). djvudec_stress accepts files as well as dirs. Removed
+  dump-features.ts, copy-djvu-files.ts, test/file_features.md.
 - fuzz finding (slow-unit-32a1cc…): a crafted Sjbz stream repeating
   StartOfData 77k times made each SOD re-run init_library, which rescanned
   every inherited dict shape bitmap with djvu_bm_bbox — O(records × shapes ×

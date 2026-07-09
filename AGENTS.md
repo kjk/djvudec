@@ -23,21 +23,31 @@ C structs (`djvu_doc_outline`, `djvu_page_text_get_zones`, `djvu_page_get_links`
 that a caller can serialize themselves. The C# port (DjvuNet) has no XML code
 either. Don't re-investigate this.
 
-## Reference checkouts (local)
+## Reference checkouts (local) — these ARE the corpus
 - C# source being ported:  `deps/DjvuNet/DjvuNet`  (DjvuNet repo)
 - Verification oracle:      `deps/DjVuLibre`        (DjVuLibre repo)
-- `bun cmd/get-deps.ts` clones both repos into `deps/` (skipped if present)
-  and assembles the test corpus into `testfiles/djvu/*.djvu` by copying every
-  `.djvu` from `deps/DjVuLibre/doc`, `deps/DjvuNet/Specs`, and
-  `deps/DjvuNet/DjvuNetTest/TestFiles`. Exported as `getDeps()`; `build.ts`
-  and `tests.ts` both call it, so a fresh checkout self-provisions. `deps/`
-  and `testfiles/` are gitignored.
+- Test corpus:              `deps/artifacts`        (DjvuNet/artifacts repo,
+  98 `.djvu` / ~95 MB — the corpus DjvuNet.Tests runs against; cloned
+  blobless + sparse so only the `.djvu` files materialize)
+- `bun cmd/get-deps.ts` clones all three repos into `deps/` (skipped if
+  present). Exported as `getDeps()`; `build.ts` and `tests.ts` both call it,
+  so a fresh checkout self-provisions. `deps/` is gitignored.
+- **There is no local `testfiles/` mirror and no full/subset split.**
+  `cmd/corpus.ts` enumerates the corpus `.djvu` in place from
+  `deps/DjVuLibre/doc`, `deps/DjvuNet/Specs`,
+  `deps/DjvuNet/DjvuNetTest/TestFiles`, and `deps/artifacts{,/data,/wikimedia}`
+  (deduped by basename; ~115 files). `DJVU_SPECS=<dir>` overrides the corpus
+  with any directory of `.djvu` (scanned recursively).
+- **Script convention:** every script that operates on `.djvu` files does
+  nothing by default — it prints its options plus the available corpus file
+  count. Select work explicitly: `file.djvu ...` args, `-rand N` (N random
+  corpus files), and for tests.ts/find-slower-pages.ts `-all`.
 - Spec: https://www.sndjvu.org/spec.html
   (the **code** — DjvuNet and especially DjVuLibre — is the more definitive
   reference; the spec text is incomplete.)
 
 Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
-`Z:\backup\books` (1396 files).
+`Z:\backup\books` (1396 files) — point scripts at them with `DJVU_SPECS`.
 
 ## Build & test
 - `bun cmd/build.ts` — fetches deps (`getDeps`), builds the DjVuLibre reference
@@ -54,11 +64,10 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   so the MSVC harness compiles with `-MT` to match (a `/MD` mismatch is LNK2038).
   NB: Bun's shell eats `\` in glob args, so `ROOT` is normalized to forward
   slashes; MSVC flags use `-` (a `/` synonym) to dodge the same path-mangling.
-- `bun cmd/bench.ts [file.djvu] [-clang] [-full]` — builds, then runs
+- `bun cmd/bench.ts <file.djvu ... | -rand N> [-clang]` — builds, then runs
   `djvu_test -bench` to compare our per-page render speed against DjVuLibre's
   (`ddjvuapi` `page_render`: decode + composite + rotation; same `steady_clock`
-  both sides). With no file it picks a random `.djvu` from `testfiles/subset`
-  (`-full` → `testfiles/full`). Each line:
+  both sides). Each line:
   `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%` (`+` = we're slower).
   Two fairness rules (both were once bugs — don't reintroduce them):
   the ours/libdjvu sessions are **interleaved** (ours, lib, ours, lib) so a
@@ -73,7 +82,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   After the timing lines, a `document, allocs N, total <bytes>, peak <bytes>`
   line reports the decoder's allocation stats for the whole document (gathered in
   one extra untimed tracked pass, so it doesn't skew the timings).
-- `bun cmd/bench-sum.ts [file.djvu] [-clang] [-full]` — same harness as
+- `bun cmd/bench-sum.ts <file.djvu ... | -rand N> [-clang]` — same harness as
   `bench.ts` (same `-bench`-style per-page + document lines), but replicates how
   **SumatraPDF** actually opens/renders pages instead of timing the bare
   `djvu_page_render(subsample=1)` (runs `djvu_test -bench-sum`):
@@ -111,7 +120,7 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
      `bun cmd/bench-perf.ts compare before.txt after.txt`.
   **Warmup:** `-warm N` discards the first N renders per page before timing
   (cold cache dominates small files). Example:
-  `bun cmd/bench-perf.ts -warm 1 testfiles/subset/foo.djvu`.
+  `bun cmd/bench-perf.ts -warm 1 deps/DjVuLibre/doc/djvu3spec.djvu`.
   **Layer breakdown:** `-layers` adds per-stage timings (JB2 decode, IW44,
   composite, rotate) via `djvu_page_render_timed`. Raw lines:
   `pN t1 t2 t3` (total ms) and
@@ -120,9 +129,11 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   prints a before/after breakdown per stage (fastest of 3 per stage).
   Same flags on `djvudec_dump`: `bun cmd/build-dump.ts` /
   `djvudec_dump -bench-render -warm 1 -layers file.djvu`.
-- `bun cmd/tests.ts [-clang] [-cpu N] [-asan]` — the **test driver**: ensures deps,
-  calls `buildRef()`+`build()` from `build.ts` (build first, then verify), and
-  compares against the oracle over `testfiles/djvu/*.djvu`. Builds with MSVC by
+- `bun cmd/tests.ts <-all | -rand N | file.djvu ... | -failures path>
+  [-clang] [-cpu N] [-asan]` — the **test driver**: ensures deps, calls
+  `buildRef()`+`build()` from `build.ts` (build first, then verify), and
+  compares against the oracle over the selected corpus files. With no
+  selection it prints usage + the corpus file count. Builds with MSVC by
   default; `-clang` selects the clang harness. Files are tested **in parallel**,
   one worker per CPU (each worker uses private temp PNMs); `-cpu N` overrides the
   worker count. Per-file lines print in completion order (`[done/total] name …
@@ -156,9 +167,10 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   `set-ant` via `djvused in.djvu -f script.dsed`).
 
 ### Stress & fuzzing (memory-safety)
-- `bun cmd/stress-test.ts <dir>` — renders every page of every `.djvu` under
-  `<dir>` (recursively) from N worker threads with per-page caching + lock
-  callbacks, mimicking SumatraPDF's concurrent render path. Finds thread-safety
+- `bun cmd/stress-test.ts <dir | file.djvu ... | -rand N>` — renders every
+  page of the selected files (a directory is walked recursively) from N worker
+  threads with per-page caching + lock callbacks, mimicking SumatraPDF's
+  concurrent render path. Finds thread-safety
   bugs the single-threaded verifier can't. **ASan build is the default**
   (`out/clang_asan/djvudec_stress_asan.exe`); `-no-asan` gives a plain release
   build (`out/msvc/djvudec_stress.exe`), `-cpu N` sets threads (default
@@ -172,20 +184,20 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
   as a `.djvu` and drives the full decode surface (page info, render at full +
   4x subsample, page text, outline), capped at 20 pages/input. Builds into
   `out/fuzz/djvudec_fuzz.exe` via `buildFuzz()`. First run seeds `fuzz/corpus/`
-  from `testfiles/subset`; the corpus dir **is** the checkpoint — kill to stop,
-  rerun to resume. Flags: `-jobs N` (parallel workers), `-repro FILE` (replay a
+  from the deps/ corpus (files over `-max-len` skipped); the corpus dir **is**
+  the checkpoint — kill to stop, rerun to resume. Flags: `-jobs N` (parallel workers), `-repro FILE` (replay a
   crash with a stack trace), `-minimize` (`-merge=1` corpus shrink), `-clean`,
   `-max-len N`. `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so
   crash inputs become regression seeds.
 
 ### Verification scripts
-- `bun cmd/tests.ts` — corpus verifier (builds first). mask→pgm, bg/color→ppm,
-  plus text. Scans every `.djvu` under `testfiles/` **recursively**; set the
-  `DJVU_SPECS` env var to point the scan at any other directory (e.g. a
-  real-world set) instead.
+- `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier
+  (builds first). mask→pgm, bg/color→ppm, plus text. Runs over the selected
+  corpus files (see cmd/corpus.ts); set the `DJVU_SPECS` env var to point the
+  corpus at any other directory (e.g. a real-world set) instead.
 - The old Python verifiers (`test/verify.py`, `test/verify_dir.py`) have been
   removed; `cmd/tests.ts` is their bun/TypeScript replacement.
-- `bun cmd/verify-subsample.ts [file.djvu ...] [-sub N] [-pages a,b,c]` —
+- `bun cmd/verify-subsample.ts <file.djvu ... | -rand N> [-sub N] [-pages a,b,c]` —
   compares reduced-size renders (subsamples 2/3 by default) against
   `ddjvu -subsample=N -aspect=no` and reports mean/max abs channel diff (not
   byte-exact by design: different scaler paths + mask anti-aliasing; corpus

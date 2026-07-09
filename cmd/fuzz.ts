@@ -24,15 +24,17 @@ import {
   copyFileSync,
   renameSync,
   rmSync,
+  statSync,
 } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, basename } from "node:path";
 import { buildFuzz, FUZZ_EXE } from "./build-lib";
+import { getDeps } from "./get-deps";
+import { corpusFiles } from "./corpus";
 
 const ROOT = resolve(import.meta.dir, "..");
 const FUZZ = join(ROOT, "fuzz");
 const CORPUS = join(FUZZ, "corpus");
 const CRASHES = join(FUZZ, "crashes");
-const SEED_DIR = join(ROOT, "testfiles", "subset");
 
 function usage(): never {
   console.error(
@@ -127,11 +129,17 @@ if (minimize) {
 }
 
 // First run: seed the (empty) corpus with the real .djvu files from the
-// verify subset so mutation starts from valid DjVu, not random bytes.
-if (readdirSync(CORPUS).length === 0 && existsSync(SEED_DIR)) {
-  const seeds = readdirSync(SEED_DIR).filter((f) => /\.djvu?$/i.test(f));
-  for (const f of seeds) copyFileSync(join(SEED_DIR, f), join(CORPUS, f));
-  console.log(`seeded corpus with ${seeds.length} file(s) from testfiles/subset`);
+// deps/ corpus so mutation starts from valid DjVu, not random bytes. Files
+// over max_len are skipped -- libFuzzer would ignore them anyway.
+if (readdirSync(CORPUS).length === 0) {
+  await getDeps();
+  let n = 0;
+  for (const f of corpusFiles()) {
+    if (statSync(f).size > maxLen) continue;
+    copyFileSync(f, join(CORPUS, basename(f)));
+    n++;
+  }
+  console.log(`seeded corpus with ${n} file(s) from the deps/ corpus`);
 }
 
 const before = new Set(listArtifacts());

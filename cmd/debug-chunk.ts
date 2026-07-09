@@ -1,23 +1,24 @@
 #!/usr/bin/env bun
 // Run one -verify-render chunk with live RSS monitoring + djvu_test mem stderr.
 //
-//   bun cmd/debug-chunk.ts [lo] [hi]
-//   bun cmd/debug-chunk.ts 1 16
+//   bun cmd/debug-chunk.ts file.djvu [lo] [hi]
+//   bun cmd/debug-chunk.ts file.djvu 1 16
 //
 // Env forwarded: DJVU_VERIFY_MEM_MB (default 4096 in harness), DJVU_VERIFY_OURS_ONLY, etc.
 import { join, dirname } from "path";
-import { mkdirSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { fmtBytes } from "./win-proc-mem";
 import { build, defaultUseClang } from "./build";
 
 const ROOT = dirname(import.meta.dir);
-const FILE = join(
-  ROOT,
-  "testfiles/full/Popov E'.V. Obshchenie s E'VM na estestvennom jazyke (Nauka, 1982)(ru)(T)(360s)_CsAi_.djvu",
-);
-const lo = parseInt(process.argv[2] ?? "1", 10);
-const hi = parseInt(process.argv[3] ?? "16", 10);
+const FILE = process.argv[2] ?? "";
+if (!FILE || !existsSync(FILE)) {
+  console.error("usage: bun cmd/debug-chunk.ts file.djvu [lo] [hi]");
+  process.exit(2);
+}
+const lo = parseInt(process.argv[3] ?? "1", 10);
+const hi = parseInt(process.argv[4] ?? "16", 10);
 const memLimitMb = parseInt(process.env.DJVU_VERIFY_MEM_MB ?? "4096", 10);
 
 const k32 = dlopen("kernel32.dll", {

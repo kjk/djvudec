@@ -92,8 +92,8 @@ INFO is now parsed for all pages inside `djvu_doc_open`.
 
 ```text
 bun cmd/build-thread.ts
-bun cmd/thread.ts testfiles/subset/djvu3spec.djvu
-bun cmd/thread.ts -cpu 4 -nops 512 testfiles/subset/foo.djvu
+bun cmd/thread.ts deps/DjVuLibre/doc/djvu3spec.djvu
+bun cmd/thread.ts -cpu 4 -nops 512 deps/DjVuLibre/doc/foo.djvu
 ```
 
 `djvudec_thread` opens the file once with per-page caching and lock callbacks,

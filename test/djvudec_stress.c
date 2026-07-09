@@ -421,28 +421,36 @@ static int stress_one(const char *path, void *user)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-        "usage: %s [-cpu N] <dir>\n"
-        "  render every page of every .djvu/.djv under <dir>\n"
+        "usage: %s [-cpu N] <dir-or-file> ...\n"
+        "  render every page of each .djvu file / every .djvu under each dir\n"
         "  default threads: processor_count - 2, at least 2\n",
         prog);
 }
 
+static int path_is_dir(const char *path)
+{
+#if defined(_WIN32)
+    DWORD attr = GetFileAttributesA(path);
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
 int main(int argc, char **argv)
 {
-    const char *dir = NULL;
-    int ncpu = 0, i, rc;
+    int ncpu = 0, i, rc = 0, npaths = 0;
     stress_ctx ctx;
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-cpu") && i + 1 < argc)
-            ncpu = atoi(argv[++i]);
-        else if (argv[i][0] == '-')
-            { usage(argv[0]); return 2; }
-        else
-            dir = argv[i];
+            { ncpu = atoi(argv[++i]); continue; }
+        if (argv[i][0] == '-') { usage(argv[0]); return 2; }
+        npaths++;
     }
 
-    if (!dir) { usage(argv[0]); return 2; }
+    if (npaths == 0) { usage(argv[0]); return 2; }
     if (ncpu <= 0) ncpu = default_thread_count();
 
     djvu_init();
@@ -453,17 +461,23 @@ int main(int argc, char **argv)
     memset(&ctx, 0, sizeof(ctx));
     ctx.ncpu = ncpu;
 
-    printf("stress-test %s (%d threads)\n", dir, ncpu);
+    printf("stress-test (%d threads)\n", ncpu);
     fflush(stdout);
 
-    rc = walk_dir(dir, stress_one, &ctx);
+    for (i = 1; i < argc; i++) {
+        int frc;
+        if (!strcmp(argv[i], "-cpu")) { i++; continue; }
+        frc = path_is_dir(argv[i]) ? walk_dir(argv[i], stress_one, &ctx)
+                                   : stress_one(argv[i], &ctx);
+        if (frc != 0) rc = frc;
+    }
 
 #if defined(_WIN32)
     DeleteCriticalSection(&g_cache_lock);
 #endif
 
     if (rc < 0) {
-        fprintf(stderr, "cannot walk %s\n", dir);
+        fprintf(stderr, "cannot walk one or more paths\n");
         return 1;
     }
 

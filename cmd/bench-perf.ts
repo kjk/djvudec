@@ -14,6 +14,8 @@
 import { existsSync, readFileSync } from "fs";
 import { defaultUseClang } from "./build";
 import { benchTarget, buildLibTool } from "./build-lib";
+import { getDeps } from "./get-deps";
+import { corpusSummary, selectFiles } from "./corpus";
 
 export type PageTimings = Map<number, [number, number]>;
 
@@ -274,25 +276,22 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const file = args.find((a) => !a.startsWith("-"));
-  if (!file) {
-    console.error(
-      "usage: bun cmd/bench-perf.ts file.djvu [-warm N] [-layers] [-p N]\n" +
-        "       bun cmd/bench-perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]\n" +
-        "       bun cmd/bench-perf.ts compare before.txt after.txt",
-    );
-    return 1;
-  }
-  if (!existsSync(file)) {
-    console.error(`no such file: ${file}`);
-    return 1;
-  }
+  await getDeps();
+  const files = selectFiles(
+    `usage: bun cmd/bench-perf.ts <file.djvu ... | -rand N> [-warm N] [-layers] [-p N]
+       bun cmd/bench-perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]
+       bun cmd/bench-perf.ts compare before.txt after.txt
 
-  console.log(`file: ${file}`);
+${corpusSummary()}`,
+    ["-rand", "-warm", "-p"],
+  );
+
   if (benchOpts.page != null) console.log(`page: ${benchOpts.page}`);
   if (benchOpts.warm > 0) console.log(`warm: ${benchOpts.warm} renders/page`);
   if (benchOpts.layers) console.log("layers: jb2 / iw44 / composite / rotate");
 
+  for (const file of files) {
+  console.log(`file: ${file}`);
   console.log("before: building...");
   const beforeOut = await runBenchRender("before", useClang, file, benchOpts);
   console.log("after: building...");
@@ -310,6 +309,7 @@ async function main(): Promise<number> {
       "\n--- layer breakdown (fastest of 2 runs per stage; + = slower after) ---",
     );
     console.log(compareLayerTimings(beforeLayers, afterLayers));
+  }
   }
   return 0;
 }

@@ -2,7 +2,7 @@
 //
 //   bun cmd/thread.ts file.djvu
 //   bun cmd/thread.ts -cpu 4 -nops 512 file.djvu
-//   bun cmd/thread.ts -clang testfiles/subset/djvu3spec.djvu
+//   bun cmd/thread.ts -clang deps/DjVuLibre/doc/djvu3spec.djvu
 import { $ } from "bun";
 import { defaultUseClang } from "./build";
 import { buildThread } from "./build-thread";

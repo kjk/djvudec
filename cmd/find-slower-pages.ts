@@ -1,17 +1,18 @@
 #!/usr/bin/env bun
 // find-slower-pages.ts -- list pages where djvudec render is slower than libdjvu.
 //
-//   bun cmd/find-slower-pages.ts [-clang] [-full] [-clean] [-cpu N]
+//   bun cmd/find-slower-pages.ts <-all | -rand N | file.djvu ...> [-clang] [-clean] [-cpu N]
 //
-// Runs djvu_test -bench on every .djvu under the test corpus (default
-// testfiles/djvu; -full -> testfiles/full; DJVU_SPECS overrides). Writes
-// document, page, and timings to slower-<os>-<compiler>.txt in the repo root
-// (for example slower-mac-clang.txt or slower-win-msvc.txt).
-import { existsSync, readdirSync, statSync, writeFileSync } from "fs";
+// Runs djvu_test -bench on the selected corpus files (deps/ checkouts;
+// DJVU_SPECS overrides). Writes document, page, and timings to
+// slower-<os>-<compiler>.txt in the repo root (for example
+// slower-mac-clang.txt or slower-win-msvc.txt).
+import { writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, relative } from "path";
 import { getDeps } from "./get-deps";
 import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
+import { corpusFiles, corpusSummary, selectFiles } from "./corpus";
 
 const ROOT = dirname(import.meta.dir);
 
@@ -26,23 +27,6 @@ export type BenchPageRow = {
 export type SlowerPage = BenchPageRow & {
   file: string;
 };
-
-function walkDjvu(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...walkDjvu(p));
-    else if (name.toLowerCase().endsWith(".djvu")) out.push(p);
-  }
-  return out;
-}
-
-function corpusDir(): string {
-  if (process.env.DJVU_SPECS) return process.env.DJVU_SPECS;
-  const name = process.argv.includes("-full") ? "full" : "djvu";
-  return join(ROOT, "testfiles", name);
-}
 
 function platformName(): string {
   if (process.platform === "darwin") return "mac";
@@ -141,21 +125,30 @@ async function main(): Promise<number> {
       ? Math.max(1, parseInt(process.argv[cpuArg + 1]!, 10) || 1)
       : cpus().length;
 
-  if (doClean) cleanBuildOutput();
-
   await getDeps();
+  const files = process.argv.includes("-all")
+    ? corpusFiles()
+    : selectFiles(
+        `usage: bun cmd/find-slower-pages.ts <selection> [options]
+selection (required; default prints this help):
+  -all            bench every corpus file
+  -rand N         bench N randomly selected corpus files
+  file.djvu ...   bench the given files
+options:
+  -clang          build with clang instead of MSVC
+  -clean          delete out/ before building
+  -cpu N          worker count (default: one per CPU)
+
+${corpusSummary()}`,
+        ["-rand", "-cpu"],
+      );
+
+  if (doClean) cleanBuildOutput();
   await buildRef();
   const testExe = await build(useClang);
   const outPath = reportPath(useClang);
 
-  const corpus = corpusDir();
-  const files = walkDjvu(corpus).sort();
-  if (files.length === 0) {
-    console.error(`no .djvu files under ${corpus}`);
-    return 1;
-  }
-
-  console.log(`corpus: ${corpus} (${files.length} files, ${ncpu} workers)`);
+  console.log(`benching ${files.length} files with ${ncpu} workers`);
   console.log(`harness: ${testExe}`);
 
   const slower: SlowerPage[] = [];
