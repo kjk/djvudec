@@ -139,6 +139,22 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- fuzz finding (slow-unit-32a1cc…): a crafted Sjbz stream repeating
+  StartOfData 77k times made each SOD re-run init_library, which rescanned
+  every inherited dict shape bitmap with djvu_bm_bbox — O(records × shapes ×
+  pixels), 21s under ASan. jb2_shape now caches its tight bbox (bx0..by1 +
+  bbox_valid), mirroring DjVuLibre's JB2Dict::get_bounding_box cache. Thread
+  rule: shared-dict shapes are read lock-free by concurrent page decodes, so
+  the cache is only written while the owning image is thread-private (during
+  its own decode: add_library, plus an end-of-dict-decode fill for shapes
+  add_library didn't reach); init_library reads inherited shapes without
+  writing. Also a legit perf win: multi-page docs no longer rescan every
+  shared-dict shape bitmap per page. Replay: 21.4s → 1.0s. The tracked seed
+  (slow-unit-a8cc0f…) is a minimized rebuild of the 136KB fuzz artifact:
+  page 3's INFO + inlined dict Djbz + the Sjbz truncated to 20375 bytes —
+  23.5KB, and stronger (333k SODs vs 77k; truncation point found by scanning,
+  SOD count is non-monotone in Sjbz length). Pre-fix it renders in 5.7s
+  release / would hard-timeout the ASan fuzz harness; post-fix 0.3s.
 - fuzz finding (timeout-b36526…): the IFF chunk walks clamped a chunk's size
   with `if (cdata + csize > form_end)`, but csize is attacker-controlled and
   the uint32 sum wraps (e.g. csize=0xffffffef advances pos by -8 mod 2^32),

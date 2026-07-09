@@ -621,6 +621,12 @@ uint8_t *djvu_bzz_decode_all(djvu_ctx *ctx, const uint8_t *data, size_t len,
 
 typedef struct {
     int parent;
+    /* cached tight bbox of bm (valid once bbox_valid != 0). Shared-dict
+       shapes are read lock-free by concurrent page decodes, so the cache is
+       filled while the owning image is still thread-private (during its own
+       decode), never lazily from a reader. */
+    int bbox_valid;
+    int bx0, by0, bx1, by1;
     djvu_bitmap bm;
 } jb2_shape;
 
