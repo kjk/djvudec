@@ -82,22 +82,41 @@ struct djvu_ctx {
     int bgr;           /* emit color output as B,G,R instead of R,G,B */
 };
 
+/* Per-thread render-abort state. `extern` (defined in document.c), not
+   `static`: with static each TU would get its own TLS copy, so a begin in
+   render.c would never be seen by the djvu_aborted checks in compose.c /
+   document.c when the units are compiled separately (the amalgamation hid
+   this). */
 #if defined(_MSC_VER)
-static __declspec(thread) uint32_t djvu_render_epoch_tls;
+extern __declspec(thread) uint32_t djvu_render_epoch_tls;
+extern __declspec(thread) const djvu_abort *djvu_render_abort_tls;
 #else
-static __thread uint32_t djvu_render_epoch_tls;
+extern __thread uint32_t djvu_render_epoch_tls;
+extern __thread const djvu_abort *djvu_render_abort_tls;
 #endif
 
-/* Called at public render entry (djvu_page_render_timed / render_into). */
-static inline void djvu_render_begin(djvu_ctx *ctx)
+/* Called at public render entry (djvu_page_render_timed / render_into).
+   `ab` is the caller's per-render abort token (NULL for non-abortable
+   entry points); it stays visible to djvu_aborted via TLS for the duration
+   of the render so inner layers don't need an extra parameter. */
+static inline void djvu_render_begin(djvu_ctx *ctx, const djvu_abort *ab)
 {
     if (ctx)
         djvu_render_epoch_tls = djvu_atomic_epoch_load(&ctx->abort_epoch);
+    djvu_render_abort_tls = ab;
+}
+
+/* Called at public render exit so a stale token pointer is never consulted
+   by later non-render calls on the same thread. */
+static inline void djvu_render_end(void)
+{
+    djvu_render_abort_tls = NULL;
 }
 
 static inline int djvu_aborted(djvu_ctx *ctx)
 {
     if (!ctx) return 0;
+    if (djvu_render_abort_tls && djvu_render_abort_tls->requested) return 1;
     return djvu_atomic_epoch_load(&ctx->abort_epoch) != djvu_render_epoch_tls;
 }
 

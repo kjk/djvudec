@@ -84,6 +84,28 @@ void djvu_request_abort(djvu_ctx *ctx)
         djvu_atomic_epoch_bump(&ctx->abort_epoch);
 }
 
+/* single definitions of the per-thread render-abort state declared extern in
+   djvu_internal.h */
+#if defined(_MSC_VER)
+__declspec(thread) uint32_t djvu_render_epoch_tls;
+__declspec(thread) const djvu_abort *djvu_render_abort_tls;
+#else
+__thread uint32_t djvu_render_epoch_tls;
+__thread const djvu_abort *djvu_render_abort_tls;
+#endif
+
+void djvu_abort_init(djvu_abort *ab)
+{
+    if (ab) ab->requested = 0;
+}
+
+void djvu_abort_request(djvu_abort *ab)
+{
+    /* a plain store to an aligned volatile int is atomic on every platform we
+       target; readers poll it cooperatively (relaxed, like abort_epoch) */
+    if (ab) ab->requested = 1;
+}
+
 /* ---- INFO chunk ---- */
 
 /* Parse an INFO chunk body at [p, p+len) into info. Returns 0 on success. */

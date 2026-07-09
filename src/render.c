@@ -239,8 +239,10 @@ static djvu_image *apply_page_rotation(djvu_ctx *ctx, djvu_doc *doc, int page_no
     return img;
 }
 
-djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
-                                   djvu_render_timings *t)
+/* Body of djvu_page_render_timed; the public entry points wrap it in
+   djvu_render_begin/djvu_render_end (which scope the per-render abort token). */
+static djvu_image *page_render_timed_impl(djvu_doc *doc, int page_no, int subsample,
+                                          djvu_render_timings *t)
 {
     djvu_ctx *ctx;
     uint32_t form_off, sz;
@@ -254,7 +256,6 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
 
     if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
     ctx = doc->ctx;
-    djvu_render_begin(ctx);
     if (subsample < 1) subsample = 1;
     if (t) djvu_render_timings_clear(t);
     form_off = doc->pages[page_no].form_off;
@@ -300,9 +301,33 @@ done:
     return apply_page_rotation(ctx, doc, page_no, out, subsample, t);
 }
 
+djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
+                                   djvu_render_timings *t)
+{
+    djvu_image *out;
+
+    if (!doc) return NULL;
+    djvu_render_begin(doc->ctx, NULL);
+    out = page_render_timed_impl(doc, page_no, subsample, t);
+    djvu_render_end();
+    return out;
+}
+
 djvu_image *djvu_page_render(djvu_doc *doc, int page_no, int subsample)
 {
     return djvu_page_render_timed(doc, page_no, subsample, NULL);
+}
+
+djvu_image *djvu_page_render_abortable(djvu_doc *doc, int page_no, int subsample,
+                                       const djvu_abort *ab)
+{
+    djvu_image *out;
+
+    if (!doc) return NULL;
+    djvu_render_begin(doc->ctx, ab);
+    out = page_render_timed_impl(doc, page_no, subsample, NULL);
+    djvu_render_end();
+    return out;
 }
 
 /* Decide a render's output geometry/format without decoding pixels, mirroring
@@ -379,21 +404,20 @@ static int blit_image_into(djvu_image *img, uint8_t *dst, int stride,
     return 0;
 }
 
-int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
-                          uint8_t *dst, int stride)
+/* Body of djvu_page_render_into; the public entry points wrap it in
+   djvu_render_begin/djvu_render_end (which scope the per-render abort token). */
+static int page_render_into_impl(djvu_doc *doc, int page_no, int subsample,
+                                 uint8_t *dst, int stride)
 {
     djvu_ctx *ctx;
     int w, h, color, rotation, k, rc;
     djvu_format fmt;
     djvu_image *img;
 
-    if (!dst) return -1;
-    if (!doc || !doc->ctx) return -1;
     if (render_plan(doc, page_no, subsample, &w, &h, &fmt, &color, &rotation) != 0)
         return -1;
     if (subsample < 1) subsample = 1;
     ctx = doc->ctx;
-    djvu_render_begin(ctx);
     k = rotation_quarter_turns(rotation); /* applied at every subsample */
 
     /* Zero-copy color path: compose straight into dst when no rotation is
@@ -419,11 +443,37 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
     }
 
     /* Fallback: render normally (handles gray, rotation, subsampling) then copy
-       once into dst. These are the cheap / rare cases. */
-    img = djvu_page_render(doc, page_no, subsample);
+       once into dst. These are the cheap / rare cases. Calls the impl, not the
+       public wrapper, so the caller's abort token stays in effect. */
+    img = page_render_timed_impl(doc, page_no, subsample, NULL);
     if (!img) return -1;
     rc = blit_image_into(img, dst, stride, w, h, fmt);
     djvu_image_destroy(ctx, img);
+    return rc;
+}
+
+int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
+                          uint8_t *dst, int stride)
+{
+    int rc;
+
+    if (!dst || !doc || !doc->ctx) return -1;
+    djvu_render_begin(doc->ctx, NULL);
+    rc = page_render_into_impl(doc, page_no, subsample, dst, stride);
+    djvu_render_end();
+    return rc;
+}
+
+int djvu_page_render_into_abortable(djvu_doc *doc, int page_no, int subsample,
+                                    uint8_t *dst, int stride,
+                                    const djvu_abort *ab)
+{
+    int rc;
+
+    if (!dst || !doc || !doc->ctx) return -1;
+    djvu_render_begin(doc->ctx, ab);
+    rc = page_render_into_impl(doc, page_no, subsample, dst, stride);
+    djvu_render_end();
     return rc;
 }
 
