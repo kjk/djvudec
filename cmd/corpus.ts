@@ -4,7 +4,7 @@
 // corpus. DJVU_SPECS overrides the corpus with any directory of .djvu files
 // (scanned recursively).
 import { existsSync, readdirSync, statSync } from "fs";
-import { basename, join } from "path";
+import { basename, isAbsolute, join, relative } from "path";
 import { DEPS_DIR } from "./get-deps";
 
 // Directories (relative to deps/) that hold the corpus .djvu files.
@@ -65,9 +65,10 @@ export function pickRandom(files: string[], n: number): string[] {
 }
 
 // Shared file-selection for scripts that operate on .djvu files: explicit
-// paths, or -rand N random corpus files. With neither, prints usageText
-// (which should include corpusSummary()) and exits 2. valueFlags lists the
-// script's flags that take a value, so those values aren't taken for paths.
+// paths, -rand N random corpus files, or -all for every corpus file. With
+// none of those, prints usageText (which should include corpusSummary())
+// and exits 2. valueFlags lists the script's flags that take a value, so
+// those values aren't taken for paths.
 export function selectFiles(
   usageText: string,
   valueFlags: string[] = ["-rand"],
@@ -76,6 +77,7 @@ export function selectFiles(
   const explicit = argv.filter(
     (a, i) => !a.startsWith("-") && !valueFlags.includes(argv[i - 1] ?? ""),
   );
+  if (argv.includes("-all")) return corpusFiles();
   const ri = argv.indexOf("-rand");
   if (ri >= 0) {
     const n = parseInt(argv[ri + 1] ?? "");
@@ -99,6 +101,29 @@ export function selectFiles(
   }
   console.log(usageText);
   process.exit(2);
+}
+
+// "1,234,567" -- exact byte count with thousands separators.
+export function fmtBytesExact(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+// "1.2 MB" -- human-readable size.
+export function fmtBytesHuman(n: number): string {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+// "path/to/file.djvu (1.2 MB, 1,234,567 bytes)" with the path relative to
+// the repo root when it is inside it.
+export function fileLabel(f: string, root: string): string {
+  let rel = relative(root, f);
+  if (rel.startsWith("..") || isAbsolute(rel)) rel = f;
+  rel = rel.replaceAll("\\", "/");
+  const size = statSync(f).size;
+  return `${rel} (${fmtBytesHuman(size)}, ${fmtBytesExact(size)} bytes)`;
 }
 
 // One-line corpus summary for usage screens.

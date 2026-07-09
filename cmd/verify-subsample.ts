@@ -121,6 +121,7 @@ const files = selectFiles(
 selection (required; default prints this help):
   file.djvu ...   compare the given files
   -rand N         compare N randomly selected corpus files
+  -all            compare every corpus file
 options:
   -sub N          check a single subsample (default: 2 and 3)
   -pages a,b,c    check specific pages (default: first, middle, last)

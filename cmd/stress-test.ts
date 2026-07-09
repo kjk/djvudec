@@ -39,6 +39,7 @@ selection (required; default prints this help):
   <dir>           stress every .djvu under the directory
   file.djvu ...   stress the given files
   -rand N         stress N randomly selected corpus files
+  -all            stress every corpus file
 options:
   -no-asan        plain release build (default: clang + ASan)
   -clang          clang release (with -no-asan)

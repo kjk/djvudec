@@ -278,7 +278,7 @@ async function main(): Promise<number> {
 
   await getDeps();
   const files = selectFiles(
-    `usage: bun cmd/bench-perf.ts <file.djvu ... | -rand N> [-warm N] [-layers] [-p N]
+    `usage: bun cmd/bench-perf.ts <file.djvu ... | -rand N | -all> [-warm N] [-layers] [-p N]
        bun cmd/bench-perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]
        bun cmd/bench-perf.ts compare before.txt after.txt
 

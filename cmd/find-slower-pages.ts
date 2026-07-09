@@ -12,7 +12,7 @@ import { cpus } from "os";
 import { join, dirname, relative } from "path";
 import { getDeps } from "./get-deps";
 import { buildRef, build, cleanBuildOutput, defaultUseClang } from "./build";
-import { corpusFiles, corpusSummary, selectFiles } from "./corpus";
+import { corpusSummary, selectFiles } from "./corpus";
 
 const ROOT = dirname(import.meta.dir);
 
@@ -126,9 +126,7 @@ async function main(): Promise<number> {
       : cpus().length;
 
   await getDeps();
-  const files = process.argv.includes("-all")
-    ? corpusFiles()
-    : selectFiles(
+  const files = selectFiles(
         `usage: bun cmd/find-slower-pages.ts <selection> [options]
 selection (required; default prints this help):
   -all            bench every corpus file
