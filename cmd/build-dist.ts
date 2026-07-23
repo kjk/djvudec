@@ -144,7 +144,10 @@ function stripCComments(code: string): string {
     i++;
   }
 
-  return stripTrailingWhitespace(out.replace(/\n{3,}/g, "\n\n"));
+  // Trailing whitespace first so space-only lines become true empties, then
+  // collapse any run of blank lines to a single blank line (comment stripping
+  // otherwise leaves stacks of newlines where /* */ / // blocks were).
+  return collapseBlankLines(stripTrailingWhitespace(out));
 }
 
 function stripTrailingWhitespace(code: string): string {
@@ -152,6 +155,11 @@ function stripTrailingWhitespace(code: string): string {
     .split(/\r?\n/)
     .map((line) => line.replace(/[ \t]+$/, ""))
     .join("\n");
+}
+
+/** Reduce 2+ consecutive newlines to exactly two (one empty line between code). */
+function collapseBlankLines(code: string): string {
+  return code.replace(/\n{2,}/g, "\n\n");
 }
 
 /** Echo a compiler command, then run it (stdout progress tracking). */
