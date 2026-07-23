@@ -87,6 +87,34 @@ void djvu_jb2_free(djvu_ctx *ctx, jb2_image *im)
     djvu_free(ctx, im);
 }
 
+static size_t jb2_bm_mem_size(const djvu_bitmap *bm)
+{
+    size_t n = 0;
+    if (!bm) return 0;
+    if (bm->data && bm->max_offset > 0)
+        n += (size_t)bm->max_offset;
+    if (bm->guard && bm->bytes_per_row + bm->border > 0)
+        n += (size_t)bm->bytes_per_row + (size_t)bm->border;
+    if (bm->rle && bm->rle_len)
+        n += bm->rle_len;
+    return n;
+}
+
+size_t djvu_jb2_mem_size(const jb2_image *im)
+{
+    size_t n;
+    int i;
+    if (!im) return 0;
+    n = sizeof(jb2_image);
+    if (im->shapes && im->cap_shapes > 0)
+        n += sizeof(jb2_shape) * (size_t)im->cap_shapes;
+    for (i = 0; i < im->nshapes; i++)
+        n += jb2_bm_mem_size(&im->shapes[i].bm);
+    if (im->blits && im->cap_blits > 0)
+        n += sizeof(jb2_blit) * (size_t)im->cap_blits;
+    return n;
+}
+
 static int img_shapecount(jb2_image *im)
 {
     return im->inherited_shapes + im->nshapes;

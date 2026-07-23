@@ -33,6 +33,28 @@ static void on_error(void *user, djvu_severity sev, const char *msg)
     fprintf(stderr, "djvu %s: %s\n", s, msg);
 }
 
+#if defined(_WIN32)
+static CRITICAL_SECTION g_cache_cs;
+static int g_cache_cs_ready;
+static void cache_lock_cb(void *user, void *ctx)
+{
+    (void)user; (void)ctx;
+    if (!g_cache_cs_ready) {
+        InitializeCriticalSection(&g_cache_cs);
+        g_cache_cs_ready = 1;
+    }
+    EnterCriticalSection(&g_cache_cs);
+}
+static void cache_unlock_cb(void *user, void *ctx)
+{
+    (void)user; (void)ctx;
+    LeaveCriticalSection(&g_cache_cs);
+}
+#else
+static void cache_lock_cb(void *user, void *ctx) { (void)user; (void)ctx; }
+static void cache_unlock_cb(void *user, void *ctx) { (void)user; (void)ctx; }
+#endif
+
 static uint8_t *read_file(const char *path, size_t *out_len)
 {
     FILE *f = fopen(path, "rb");
@@ -401,6 +423,7 @@ typedef struct {
     int do_title;
     int do_dump_features;
     int do_bench_render;
+    int do_cache_probe;
     int do_layers;
     int bench_warm;
     int bench_reps;
@@ -445,6 +468,7 @@ static void usage(void)
         "  -reps N            timed renders/page for -bench-render (default 2)\n"
         "  -sub N             with -bench-render: render at subsample N (default 1)\n"
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
+        "  -cache-probe       enable per-page cache; report size after first render and drop\n"
         "\n"
         "Codec layers (no full composite):\n"
         "  -bzzdec -out FILE   decode raw BZZ stream (no document open)\n"
@@ -483,6 +507,7 @@ static int parse_args(int argc, char **argv, opts_t *o)
         else if (!strcmp(argv[i], "-title")) o->do_title = 1;
         else if (!strcmp(argv[i], "-dump-features")) o->do_dump_features = 1;
         else if (!strcmp(argv[i], "-bench-render")) o->do_bench_render = 1;
+        else if (!strcmp(argv[i], "-cache-probe")) o->do_cache_probe = 1;
         else if (!strcmp(argv[i], "-layers")) o->do_layers = 1;
         else if (!strcmp(argv[i], "-warm") && i + 1 < argc)
             o->bench_warm = atoi(argv[++i]);
@@ -607,6 +632,49 @@ static int run_page_ops(djvu_doc *doc, djvu_ctx *ctx, const opts_t *o, int page0
     return rc;
 }
 
+/* Lazy per-page cache: size before/after first render and after drop. */
+static int run_cache_probe(djvu_doc *doc, int page0)
+{
+    djvu_ctx *ctx = doc->ctx;
+    size_t before, after, dropped;
+    djvu_image *img;
+    int p1 = page0 + 1;
+
+    if (page0 < 0 || page0 >= djvu_doc_page_count(doc)) {
+        fprintf(stderr, "invalid page %d\n", p1);
+        return 1;
+    }
+    before = djvu_doc_page_cache_size(doc, page0);
+    img = djvu_page_render(doc, page0, 1);
+    if (!img) {
+        fprintf(stderr, "render failed for page %d\n", p1);
+        return 1;
+    }
+    djvu_image_destroy(ctx, img);
+    after = djvu_doc_page_cache_size(doc, page0);
+    djvu_doc_drop_page_cache(doc, page0);
+    dropped = djvu_doc_page_cache_size(doc, page0);
+    printf("cache-probe page %d: before=%zu after_render=%zu after_drop=%zu\n",
+           p1, before, after, dropped);
+    if (before != 0) {
+        fprintf(stderr, "cache-probe: expected 0 bytes before first render\n");
+        return 1;
+    }
+    {
+        djvu_page_type t = djvu_page_get_type(doc, page0);
+        if (t != DJVU_PAGE_UNKNOWN && after == 0) {
+            fprintf(stderr, "cache-probe: expected non-zero cache after first "
+                            "render of typed page (type=%d)\n", (int)t);
+            return 1;
+        }
+    }
+    if (dropped != 0) {
+        fprintf(stderr, "cache-probe: expected 0 bytes after drop\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     opts_t o;
@@ -633,8 +701,13 @@ int main(int argc, char **argv)
     }
 
     djvu_init();
-    ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, on_error, NULL);
+    if (o.do_cache_probe)
+        ctx = djvu_ctx_new(NULL, NULL, cache_lock_cb, cache_unlock_cb, on_error, NULL);
+    else
+        ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, on_error, NULL);
     if (!ctx) { free(data); return 1; }
+    if (o.do_cache_probe)
+        djvu_ctx_set_cache_per_page(ctx, 1);
 
     if (o.do_bzz) {
         size_t olen = 0;
@@ -670,6 +743,17 @@ int main(int argc, char **argv)
         rc = run_bench_render(doc, o.bench_warm, o.bench_reps, o.do_layers,
                               o.bench_sub < 1 ? 1 : o.bench_sub,
                               o.page - 1, o.page_explicit);
+        goto done;
+    }
+
+    if (o.do_cache_probe) {
+        if (o.do_all) {
+            int n = djvu_doc_page_count(doc);
+            for (i = 0; i < n; i++)
+                rc |= run_cache_probe(doc, i);
+        } else {
+            rc = run_cache_probe(doc, o.page - 1);
+        }
         goto done;
     }
 

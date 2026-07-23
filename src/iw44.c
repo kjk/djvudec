@@ -678,6 +678,35 @@ void djvu_iw44_free(iw_pixmap *pm)
     djvu_free(ctx, pm);
 }
 
+static size_t map_mem_size(const iw_map *m)
+{
+    size_t n;
+    int i, b;
+    if (!m) return 0;
+    n = sizeof(iw_map);
+    if (m->blocks && m->nb > 0)
+        n += sizeof(iw_block) * (size_t)m->nb;
+    for (i = 0; i < m->nb; i++)
+        for (b = 0; b < 64; b++)
+            if (m->blocks[i].buckets[b])
+                n += sizeof(int16_t) * 16;
+    return n;
+}
+
+size_t djvu_iw44_mem_size(const iw_pixmap *pm)
+{
+    size_t n;
+    if (!pm) return 0;
+    n = sizeof(iw_pixmap);
+    n += map_mem_size(pm->ymap);
+    n += map_mem_size(pm->cbmap);
+    n += map_mem_size(pm->crmap);
+    if (pm->yc) n += sizeof(iw_codec);
+    if (pm->cbc) n += sizeof(iw_codec);
+    if (pm->crc) n += sizeof(iw_codec);
+    return n;
+}
+
 int djvu_iw44_decode_chunk(iw_pixmap *pm, const uint8_t *data, size_t len)
 {
     djvu_ctx *ctx = pm->ctx;

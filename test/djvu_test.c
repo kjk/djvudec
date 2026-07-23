@@ -1109,7 +1109,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
                 m++;
                 printf("render\t%d\tok\n", i + 1);
                 djvu_image_destroy(ctx, mine);
-                djvu_doc_drop_page_iw44(doc, i);
+                djvu_doc_drop_page_cache(doc, i);
                 if (verify_mem_checkpoint(doc, i + 1, "after_page_free") < 0)
                     goto mem_limit;
                 verify_page_finish();
@@ -1118,7 +1118,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             if (!mine || bench_ddjvu_render_page(path, i, want_rgb, &ref) != 0) {
                 if (mine) djvu_image_destroy(ctx, mine);
                 bench_render_free(&ref);
-                djvu_doc_drop_page_iw44(doc, i);
+                djvu_doc_drop_page_cache(doc, i);
                 mm++;
                 printf("render\t%d\terror\n", i + 1);
                 verify_page_finish();
@@ -1155,7 +1155,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             }
             bench_render_free(&ref);
             djvu_image_destroy(ctx, mine);
-            djvu_doc_drop_page_iw44(doc, i);
+            djvu_doc_drop_page_cache(doc, i);
             if (verify_mem_checkpoint(doc, i + 1, "after_page_free") < 0)
                 goto mem_limit;
             verify_page_finish();

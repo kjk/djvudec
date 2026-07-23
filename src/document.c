@@ -465,7 +465,48 @@ void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0)
 void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no)
 {
     if (!doc || page_no < 0 || page_no >= doc->npages) return;
+    djvu_cache_lock(doc->ctx);
     free_page_iw44(&doc->pages[page_no]);
+    djvu_cache_unlock(doc->ctx);
+}
+
+static size_t cpix_mem_size(const djvu_cpix *p)
+{
+    if (!p || !p->d || p->w <= 0 || p->h <= 0) return 0;
+    return (size_t)p->w * (size_t)p->h * 3u;
+}
+
+/* Drop all page-local decoded layers (lazy cache from first render). */
+void djvu_doc_drop_page_cache(djvu_doc *doc, int page_no)
+{
+    djvu_page_int *pg;
+    if (!doc || page_no < 0 || page_no >= doc->npages) return;
+    pg = &doc->pages[page_no];
+    djvu_cache_lock(doc->ctx);
+    free_page_bg_native(doc->ctx, pg);
+    free_page_jb2_mask(doc->ctx, pg);
+    free_page_iw44(pg);
+    djvu_cache_unlock(doc->ctx);
+}
+
+size_t djvu_doc_page_cache_size(djvu_doc *doc, int page_no)
+{
+    djvu_page_int *pg;
+    size_t n = 0;
+    if (!doc || page_no < 0 || page_no >= doc->npages) return 0;
+    if (!djvu_cache_stores_page(doc->ctx)) return 0;
+    pg = &doc->pages[page_no];
+    djvu_cache_lock(doc->ctx);
+    if (pg->jb2_mask)
+        n += djvu_jb2_mem_size(pg->jb2_mask);
+    if (pg->iw_bg)
+        n += djvu_iw44_mem_size(pg->iw_bg);
+    if (pg->iw_fg)
+        n += djvu_iw44_mem_size(pg->iw_fg);
+    n += cpix_mem_size(&pg->bg_native);
+    n += cpix_mem_size(&pg->bg_scaled);
+    djvu_cache_unlock(doc->ctx);
+    return n;
 }
 
 iw_pixmap *djvu_doc_iw44_acquire(djvu_doc *doc, int page_no, const char *chunk_id,

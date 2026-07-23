@@ -259,6 +259,9 @@ iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *c
 jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out);
 void djvu_doc_jb2_mask_release(djvu_doc *doc, jb2_image *mask, int owned);
 void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
+/* Public wrappers also declared in djvu.h. */
+void djvu_doc_drop_page_cache(djvu_doc *doc, int page_no);
+size_t djvu_doc_page_cache_size(djvu_doc *doc, int page_no);
 void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0);
 void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0);
 void djvu_doc_preload_jb2_masks_range(djvu_doc *doc, int lo0, int hi0);
@@ -672,6 +675,8 @@ jb2_image *djvu_jb2_decode(djvu_ctx *ctx, const uint8_t *data, size_t len,
 /* Decode a Djbz shared dictionary stream (zero image size). */
 jb2_image *djvu_jb2_decode_dict(djvu_ctx *ctx, const uint8_t *data, size_t len);
 void djvu_jb2_free(djvu_ctx *ctx, jb2_image *img);
+/* Approximate heap bytes owned by img (not inherited_dict). */
+size_t djvu_jb2_mem_size(const jb2_image *img);
 
 /* Resolve a shape number through the inheritance chain. */
 jb2_shape *djvu_jb2_get_shape(jb2_image *img, int shapeno);
@@ -696,6 +701,8 @@ int djvu_iw44_decode_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id
 int djvu_iw44_width(iw_pixmap *pm);
 int djvu_iw44_height(iw_pixmap *pm);
 int djvu_iw44_is_color(iw_pixmap *pm);
+/* Approximate heap bytes owned by pm (maps + codecs). */
+size_t djvu_iw44_mem_size(const iw_pixmap *pm);
 
 /* Render full-resolution. `rgb` must hold width*height*3 bytes (R,G,B order).
    Gray images are expanded to gray RGB. Returns 0 on success. */
