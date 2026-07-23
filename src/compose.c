@@ -191,25 +191,59 @@ typedef struct {
     djvu_cpix *fgnat;
 } compose_ink_ctx;
 
-static void compose_stamp_ink(void *user, int px, int py)
+static void compose_fill_rgb_run(uint8_t *d, int n, int r, int g, int b);
+
+/* Solid palette (or black) stamp: one memset-style RGB fill per ink run. */
+static void compose_stamp_solid_run(void *user, int x0, int x1, int py)
 {
     compose_ink_ctx *ink = (compose_ink_ctx *)user;
+    int w = ink->bg->w, h = ink->bg->h;
+    uint8_t *d;
+    int r, g, b;
+
+    if (py < 0 || py >= h) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 > w) x1 = w;
+    if (x0 >= x1) return;
+    d = ink->bg->d + ((size_t)py * (size_t)w + (size_t)x0) * 3;
+    if (ink->has_pal) {
+        r = ink->palr; g = ink->palg; b = ink->palb;
+    } else {
+        r = g = b = 0;
+    }
+    compose_fill_rgb_run(d, x1 - x0, r, g, b);
+}
+
+/* FG44 nearest stamp: fill run in segments that share one FG sample. */
+static void compose_stamp_fg_run(void *user, int x0, int x1, int py)
+{
+    compose_ink_ctx *ink = (compose_ink_ctx *)user;
+    int w = ink->bg->w, h = ink->bg->h;
+    int fy, red = ink->fgred;
     uint8_t *d;
 
-    if (py < 0 || py >= ink->bg->h || px < 0 || px >= ink->bg->w) return;
-    d = ink->bg->d + ((size_t)py * ink->bg->w + px) * 3;
-    if (ink->has_pal) {
-        d[0] = (uint8_t)ink->palr; d[1] = (uint8_t)ink->palg; d[2] = (uint8_t)ink->palb;
-    } else if (ink->has_fg) {
-        int fx = px / ink->fgred, fy = py / ink->fgred;
+    if (py < 0 || py >= h || !ink->fgnat || !ink->fgnat->d || red < 1) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 > w) x1 = w;
+    if (x0 >= x1) return;
+    fy = py / red;
+    if (fy >= ink->fgnat->h) fy = ink->fgnat->h - 1;
+    d = ink->bg->d + ((size_t)py * (size_t)w + (size_t)x0) * 3;
+    while (x0 < x1) {
+        int fx = x0 / red;
+        int x_end;
+        const uint8_t *f;
         if (fx >= ink->fgnat->w) fx = ink->fgnat->w - 1;
-        if (fy >= ink->fgnat->h) fy = ink->fgnat->h - 1;
-        {
-            uint8_t *f = ink->fgnat->d + ((size_t)fy * ink->fgnat->w + fx) * 3;
-            d[0] = f[0]; d[1] = f[1]; d[2] = f[2];
+        if (fx >= ink->fgnat->w - 1)
+            x_end = x1;
+        else {
+            x_end = (fx + 1) * red;
+            if (x_end > x1) x_end = x1;
         }
-    } else {
-        d[0] = d[1] = d[2] = 0;
+        f = ink->fgnat->d + ((size_t)fy * (size_t)ink->fgnat->w + (size_t)fx) * 3;
+        compose_fill_rgb_run(d, x_end - x0, f[0], f[1], f[2]);
+        d += (size_t)(x_end - x0) * 3;
+        x0 = x_end;
     }
 }
 
@@ -221,16 +255,29 @@ typedef struct {
     int sub;
 } compose_acc_ctx;
 
-static void compose_accum_ink_sub(void *user, int px, int py)
+/* Add ink coverage for a horizontal run [x0,x1) into subsample cells. */
+static void compose_accum_ink_run_sub(void *user, int x0, int x1, int py)
 {
     compose_acc_ctx *c = (compose_acc_ctx *)user;
-    int cx, cy;
+    int cy, sub;
 
-    if (px < 0 || py < 0 || px >= c->w || py >= c->h) return;
-    cx = px / c->sub - c->cx0;
-    cy = py / c->sub - c->cy0;
-    if (cx < 0 || cx >= c->tw || cy < 0 || cy >= c->th) return;
-    c->acc[(size_t)cy * c->tw + cx]++;
+    if (py < 0 || py >= c->h) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 > c->w) x1 = c->w;
+    if (x0 >= x1) return;
+    sub = c->sub;
+    cy = py / sub - c->cy0;
+    if (cy < 0 || cy >= c->th) return;
+    while (x0 < x1) {
+        int cell = x0 / sub;
+        int cx = cell - c->cx0;
+        int x_end = (cell + 1) * sub;
+        if (x_end > x1) x_end = x1;
+        if (cx >= 0 && cx < c->tw)
+            c->acc[(size_t)cy * (size_t)c->tw + (size_t)cx] +=
+                (uint32_t)(x_end - x0);
+        x0 = x_end;
+    }
 }
 
 /* Anti-aliased mask stencil for subsample>1: per blit, accumulate full-res ink
@@ -280,7 +327,8 @@ static int compose_stencil_sub(djvu_ctx *ctx, djvu_cpix *bg, jb2_image *mask,
         memset(acc, 0, (size_t)tw * th * sizeof(uint32_t));
         c.acc = acc; c.tw = tw; c.th = th; c.cx0 = cx0; c.cy0 = cy0;
         c.w = width; c.h = height; c.sub = sub;
-        djvu_bm_visit_ink(&s->bm, b->left, b->bottom, compose_accum_ink_sub, &c);
+        djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
+                               compose_accum_ink_run_sub, &c);
 
         if (pal && colordata && i < ncolor) {
             int ci = colordata[i];
@@ -513,21 +561,30 @@ static void compose_stamp_bitmap_topdown_rgb(const djvu_bitmap *src,
             }
         }
     } else if (src->data) {
+        /* Same solid fill as RLE path, via run finder (memchr). */
         int rr;
         for (rr = 0; rr < src->height; rr++) {
+            const uint8_t *row = src->data + djvu_bm_rowoffset(src, rr);
+            const uint8_t *end = row + src->width;
+            const uint8_t *p = row;
             int py = bottom + rr;
-            int cc;
-            const uint8_t *srow;
             if (py < 0 || py >= outh) continue;
-            srow = src->data + djvu_bm_rowoffset(src, rr);
-            for (cc = 0; cc < src->width; cc++) {
-                int px = left + cc;
-                if (px >= 0 && px < outw && srow[cc]) {
+            while (p < end) {
+                const uint8_t *start;
+                const void *next = memchr(p, 1, (size_t)(end - p));
+                int x0, x1;
+                if (!next) break;
+                start = (const uint8_t *)next;
+                next = memchr(start, 0, (size_t)(end - start));
+                p = next ? (const uint8_t *)next : end;
+                x0 = left + (int)(start - row);
+                x1 = left + (int)(p - row);
+                if (x0 < 0) x0 = 0;
+                if (x1 > outw) x1 = outw;
+                if (x0 < x1) {
                     uint8_t *d = dst + (size_t)(outh - 1 - py) * stride
-                               + (size_t)px * 3;
-                    d[0] = (uint8_t)r;
-                    d[1] = (uint8_t)g;
-                    d[2] = (uint8_t)b;
+                               + (size_t)x0 * 3;
+                    compose_fill_rgb_run(d, x1 - x0, r, g, b);
                 }
             }
         }
@@ -640,7 +697,10 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
             jb2_blit *b = &mask->blits[i];
             jb2_shape *s = djvu_jb2_get_shape(mask, b->shapeno);
             compose_ink_ctx ink;
-            if ((i & 63) == 0 && djvu_aborted(ctx)) return -1;
+            if ((i & 63) == 0 && djvu_aborted(ctx)) {
+                stencil_rc = -1;
+                break;
+            }
             if (!s || !djvu_bm_has_pixels(&s->bm)) continue;
             ink.bg = &bg;
             ink.palr = ink.palg = ink.palb = 0;
@@ -656,7 +716,15 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
             } else if (fgpm) {
                 ink.has_fg = 1;
             }
-            djvu_bm_visit_ink(&s->bm, b->left, b->bottom, compose_stamp_ink, &ink);
+            /* Run-aware stamp (RLE or memchr runs on bytes): O(runs) not O(ink
+               pixels via indirect call). Palette/black fill whole runs; FG44
+               splits runs at nearest-sample cell boundaries. */
+            if (ink.has_fg)
+                djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
+                                       compose_stamp_fg_run, &ink);
+            else
+                djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
+                                       compose_stamp_solid_run, &ink);
         }
     }
 
