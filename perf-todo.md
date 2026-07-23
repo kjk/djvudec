@@ -3,23 +3,174 @@
 Tracked regressions and ideas for closing the gap vs DjVuLibre (`ddjvuapi`
 `page_render`). Byte-exact verification is done; remaining work is speed.
 
-Bench commands (from repo root):
+## Bench & profile commands (from repo root)
 
 ```text
-bun cmd/bench.ts deps/DjVuLibre/doc/djvu3spec.djvu
+# Layer timers (djvudec only)
 bun cmd/build-dump.ts
-out/msvc/djvudec_dump.exe -bench-render -layers -warm 1 deps/DjVuLibre/doc/djvu3spec.djvu
+out/msvc/djvudec_dump.exe -bench-render -layers -reps 3 file.djvu
+
+# vs DjVuLibre
+bun cmd/bench.ts deps/DjVuLibre/doc/djvu3spec.djvu
+
+# Before/after (library-only; freeze "before" binary before editing)
+bun cmd/build-bench.ts before -clean
+# … edit src/ …
+bun cmd/build-bench.ts after -clean
+# Prefer running the two exes directly so auto-rebuild does not overwrite "before"
+
+# Profile build (MSVC: -O2 -Ob1 -Zi, no -GL/-LTCG) + WPR one-liners
+bun cmd/build-prof.ts
+bun cmd/build-prof.ts -print
 ```
+
+Verification after any speed change:
+
+- Byte-exact: `bun cmd/tests.ts` (corpus oracle), before/after PPM hashes, `djvu_test -verify-into`.
+- Speed: layer lines from `-bench-render -layers`; true before/after binaries.
 
 ---
 
-## Known slow case: `djvu3spec.djvu` pages 61–64
+## Landed (do not re-do; do not regress)
 
-Bitonal 2550×3300 pages. DjVuLibre ~4.5–5.2 ms/page; we are ~9–13 ms/page
-(+105–185%). Page 65 on the same file is ~2 ms — faster than DjVuLibre — so
-this is not a generic bitonal problem.
+| Work | Approx. effect | Notes |
+|------|----------------|--------|
+| Planar `map_image` + SSE2 clamp + SSE2 YCbCr→RGB (`iw44.c`) | ~6–10% on IW44 stage (color) | Byte-exact; commit on `simd` |
+| SSE2 `filter_bv` interior, `scale==1` only | Small / noisy (~few % IW44) | Edges + coarser scales still scalar |
+| Lazy per-page cache + public APIs | Repeat paints skip re-decode | `djvu_ctx_set_cache_per_page(1)` + lock/unlock; `djvu_doc_drop_page_cache` / `djvu_doc_page_cache_size` |
+| Run-aware color stamp (`compose.c`) | **~30% composite** on FGbz palette pages (e.g. `test008C`) | `visit_ink_runs` + solid RGB fill; FG44 weaker win |
+| Bitonal `visit_ink_runs` + `memset` stamp | Already fast vs DjVuLibre on light pages | Do not go back to per-pixel stamps |
+| Shared Djbz / inline Djbz / IW44 layer acquire caches | Doc-wide or per-page when caching on | Shared dicts ≠ page Sjbz |
 
-### Snapshot (`djvu_test_msvc.exe -bench`, fastest of 3)
+**Host must enable caching** for Sjbz/IW44/bg reuse across paints. Without
+`cache_per_page` + locks + long-lived `djvu_doc`, every render re-decodes.
+
+---
+
+## Slowest sample pages (profiling candidates)
+
+Sweep (`-bench-render -layers -reps 2`, min of 2) over
+`djvu3spec`, `1998_compression`, `test008C`, `test064C`, `lizard2002`,
+`test043C`. Wall times are machine-dependent; **order and dominant layer** matter.
+
+| Priority | File | Page | ~total | Dominant | Why profile |
+|----------|------|------|--------|----------|-------------|
+| 1 | `deps/artifacts/test043C.djvu` | **p5** (also p1, p4) | ~200–215 ms | **iw44** (~all) | Purest IW44 stack |
+| 2 | `deps/artifacts/test008C.djvu` | **p1**, **p5** | ~168–171 ms | iw44 + composite | Compound + stamp |
+| 3 | `deps/DjvuNet/Specs/1998_compression.djvu` | **p25** etc. | ~53–60 ms | mixed | FG44 compound balance |
+| 4 | `deps/DjVuLibre/doc/djvu3spec.djvu` | **p61–63** | ~7–11 ms* | **jb2** | Cold Sjbz / ZP |
+
+\*Bitonal absolute ms may be lower than older snapshots; still the place to
+profile **JB2**, not IW44. Color pages on `djvu3spec` (e.g. p21) are IW44-heavy
+but smaller than `test043C`.
+
+### Profile one page (WPR)
+
+```powershell
+bun cmd/build-prof.ts
+# Admin recommended:
+wpr -start CPU -filemode
+out\msvc_prof\djvudec_prof.exe -bench-render -reps 8 -page 5 deps\artifacts\test043C.djvu
+wpr -stop $env:TEMP\djvudec.etl
+```
+
+WPA: **Computation → CPU Usage (Sampled)** → process `djvudec_prof.exe` → stacks
+under `filter_bv` / `map_image` / `code_bitmap_*` / `compose_*`.
+
+For **instructions retired / CPI per function**: Intel VTune (or AMD uProf) on
+the same `djvudec_prof.exe` + same `-page` / `-reps` args.
+
+Always use **`-page N`** so the trace is one workload.
+
+---
+
+## Suggested next work (priority)
+
+### 1. Wire page cache in the real viewer path (product)
+
+APIs exist; speed only appears if the host:
+
+- `djvu_ctx_set_cache_per_page(1)` + non-NULL lock/unlock  
+- keeps `djvu_doc` open across paints  
+- optionally LRU-evicts with `djvu_doc_drop_page_cache` / `page_cache_size`  
+
+**Measure:** same page twice with cache on (2nd paint should drop Sjbz/IW44 to
+near zero) vs cache off.
+
+Does **not** help cold first paint.
+
+### 2. Cold JB2 first-decode (bitonal; closes gap vs DjVuLibre)
+
+Still the hard case on NM/MR-heavy Sjbz (`djvu3spec` p61–64 historically
+~2× DjVuLibre). SIMD cannot help ZP arithmetic coding.
+
+- **`add_library` / `djvu_bm_bbox`**: four-pass full-bitmap scan after every new
+  shape. Prefer single-pass, per-row incremental bbox after decode row, or
+  defer bbox until after batch RLE (`bm_bbox_rle`).
+- **Dict parent bytes during one Sjbz**: avoid RLE↔bytes thrash on shared
+  shapes mid-stream; pin bytes for the decode duration.
+- **Codegen**: clang release on Windows vs MSVC; **PGO**
+  (`/LTCG /GENPROFILE` trained on `djvu3spec` / color corpus).
+- Open-code ZP + context shift in `code_bitmap_*` if disassembly shows spills.
+
+Already tried (commit `6ba8a11` era): hot-loop rewrite of
+`code_bitmap_directly` / `code_bitmap_cross`, batch RLE at end of decode —
+~1–3% on p61; gap to DjVuLibre largely unchanged. Skipping RLE on ephemeral
+masks sped JB2 but hurt composite (bytes `visit_ink`).
+
+### 3. Confirm where IW44 time goes (before more SIMD)
+
+Profile **test043C p5**:
+
+- If **bitplane ZP decode** dominates → more lifting SIMD is low ROI.  
+- If **`filter_bv` / `filter_bh` / `map_image` / YCbCr** dominate → continue
+  transform path (below).
+
+### 4. More IW44 (only if transform is hot)
+
+- Coarse **`filter_bv` scales** (only `scale==1` interior is SSE2 today).  
+- **`filter_bh`**: left-to-right recurrence — hard; DjVuLibre leaves scalar.  
+- **`build_unified` / zigzag scatter** layout costs.  
+- Optional **AVX2 dispatch** (runtime CPUID + scalar fallback; no
+  `-march=native`; amalgamation-safe `static` names).
+
+### 5. Composite leftovers
+
+- **FG44** stamping: FGbz solid runs already ~30% faster composite on
+  `test008C`; FG44 still samples often — tile by FG cell when mask is dense.  
+- **`compose_finalize` / BGR flip**: easy bandwidth win (`pshufb`-style).  
+- Bitonal stamp is already run-based — do not over-invest.
+
+### 6. Allocation / arena
+
+Per-render `djvu_alloc` (shapes, temps, subsample acc): **bump arena per
+render**, free once; reuse scratch buffers. Helps shape-heavy pages without
+changing codecs.
+
+### 7. Parallelism
+
+- Parallel **independent layers** on one page (BG44 ∥ FG44 ∥ Sjbz) when all
+  needed — careful with shared dicts + locks.  
+- Multi-page decode/render already exercised by stress tests.  
+- **Not** practical: parallelize a single ZP stream.
+
+### 8. Lower priority / situational
+
+- Scaler: usually off hot path (cached BG).  
+- Caller subsample policy (don't force full-res at low zoom).  
+- Release vs profile builds: ship may keep `-GL -LTCG` / PGO; profile binary
+  stays non-LTCG.  
+- NEON ports of planar clamp/YCbCr/`filter_bv` for ARM.
+
+---
+
+## Known slow case: `djvu3spec.djvu` pages 61–64 (JB2)
+
+Bitonal 2550×3300. Historically DjVuLibre ~4.5–5.2 ms/page vs us ~9–13 ms
+(+105–185%) on cold full render. Page 65 ~2 ms (faster than DjVuLibre) — not a
+generic bitonal problem.
+
+### Older snapshot (`djvu_test_msvc.exe -bench`, fastest of 3)
 
 | Page | DjVuLibre | Ours | Δ |
 |------|-----------|------|---|
@@ -29,107 +180,83 @@ this is not a generic bitonal problem.
 | 64 | 4.58 ms | 9.38 ms | +105% |
 | 65 | 4.21 ms | 2.00 ms | −53% |
 
-### Layer breakdown (`djvudec_dump -bench-render -layers -warm 1`, fastest of 3)
+### Layer breakdown (older; `-layers -warm 1`)
 
 | Page | Total | JB2 | Composite | IW44 |
 |------|-------|-----|-----------|------|
 | 61 | ~13.9 ms | ~11.8 ms | ~1.9 ms | 0 |
-| 62 | ~13.8 ms | ~11.6 ms | ~2.0 ms | 0 |
-| 63 | ~14.1 ms | ~11.9 ms | ~2.0 ms | 0 |
-| 64 | ~10.8 ms | ~8.6 ms | ~2.0 ms | 0 |
 | 65 | ~2.3 ms | ~0.45 ms | ~1.7 ms | 0 |
 
-JB2 decode dominates on 61–64. Composite (`visit_ink` stamp at subsample=1) is
-already reasonable (~2 ms). IW44 is not involved.
+JB2 decode dominates. Composite stamp ~2 ms. IW44 not involved.
 
 ### Stream shape (page 61 Sjbz, approximate)
 
-- Inherited shared Djbz dict is cached at `djvu_doc_open` (not re-decoded per
-  render).
-- Per-render cost is fresh **Sjbz** decode: ~72 `MATCHED_REFINE_LIBRARY_ONLY`
-  records (cross-coded shapes against dict parents), plus many cheap
-  `MATCHED_COPY` blits.
-- Contrast page 65: ~17 new marks, JB2 ~0.45 ms.
+- Shared Djbz cached (not re-decoded per render).  
+- Per-render (cache off): fresh **Sjbz** — ~72 `MATCHED_REFINE_LIBRARY_ONLY`
+  plus many `MATCHED_COPY` blits.  
+- Page 65: ~17 new marks, JB2 ~0.45 ms.  
 
-Root cause: **per-render Sjbz decode** spends ~8–12 ms in
-`code_bitmap_cross` / ZP arithmetic decoding (~0.1–0.15 ms per refined shape,
-plus end-of-decode RLE `djvu_bm_compress` batch and per-shape `djvu_bm_bbox`
-in `add_library`).
+Root cost: `code_bitmap_cross` / ZP + `djvu_bm_bbox` / RLE batch — see
+priority **#2**.
 
 ---
 
-## Already tried (commit `6ba8a11`)
+## Page-local cache (status)
 
-- Hot-loop rewrite of `code_bitmap_directly` / `code_bitmap_cross`: hoisted
-  `djvu_zp` `a`/`fence`, direct `bitdist`/`cbitdist` indexing, row-base pointer
-  arithmetic, DjVuLibre-style `up0[dx++] = n` loop.
-- Removed `code_bit_arr` wrapper; batch `djvu_bm_compress` at end of
-  `jb2_decode_into` instead of per-record.
+**Implemented** (lazy on first acquire/render when `cache_per_page` is on):
 
-Result: ~1–3% on p61 vs pre-change; gap to DjVuLibre unchanged. Incremental
-bbox inside the pixel loop was tried and reverted (branch hurt more than it
-saved). Skipping RLE compress on ephemeral page masks sped JB2 but doubled
-composite (bytes `visit_ink` vs RLE).
+- `pages[i].jb2_mask` (Sjbz)  
+- `iw_bg` / `iw_fg`  
+- `bg_native` / `bg_scaled`  
 
----
+Public:
 
-## Future improvements (priority order)
+```text
+void   djvu_doc_drop_page_cache(djvu_doc *doc, int page_no);
+size_t djvu_doc_page_cache_size(djvu_doc *doc, int page_no);
+```
 
-### 1. Cache decoded page Sjbz at doc-open (largest win on repeat access)
+Probe: `djvudec_dump -cache-probe -page 1 file.djvu`  
+(`before=0`, `after_render>0`, `after_drop=0`).
 
-Mirror existing caches (`jb2_dicts[]`, inline Djbz dedup, IW44 BG44/FG44):
-after first `djvu_jb2_decode` per page, store `jb2_image *` on `djvu_page_int`
-and reuse on `djvu_page_render`. Does not help the very first decode in a
-session but matches how viewers behave (doc open once, many page paints).
+Shared Djbz remains doc-wide (not in page cache size).
 
-### 2. JB2 first-decode: reduce work outside the ZP pixel loop
-
-- **`add_library` / `djvu_bm_bbox`**: four-pass full-bitmap scan after every
-  new shape (~72× on p61). Options:
-  - Single-pass raw scan in `djvu_bm_bbox` (one read stream vs four).
-  - Incremental bbox accumulated after each row in `code_bitmap_*` (not inside
-    the per-pixel ZP loop — e.g. scan the row buffer once per decoded row).
-  - Defer libinfo bbox until after batch RLE compress and use `bm_bbox_rle`.
-- **Batch RLE compress**: profile cost of `djvu_bm_compress` for ~72 shapes;
-  consider parallel compress or lazy compress (only shapes referenced by blits).
-
-### 3. JB2 first-decode: ZP / cross-coding throughput
-
-DjVuLibre is ~2–3× faster on the same NM/MR-heavy streams with structurally
-identical decode logic — likely MSVC codegen on the tight `zp.decoder` loop.
-
-- Build bench with **clang** on Windows (`bun cmd/build.ts -clang`) and
-  compare; consider clang as default for release if consistently faster.
-- **PGO** (`/LTCG /GENPROFILE` + training on `djvu3spec` / `Z:\sumtest`).
-- **Open-code** `jb2_shift_*_context` + fast-path ZP in the inner `while` (no
-  helper call) and verify disassembly (`objdump -d`) that `a`/`fence` stay in
-  registers.
-- **`djvu_bm_ensure_bytes` on cross parents**: inherited dict shapes are RLE;
-  first cross-ref per parent decompresses. Track which parents are hot; keep
-  decoded bytes pinned for the duration of Sjbz decode (avoid re-compress of
-  inherited shapes mid-stream).
-
-### 4. Composite (lower priority for 61–64)
-
-`visit_ink` RLE path is ~2 ms for 8.4M-page output — not the bottleneck here.
-If JB2 is fixed, revisit only if composite resurfaces on other files.
-
-### 5. Measurement / isolation
-
-- Add `cmd/jb2_bench.ts` (or `djvu_test -jb2bench`) to time
-  `djvu_jb2_decode` alone per page (no composite), with record-type histogram
-  (`DJVU_JB2_DEBUG=1`).
-- Compare against `test/jb2ref.cpp` oracle on raw Sjbz bytes to separate
-  decode correctness from render-path overhead.
+**Not done:** host-side LRU policy; eager full-doc Sjbz at open (avoid — open
+latency). Optional: `preload_jb2_masks_range` for nearby pages only.
 
 ---
 
-## Fast paths (for context — do not regress)
+## SIMD / vectorization (color IW44) — status
 
-- `test0.djvu` p1/2/5: bitonal subsample=1 `visit_ink` stamp (~1.5–2.5 ms,
-  ~40–65% faster than DjVuLibre) — commit `e7923f9`.
-- GBitmap RLE compress/blit/bbox — commit `b319c98`.
-- Doc-open caches: shared INCL Djbz, inline Djbz dedup, IW44 BG44/FG44.
+Release builds: max opt, baseline **SSE2**, no forced AVX2. SIMD helpers must
+stay amalgamation-safe (`static`, unique names). AVX2 only via runtime dispatch.
+
+| Item | Status |
+|------|--------|
+| Planar map + SSE2 clamp + YCbCr→RGB | **Done** |
+| `filter_bv` scale=1 interior SSE2 | **Done** (modest) |
+| `filter_bh` | Open (serial; hard) |
+| Coarse-scale `filter_bv` | Open |
+| AVX2 widen of above | Open (optional) |
+| `compose_finalize` BGR/flip | Open (small) |
+| Bitonal run stamp | **Done** (algorithmic) |
+| Color run stamp | **Done** (FGbz big win) |
+| Scaler bilinear | Skip unless profiled hot |
+| JB2/ZP | **Not vectorizable** |
+
+DjvuNet SIMD inspiration was YCbCr→RGB (integer recipe matches our scalar;
+byte-exact via `packus` / clamps).
+
+---
+
+## Fast paths (do not regress)
+
+- Bitonal subsample=1 run stamp (often faster than DjVuLibre on light pages).  
+- GBitmap RLE compress/blit/bbox.  
+- Doc caches: shared INCL Djbz, inline Djbz dedup, IW44 acquire, optional
+  per-page layers.  
+- FGbz top-down run fill + general composite run stamp.  
+- O(ink) subsample coverage (bitonal + color stencil).  
 
 ---
 
@@ -140,97 +267,15 @@ If JB2 is fixed, revisit only if composite resurfaces on other files.
 
 ---
 
-# SIMD / vectorization opportunities (color IW44 path)
+## Methodology cheat-sheet
 
-Separate track from the JB2 work above. Profile-backed; inspiration cross-read
-from DjvuNet's SIMD (`deps/DjvuNet/DjvuNet/Wavelet/InterWaveTransform.Vector128/256.cs`).
+| If `-layers` / WPA says… | Next lever |
+|--------------------------|------------|
+| Time only on **2nd** paint | Host page cache wiring |
+| `code_bitmap_*` / ZP | JB2 cold path (#2) |
+| `filter_bv` / `filter_bh` / `map_image` | IW44 (#3–4) |
+| `compose_stamp*` / stencil | FG44 tiling / finalize (#5) |
+| `djvu_alloc` / free | Render arena (#6) |
 
-## Build reality
-Both toolchains compile at max opt (`clang -O3`, `cl -O2 -Ob3 -GL`) but **neither
-passes `-march` / `-arch:AVX2`** — codegen is baseline **SSE2 (128-bit), no
-AVX/AVX2**. Clang auto-vectorizes simple contiguous loops to SSE2 but bails on
-strided access, per-pixel callbacks, and edge-case-laden filters. Headroom in
-both *width* (enabling AVX2) and *loops the compiler can't touch*.
-
-Any SIMD must fold into the single-TU amalgamation (`dist/djvu.c`) — keep helpers
-file-local (no two `.c` sharing a `static` name). For AVX2, use a runtime CPUID
-dispatch with a scalar fallback (lib ships to unknown targets); do **not** use
-`-march=native`.
-
-## Where time goes (color/compound pages)
-`djvudec_dump -bench-render -warm 1 -layers` (fastest of 3, warm caches):
-
-| Page kind (example)                           | total   | dominant layers                         |
-|-----------------------------------------------|---------|-----------------------------------------|
-| Compound color, full-res (`1998_compression`) | ~15 ms  | **iw44 ~4.3 ms**, **composite ~2.3 ms** |
-| Color screen, small (`mtorrent`)              | ~0.3 ms | iw44 0.09 ms                            |
-
-(Bitonal text pages are JB2/stamp-bound — see the JB2 section above and #4 below.)
-ZP / arithmetic decoders are inherently serial bit-at-a-time — **not vectorizable**.
-
-## What DjvuNet vectorizes (the inspiration)
-DjvuNet does **not** SIMD the wavelet lifting. It vectorizes the **YCbCr↔RGB color
-transform**. `TransformYCbCrToRgbVector256` is op-for-op identical to our scalar
-loop in `iw44.c` `iw44_render_rgb_impl` (~lines 652-665):
-
-```
-DjvuNet AVX2          our scalar (iw44.c)
-blue>>2               t1 = bv>>2
-red + red>>1          t2 = rv + (rv>>1)
-luma+128              yv + 128
-luma128 - temp1       t3 = yv+128 - t1
-luma128 + temp2       tr  (red out)
-temp3 - temp2>>1      tg  (green out)
-temp3 + blue<<1       tb  (blue out)
-Max(0,Min(255,..))    clamp255
-PackUnsignedSaturate  (uint8_t) store
-```
-
-Same integer math → SIMD port verifies **byte-exact** vs scalar (`-verify-into` /
-corpus oracle).
-
-## Ranked opportunities
-
-### 1. Planar `map_image` + SIMD clamp + SIMD YCbCr→RGB — best risk/reward, DjvuNet-proven  [IN PROGRESS]
-`map_image` (`iw44.c:277`) writes int8 with stride (`pixsep=3`, interleaved
-Y/B/R); `iw44_render_rgb_impl` reads it back interleaved and writes to a *flipped*
-index. Two SIMD blockers: clamp loop scatters (stride 3), color loop reads
-interleaved + writes flipped.
-
-Fix: `map_image` writes **planar** (pixsep=1, contiguous) into 3 buffers. Then:
-- clamp `(x+32)>>6` to [-128,127] = load int16 → add → shift → `packs_epi16`
-  (signed saturation *is* the [-128,127] clamp) → packed store;
-- YCbCr→RGB loads 3 contiguous planes (no deinterlace shuffle DjvuNet needs),
-  runs the recipe above, interleaves to RGB. Flip done as a row-reorder, not a
-  per-pixel flipped index.
-
-Impact: removes strided scatter, unlocks color+clamp portion of the 4.3 ms iw44
-layer; also speeds the scalar path (contiguous).
-
-### 2. `filter_bv` vertical lifting, interior rows — largest compute, more work
-`filter_bv` (`iw44.c:114`) is **column-parallel**: every x does identical math
-with neighbors at rows ±s/±3s. At `scale=1` (finest, every coefficient) neighbors
-are contiguous int16 rows → ideal (8×int32 lanes to stay overflow-safe on
-`(a<<3)+a`). Interior case (`y∈[3,h-3]`) is the bulk; edges stay scalar.
-`filter_bh` (`iw44.c:184`) is a left-to-right recurrence → not x-vectorizable
-(row-parallel only, transpose-heavy). DjVuLibre/DjvuNet leave both scalar.
-Biggest potential single win but most code + most numerically delicate. Do after #1.
-
-### 3. `compose_finalize` / `djvu_flip_rgb_bottomup` — small, easy
-`compose.c:186` / `scaler.c:243`: row flip + optional R↔B swap = `pshufb` + copy.
-Gamma branch is a 256-LUT gather (leave scalar). Low effort, small payoff.
-
-### 4. Bitonal ink-stamp — algorithmic, not pure SIMD, ~2 ms on text pages
-`render.c` stamps each ink pixel via indirect call through `djvu_bm_visit_ink`
-(`bitmap.c:392`) — per-pixel function pointers can't vectorize. The RLE path knows
-ink **runs**; replace the per-pixel callback with a run-aware sink (`memset(0)` of
-`[left+col, left+nc)` on the dest row). Structural refactor; highest value for
-text corpora. (Overlaps the composite item in the JB2 section.)
-
-### 5. `scaler.c` bilinear — skip
-Runs at doc-open (BG44 upscale cached), off render hot path; `s_interp` lookups
-are gather-bound.
-
-## Verification
-- Byte-exact: `bun cmd/tests.ts` (corpus oracle), `djvu_test -verify-into`.
-- Speed: `cmd/build-bench.ts before/after` + `cmd/bench-perf.ts` (`-warm 1 -layers`).
+Change one thing → true before/after binaries → corpus byte-exact → re-bench
+dominant layer, not only total ms (system noise often moves jb2 ±5% too).
