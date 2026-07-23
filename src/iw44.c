@@ -118,6 +118,90 @@ static void write_lift_block(iw_block *blk, int16_t *coeff)
 /* ---------- inverse wavelet transform (ported from DjVuLibre IW44Image.cpp
  * filter_bv / filter_bh -- the canonical reference) ---------- */
 
+#ifdef DJVU_IW44_SSE2
+/* Sign-extend 8×int16 to two 4×int32 vectors. */
+static void bv_i16x8_to_i32(const int16_t *src, __m128i *lo, __m128i *hi)
+{
+    __m128i v = _mm_loadu_si128((const __m128i *)src);
+    __m128i sign = _mm_cmpgt_epi16(_mm_setzero_si128(), v);
+    *lo = _mm_unpacklo_epi16(v, sign);
+    *hi = _mm_unpackhi_epi16(v, sign);
+}
+
+/* Truncating pack 8×int32 -> 8×int16 (matches C cast (int16_t), not sat). */
+static __m128i bv_pack_i32_trunc(__m128i lo, __m128i hi)
+{
+    lo = _mm_srai_epi32(_mm_slli_epi32(lo, 16), 16);
+    hi = _mm_srai_epi32(_mm_slli_epi32(hi, 16), 16);
+    return _mm_packs_epi32(lo, hi);
+}
+
+/* Apply lift (sub=1) or interp (sub=0) for 8 contiguous samples at q+i. */
+static void filter_bv_apply8_s1(int16_t *q, int i, int s, int s3, int lift)
+{
+    __m128i q_lo, q_hi, a_lo, a_hi, b_lo, b_hi, t_lo, t_hi;
+    __m128i ms_lo, ms_hi, ps_lo, ps_hi, ms3_lo, ms3_hi, ps3_lo, ps3_hi;
+    const __m128i bias = _mm_set1_epi32(lift ? 16 : 8);
+    const int rshift = lift ? 5 : 4;
+    bv_i16x8_to_i32(q + i, &q_lo, &q_hi);
+    bv_i16x8_to_i32(q + i - s, &ms_lo, &ms_hi);
+    bv_i16x8_to_i32(q + i + s, &ps_lo, &ps_hi);
+    bv_i16x8_to_i32(q + i - s3, &ms3_lo, &ms3_hi);
+    bv_i16x8_to_i32(q + i + s3, &ps3_lo, &ps3_hi);
+    a_lo = _mm_add_epi32(ms_lo, ps_lo);
+    a_hi = _mm_add_epi32(ms_hi, ps_hi);
+    b_lo = _mm_add_epi32(ms3_lo, ps3_lo);
+    b_hi = _mm_add_epi32(ms3_hi, ps3_hi);
+    /* 9*a - b + bias, then >> rshift */
+    t_lo = _mm_add_epi32(_mm_slli_epi32(a_lo, 3), a_lo);
+    t_hi = _mm_add_epi32(_mm_slli_epi32(a_hi, 3), a_hi);
+    t_lo = _mm_srai_epi32(_mm_add_epi32(_mm_sub_epi32(t_lo, b_lo), bias), rshift);
+    t_hi = _mm_srai_epi32(_mm_add_epi32(_mm_sub_epi32(t_hi, b_hi), bias), rshift);
+    if (lift) {
+        q_lo = _mm_sub_epi32(q_lo, t_lo);
+        q_hi = _mm_sub_epi32(q_hi, t_hi);
+    } else {
+        q_lo = _mm_add_epi32(q_lo, t_lo);
+        q_hi = _mm_add_epi32(q_hi, t_hi);
+    }
+    _mm_storeu_si128((__m128i *)(q + i), bv_pack_i32_trunc(q_lo, q_hi));
+}
+
+/* Lift: *q -= ((9*a - b + 16) >> 5). Contiguous scale==1 interior. */
+static void filter_bv_lift_interior_s1(int16_t *q, int w, int s, int s3)
+{
+    int i = 0;
+    for (; i + 16 <= w; i += 16) {
+        filter_bv_apply8_s1(q, i, s, s3, 1);
+        filter_bv_apply8_s1(q, i + 8, s, s3, 1);
+    }
+    for (; i + 8 <= w; i += 8)
+        filter_bv_apply8_s1(q, i, s, s3, 1);
+    for (; i < w; i++) {
+        int a = (int)q[i - s] + (int)q[i + s];
+        int b = (int)q[i - s3] + (int)q[i + s3];
+        q[i] = (int16_t)(q[i] - (((a << 3) + a - b + 16) >> 5));
+    }
+}
+
+/* Interp: *q += ((9*a - b + 8) >> 4). Contiguous scale==1 interior. */
+static void filter_bv_interp_interior_s1(int16_t *q, int w, int s, int s3)
+{
+    int i = 0;
+    for (; i + 16 <= w; i += 16) {
+        filter_bv_apply8_s1(q, i, s, s3, 0);
+        filter_bv_apply8_s1(q, i + 8, s, s3, 0);
+    }
+    for (; i + 8 <= w; i += 8)
+        filter_bv_apply8_s1(q, i, s, s3, 0);
+    for (; i < w; i++) {
+        int a = (int)q[i - s] + (int)q[i + s];
+        int b = (int)q[i - s3] + (int)q[i + s3];
+        q[i] = (int16_t)(q[i] + (((a << 3) + a - b + 8) >> 4));
+    }
+}
+#endif /* DJVU_IW44_SSE2 */
+
 static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
 {
     int y = 0;
@@ -130,11 +214,18 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
             int16_t *q = p;
             int16_t *e = q + w;
             if (y >= 3 && y + 3 < h) {
-                while (q < e) {
-                    int a = (int)q[-s] + (int)q[s];
-                    int b = (int)q[-s3] + (int)q[s3];
-                    *q = (int16_t)(*q - (((a << 3) + a - b + 16) >> 5));
-                    q += scale;
+#ifdef DJVU_IW44_SSE2
+                if (scale == 1) {
+                    filter_bv_lift_interior_s1(q, w, s, s3);
+                } else
+#endif
+                {
+                    while (q < e) {
+                        int a = (int)q[-s] + (int)q[s];
+                        int b = (int)q[-s3] + (int)q[s3];
+                        *q = (int16_t)(*q - (((a << 3) + a - b + 16) >> 5));
+                        q += scale;
+                    }
                 }
             } else if (y < h) {
                 int16_t *q1 = (y + 1 < h) ? q + s : NULL;
@@ -168,11 +259,18 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
             int16_t *q = p - s3;
             int16_t *e = q + w;
             if (y >= 6 && y < h) {
-                while (q < e) {
-                    int a = (int)q[-s] + (int)q[s];
-                    int b = (int)q[-s3] + (int)q[s3];
-                    *q = (int16_t)(*q + (((a << 3) + a - b + 8) >> 4));
-                    q += scale;
+#ifdef DJVU_IW44_SSE2
+                if (scale == 1) {
+                    filter_bv_interp_interior_s1(q, w, s, s3);
+                } else
+#endif
+                {
+                    while (q < e) {
+                        int a = (int)q[-s] + (int)q[s];
+                        int b = (int)q[-s3] + (int)q[s3];
+                        *q = (int16_t)(*q + (((a << 3) + a - b + 8) >> 4));
+                        q += scale;
+                    }
                 }
             } else if (y >= 3) {
                 int16_t *q1 = (y - 2 < h) ? q + s : q - s;
