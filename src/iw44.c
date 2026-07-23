@@ -6,6 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* SSE2 is baseline on x86-64; MSVC does not define __SSE2__ automatically. */
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || \
+    (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define DJVU_IW44_SSE2 1
+#include <emmintrin.h>
+#endif
+
 extern const int16_t djvu_iw44_zigzag[1024];
 
 /* ---------- block: 64 sparse buckets of 16 coefficients ---------- */
@@ -273,6 +280,38 @@ static int16_t *build_unified(djvu_ctx *ctx, iw_map *m)
     return data16;
 }
 
+/* Clamp (src[j]+32)>>6 to int8. Contiguous planar rows (pixsep=1) only. */
+static void map_image_clamp_row(const int16_t *src, int8_t *dst, int w)
+{
+    int j = 0;
+#ifdef DJVU_IW44_SSE2
+    /* int16 math is not enough: scalar uses int (src+32)>>6. Widen to int32. */
+    {
+        const __m128i thirty_two = _mm_set1_epi32(32);
+        for (; j + 8 <= w; j += 8) {
+            __m128i v = _mm_loadu_si128((const __m128i *)(src + j));
+            __m128i sign = _mm_cmpgt_epi16(_mm_setzero_si128(), v);
+            __m128i lo = _mm_unpacklo_epi16(v, sign);
+            __m128i hi = _mm_unpackhi_epi16(v, sign);
+            lo = _mm_srai_epi32(_mm_add_epi32(lo, thirty_two), 6);
+            hi = _mm_srai_epi32(_mm_add_epi32(hi, thirty_two), 6);
+            /* packs_epi32 -> int16 sat; packs_epi16 -> int8 sat [-128,127] */
+            {
+                __m128i p16 = _mm_packs_epi32(lo, hi);
+                __m128i p8 = _mm_packs_epi16(p16, p16);
+                _mm_storel_epi64((__m128i *)(dst + j), p8);
+            }
+        }
+    }
+#endif
+    for (; j < w; j++) {
+        int x = ((int)src[j] + 32) >> 6;
+        if (x < -128) x = -128;
+        else if (x > 127) x = 127;
+        dst[j] = (int8_t)x;
+    }
+}
+
 /* produce signed 8-bit samples into img8 (stride rowsize, step pixsep). */
 static int map_image(djvu_ctx *ctx, iw_map *m, int index, int8_t *img8,
                      int rowsize, int pixsep, int fast)
@@ -294,12 +333,18 @@ static int map_image(djvu_ctx *ctx, iw_map *m, int index, int8_t *img8,
     }
 
     pidx = 0;
-    for (i = 0, rowidx = index; i < m->h; i++, rowidx += rowsize, pidx += m->bw) {
-        for (j = 0, pixidx = rowidx; j < m->w; j++, pixidx += pixsep) {
-            int x = (data16[pidx + j] + 32) >> 6;
-            if (x < -128) x = -128;
-            else if (x > 127) x = 127;
-            img8[pixidx] = (int8_t)x;
+    /* Planar contiguous rows: SIMD clamp; still used for debug gray/plane. */
+    if (pixsep == 1 && rowsize == m->w) {
+        for (i = 0, rowidx = index; i < m->h; i++, rowidx += rowsize, pidx += m->bw)
+            map_image_clamp_row(data16 + pidx, img8 + rowidx, m->w);
+    } else {
+        for (i = 0, rowidx = index; i < m->h; i++, rowidx += rowsize, pidx += m->bw) {
+            for (j = 0, pixidx = rowidx; j < m->w; j++, pixidx += pixsep) {
+                int x = ((int)data16[pidx + j] + 32) >> 6;
+                if (x < -128) x = -128;
+                else if (x > 127) x = 127;
+                img8[pixidx] = (int8_t)x;
+            }
         }
     }
     djvu_free(ctx, data16);
@@ -630,47 +675,135 @@ int djvu_iw44_is_color(iw_pixmap *pm)
 
 static int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 
+/* Convert one planar YCbCr row (int8 samples) to interleaved RGB24.
+   y/b/r point at w samples; dst is w*3 bytes. Byte-exact vs scalar recipe. */
+static void ycbcr_row_to_rgb(const int8_t *y, const int8_t *b, const int8_t *r,
+                             uint8_t *dst, int w)
+{
+    int x = 0;
+#ifdef DJVU_IW44_SSE2
+    {
+        const __m128i c128 = _mm_set1_epi16(128);
+        for (; x + 8 <= w; x += 8) {
+            __m128i y8 = _mm_loadl_epi64((const __m128i *)(y + x));
+            __m128i b8 = _mm_loadl_epi64((const __m128i *)(b + x));
+            __m128i r8 = _mm_loadl_epi64((const __m128i *)(r + x));
+            /* sign-extend int8 -> int16 */
+            __m128i yv = _mm_srai_epi16(_mm_unpacklo_epi8(y8, y8), 8);
+            __m128i bv = _mm_srai_epi16(_mm_unpacklo_epi8(b8, b8), 8);
+            __m128i rv = _mm_srai_epi16(_mm_unpacklo_epi8(r8, r8), 8);
+            __m128i t1 = _mm_srai_epi16(bv, 2);
+            __m128i t2 = _mm_add_epi16(rv, _mm_srai_epi16(rv, 1));
+            __m128i y128 = _mm_add_epi16(yv, c128);
+            __m128i t3 = _mm_sub_epi16(y128, t1);
+            __m128i tr = _mm_add_epi16(y128, t2);
+            __m128i tg = _mm_sub_epi16(t3, _mm_srai_epi16(t2, 1));
+            __m128i tb = _mm_add_epi16(t3, _mm_slli_epi16(bv, 1));
+            /* packus: signed int16 -> uint8 sat 0..255 (= clamp255) */
+            __m128i ru = _mm_packus_epi16(tr, tr);
+            __m128i gu = _mm_packus_epi16(tg, tg);
+            __m128i bu = _mm_packus_epi16(tb, tb);
+            /* Pack 8 RGB pixels: unpack to R G B 0 dwords, write 3 bytes each. */
+            {
+                __m128i rg = _mm_unpacklo_epi8(ru, gu);
+                __m128i bz = _mm_unpacklo_epi8(bu, _mm_setzero_si128());
+                __m128i pack0 = _mm_unpacklo_epi16(rg, bz); /* px 0-3: R G B 0 */
+                __m128i pack1 = _mm_unpacklo_epi16(_mm_unpackhi_epi64(rg, rg),
+                                                   _mm_unpackhi_epi64(bz, bz));
+                uint32_t pix[4];
+                int k;
+                _mm_storeu_si128((__m128i *)pix, pack0);
+                for (k = 0; k < 4; k++) {
+                    uint32_t p = pix[k];
+                    dst[0] = (uint8_t)p;
+                    dst[1] = (uint8_t)(p >> 8);
+                    dst[2] = (uint8_t)(p >> 16);
+                    dst += 3;
+                }
+                _mm_storeu_si128((__m128i *)pix, pack1);
+                for (k = 0; k < 4; k++) {
+                    uint32_t p = pix[k];
+                    dst[0] = (uint8_t)p;
+                    dst[1] = (uint8_t)(p >> 8);
+                    dst[2] = (uint8_t)(p >> 16);
+                    dst += 3;
+                }
+            }
+        }
+    }
+#endif
+    for (; x < w; x++) {
+        int yv = y[x], bv = b[x], rv = r[x];
+        int t1 = bv >> 2;
+        int t2 = rv + (rv >> 1);
+        int t3 = yv + 128 - t1;
+        int tr = yv + 128 + t2;
+        int tg = t3 - (t2 >> 1);
+        int tb = t3 + (bv << 1);
+        dst[0] = (uint8_t)clamp255(tr);
+        dst[1] = (uint8_t)clamp255(tg);
+        dst[2] = (uint8_t)clamp255(tb);
+        dst += 3;
+    }
+}
+
+/* Gray IW44: RGB = 127 - Y (clamped), planar Y row -> interleaved RGB. */
+static void gray_y_row_to_rgb(const int8_t *y, uint8_t *dst, int w)
+{
+    int x;
+    for (x = 0; x < w; x++) {
+        uint8_t g = (uint8_t)clamp255(127 - y[x]);
+        dst[0] = dst[1] = dst[2] = g;
+        dst += 3;
+    }
+}
+
 static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
 {
     djvu_ctx *ctx;
-    int w, h, i, color;
-    int8_t *bytes;
+    int w, h, row, color;
+    size_t plane;
+    int8_t *planes;
+    int8_t *yp, *bp, *rp;
     if (!pm || !pm->ymap) return -1;
     ctx = pm->ctx;
     w = pm->w; h = pm->h;
     color = djvu_iw44_is_color(pm);
+    plane = (size_t)w * (size_t)h;
 
-    bytes = (int8_t *)djvu_alloc(ctx, (size_t)w * h * 3);
-    if (!bytes) return -1;
-    memset(bytes, 0, (size_t)w * h * 3);
+    /* Planar Y/Cb/Cr (or Y only for gray): contiguous rows for SIMD clamp +
+       color convert. map_image still emits bottom-up (DjVu convention). */
+    planes = (int8_t *)djvu_alloc(ctx, plane * (color ? 3u : 1u));
+    if (!planes) return -1;
+    memset(planes, 0, plane * (color ? 3u : 1u));
+    yp = planes;
+    bp = color ? planes + plane : NULL;
+    rp = color ? planes + 2 * plane : NULL;
 
-    /* map_image produces rows bottom-up (DjVu convention); emit top-down. */
-    if (map_image(ctx, pm->ymap, 0, bytes, w * 3, 3, 0) != 0) { djvu_free(ctx, bytes); return -1; }
+    if (map_image(ctx, pm->ymap, 0, yp, w, 1, 0) != 0) {
+        djvu_free(ctx, planes);
+        return -1;
+    }
     if (color) {
-        map_image(ctx, pm->cbmap, 1, bytes, w * 3, 3, pm->crcbhalf);
-        map_image(ctx, pm->crmap, 2, bytes, w * 3, 3, pm->crcbhalf);
-        for (i = 0; i < w * h; i++) {
-            int8_t *q = bytes + (size_t)i * 3;
-            int yv = q[0], bv = q[1], rv = q[2];
-            int t1 = bv >> 2;
-            int t2 = rv + (rv >> 1);
-            int t3 = yv + 128 - t1;
-            int tr = yv + 128 + t2;
-            int tg = t3 - (t2 >> 1);
-            int tb = t3 + (bv << 1);
-            size_t o = (size_t)(flip ? (h - 1 - i / w) * w + (i % w) : i) * 3;
-            rgb[o + 0] = (uint8_t)clamp255(tr);
-            rgb[o + 1] = (uint8_t)clamp255(tg);
-            rgb[o + 2] = (uint8_t)clamp255(tb);
+        if (map_image(ctx, pm->cbmap, 0, bp, w, 1, pm->crcbhalf) != 0 ||
+            map_image(ctx, pm->crmap, 0, rp, w, 1, pm->crcbhalf) != 0) {
+            djvu_free(ctx, planes);
+            return -1;
+        }
+        for (row = 0; row < h; row++) {
+            int src_row = flip ? (h - 1 - row) : row;
+            size_t off = (size_t)src_row * (size_t)w;
+            ycbcr_row_to_rgb(yp + off, bp + off, rp + off,
+                             rgb + (size_t)row * (size_t)w * 3, w);
         }
     } else {
-        for (i = 0; i < w * h; i++) {
-            int g = clamp255(127 - bytes[(size_t)i * 3]);  /* gray = 127 - Y */
-            size_t o = (size_t)(flip ? (h - 1 - i / w) * w + (i % w) : i) * 3;
-            rgb[o + 0] = rgb[o + 1] = rgb[o + 2] = (uint8_t)g;
+        for (row = 0; row < h; row++) {
+            int src_row = flip ? (h - 1 - row) : row;
+            size_t off = (size_t)src_row * (size_t)w;
+            gray_y_row_to_rgb(yp + off, rgb + (size_t)row * (size_t)w * 3, w);
         }
     }
-    djvu_free(ctx, bytes);
+    djvu_free(ctx, planes);
     return 0;
 }
 
