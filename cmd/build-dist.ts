@@ -17,9 +17,17 @@
 // (clang everywhere; MSVC cl.exe too on Windows) before finishing.
 // bench.ts calls ensureDist() to regenerate only when src/ is newer than dist/.
 import { $ } from "bun";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, rmSync } from "fs";
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  statSync,
+  rmSync,
+  readdirSync,
+} from "fs";
 import { join } from "path";
-import { clangCFlags, DJVUDEC_MSVC_CL_C, isWindows } from "./build";
+import { clangCFlags, DJVUDEC_MSVC_CL_C, isWindows, msvcFd } from "./build";
 import { buildWasm } from "./build-wasm";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
@@ -198,8 +206,16 @@ async function verifyDistCompile(toolchain: "clang" | "msvc"): Promise<boolean> 
     return rc === 0;
   }
   const obj = "dist/djvu_verify_msvc.obj";
-  const rc = await runCmd(`cl ${DJVUDEC_MSVC_CL_C} -c ${relC} -Fo${obj}`, ROOT);
+  // -Fd keeps the intermediate compiler PDB out of the repo root (MSVC_CL has -Zi).
+  const rc = await runCmd(
+    `cl ${DJVUDEC_MSVC_CL_C} -c ${relC} -Fo${obj} ${msvcFd(DIST)}`,
+    ROOT,
+  );
   if (existsSync(join(DIST, "djvu_verify_msvc.obj"))) rmSync(join(DIST, "djvu_verify_msvc.obj"));
+  // cl -Zi -Fddir/ writes vc*.pdb in that dir; drop it after the compile smoke-test.
+  for (const name of readdirSync(DIST)) {
+    if (/^vc\d+\.pdb$/i.test(name)) rmSync(join(DIST, name), { force: true });
+  }
   return rc === 0;
 }
 

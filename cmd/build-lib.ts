@@ -7,6 +7,8 @@ import {
   defaultUseClang,
   DJVUDEC_MSVC_CL_C,
   isWindows,
+  MSVC_LINK,
+  msvcFd,
 } from "./build";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
@@ -121,7 +123,7 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
 
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
   const units = cUnits(dir, "obj", testSrc);
-  const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
+  const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ ${msvcFd(dir)} -c`;
   for (const u of units) {
     if (!objStale(u)) continue;
     const rel = u.src.startsWith(`${ROOT}/`)
@@ -132,7 +134,9 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
 
   const objs = units.map((u) => u.obj);
   if (needsRebuild(exePath, ...objs)) {
-    await $`cl -nologo ${{ raw: objs.join(" ") }} -Fe:${exePath} -link -LTCG`.cwd(ROOT);
+    await $`cl -nologo ${{ raw: objs.join(" ") }} -Fe:${exePath} -link ${{ raw: MSVC_LINK }}`.cwd(
+      ROOT,
+    );
   }
   return exePath;
 }

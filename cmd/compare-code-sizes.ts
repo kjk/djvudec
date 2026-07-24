@@ -16,6 +16,8 @@ import {
   isMac,
   isWindows,
   MSVC_CL_CXX,
+  MSVC_LINK,
+  msvcFd,
 } from "./build";
 import { DJVULIBRE_DIR, getDeps } from "./get-deps";
 import { LIB_SRCS } from "./build-lib";
@@ -56,9 +58,9 @@ function releaseLibPath(dir: string): string {
   return `${dir}/libdjvu_release${isWindows ? ".lib" : ".a"}`;
 }
 const RELEASE_MSVC_C =
-  "-nologo -O2 -Ob3 -GL -MT -std:c11 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS";
+  "-nologo -O2 -Ob3 -GL -Zi -MT -std:c11 -DNDEBUG -D_CRT_SECURE_NO_WARNINGS";
 const RELEASE_MSVC_CXX = `${MSVC_CL_CXX} -DNDEBUG`;
-const RELEASE_MSVC_LINK = "-LTCG -INCREMENTAL:NO";
+const RELEASE_MSVC_LINK = MSVC_LINK;
 const DJVU_DEFINES =
   `-DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
@@ -235,7 +237,7 @@ async function buildReleaseLibDjvu(dir: string, useClang: boolean): Promise<stri
     }
   } else {
     await runCmd(
-      `cl ${RELEASE_MSVC_CXX} ${DJVU_DEFINES} -Fo${objdir}/ -c libdjvu/*.cpp`,
+      `cl ${RELEASE_MSVC_CXX} ${DJVU_DEFINES} -Fo${objdir}/ ${msvcFd(objdir)} -c libdjvu/*.cpp`,
       DJVULIBRE,
     );
     await runCmd(`llvm-lib /out:${lib} ${objdir}/*.obj`, ROOT);
@@ -292,7 +294,7 @@ async function buildDjvudecProbeMsvc(dir: string): Promise<string> {
     },
   ];
 
-  const clC = `${RELEASE_MSVC_C} -Isrc -Fo${dir}/ -c`;
+  const clC = `${RELEASE_MSVC_C} -Isrc -Fo${dir}/ ${msvcFd(dir)} -c`;
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src, PUBLIC_H)) continue;
     await runCmd(`cl ${clC} ${u.rel}`, ROOT);
@@ -338,7 +340,7 @@ async function buildLibdjvuProbeMsvc(dir: string): Promise<string> {
 
   if (needsRebuild(obj, PROBE_LIBDJVU)) {
     await runCmd(
-      `cl ${RELEASE_MSVC_CXX} ${DJVU_DEFINES} -Fo${obj} -c test/size_probe_libdjvu.cpp`,
+      `cl ${RELEASE_MSVC_CXX} ${DJVU_DEFINES} -Fo${obj} ${msvcFd(dir)} -c test/size_probe_libdjvu.cpp`,
       ROOT,
     );
   }

@@ -206,16 +206,27 @@ const DJVU_DEFINES =
 // clang is available.
 export const defaultUseClang = !isWindows;
 
-// MSVC cl.exe flags (use '-' not '/' — Bun's shell treats backslashes as escapes).
+// MSVC cl.exe / link.exe flags (use '-' not '/' — Bun's shell treats backslashes
+// as escapes). Always emit PDBs so WPR/VTune/VS can map stacks on any build.
+//
+// Compile: -Zi (debug info) + -Fd<dir>/ at each use site (compiler PDB next to
+// objects; without -Fd, cl drops vc*.pdb in cwd). -GL is whole-program for LTCG.
+// Link: -DEBUG writes the final .pdb next to the .exe; works with -LTCG.
 // -Ob3: inline any suitable function (aggressive inlining with /O2).
 // Link-only / bench-shim base: no elevated warnings (libdjvu headers, bench_ddjvu.cpp).
-export const MSVC_CL_COMMON = `-nologo -O2 -Ob3 -GL -MT`;
+export const MSVC_CL_COMMON = `-nologo -O2 -Ob3 -GL -Zi -MT`;
 export const MSVC_CL_CXX = `${MSVC_CL_COMMON} -EHsc -std:c++14`;
 
 // Strict warnings for djvudec C sources only (src/*.c, test/*.c, dist/djvu.c).
 // -W4 -WX: high warning level + warnings as errors (C4700/C4701 uninitialized use).
 export const DJVUDEC_MSVC_CL_C =
   `${MSVC_CL_COMMON} -W4 -WX -std:c11 -D_CRT_SECURE_NO_WARNINGS`;
+
+/** link.exe flags for MSVC exes: LTCG + full PDB next to the image. */
+export const MSVC_LINK = `-LTCG -DEBUG -INCREMENTAL:NO`;
+
+/** Compiler intermediate PDB location (-Fd). Pass the object output directory. */
+export const msvcFd = (dir: string) => `-Fd${dir}/`;
 
 export const DJVUDEC_CLANG_C_WARN =
   "-Wall -Wextra -Wuninitialized -Wconditional-uninitialized -Winit-self -Werror";
@@ -329,7 +340,7 @@ async function buildMsvc(): Promise<string> {
     label: "test/bench_ddjvu.cpp",
   };
 
-  const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ -c`;
+  const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ ${msvcFd(dir)} -c`;
   for (const u of units) {
     if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
     const rel = u.src.startsWith(`${ROOT}/`) ? u.src.slice(ROOT.length + 1) : u.src;
@@ -337,7 +348,7 @@ async function buildMsvc(): Promise<string> {
   }
   if (needsRebuild(bench.obj, bench.src)) {
     await runCmd(
-      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} -c test/bench_ddjvu.cpp`,
+      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} ${msvcFd(dir)} -c test/bench_ddjvu.cpp`,
       ROOT,
     );
   }
@@ -345,7 +356,7 @@ async function buildMsvc(): Promise<string> {
   const objs = [...units.map((u) => u.obj), bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
     await runCmd(
-      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`,
+      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link ${MSVC_LINK}`,
       ROOT,
     );
   }
@@ -456,8 +467,8 @@ async function buildBenchMsvc(): Promise<string> {
     label: "test/bench_ddjvu.cpp",
   };
 
-  const clLib = `${DJVUDEC_MSVC_CL_C} -Idist -Fo${dir}/ -c`;
-  const clTest = `${DJVUDEC_MSVC_CL_C} -Idist -Isrc -Fo${dir}/ -c`;
+  const clLib = `${DJVUDEC_MSVC_CL_C} -Idist -Fo${dir}/ ${msvcFd(dir)} -c`;
+  const clTest = `${DJVUDEC_MSVC_CL_C} -Idist -Isrc -Fo${dir}/ ${msvcFd(dir)} -c`;
   if (needsRebuild(lib.obj, lib.src, DIST_H)) {
     await runCmd(`cl ${clLib} dist/djvu.c`, ROOT);
   }
@@ -466,7 +477,7 @@ async function buildBenchMsvc(): Promise<string> {
   }
   if (needsRebuild(bench.obj, bench.src)) {
     await runCmd(
-      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} -c test/bench_ddjvu.cpp`,
+      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} ${msvcFd(dir)} -c test/bench_ddjvu.cpp`,
       ROOT,
     );
   }
@@ -474,7 +485,7 @@ async function buildBenchMsvc(): Promise<string> {
   const objs = [lib.obj, test.obj, bench.obj];
   if (needsRebuild(exePath, ...objs, LIBDJVU)) {
     await runCmd(
-      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link -LTCG`,
+      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link ${MSVC_LINK}`,
       ROOT,
     );
   }
