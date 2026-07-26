@@ -363,15 +363,6 @@ static double bench_best2(double a, double b)
     return a < b ? a : b;
 }
 
-static void bench_print_session_line(const char *tag, const bench_session_timings *t)
-{
-    int i;
-    printf("%s open: %.2f", tag, t->open_ms);
-    for (i = 0; i < t->npages; i++)
-        printf(" %d: %.2f", i + 1, t->page_ms[i]);
-    printf(" close: %.2f\n", t->close_ms);
-}
-
 typedef struct {
     char op[16];
     double ours;
@@ -1414,10 +1405,6 @@ int main(int argc, char **argv)
         }
         bench_ctx_configure(ctx, 0, sum);
         bench_ddjvu_reset();
-        if (sum)
-            printf("(bench-sum: session open/render-all/close, zoom=1)\n");
-        else
-            printf("(bench: session open/render-all/close)\n");
 
         for (i = 0; i < 4; i++) {
             page_ms[i] = (double *)malloc((size_t)n * sizeof(double));
@@ -1446,10 +1433,8 @@ int main(int argc, char **argv)
         for (r = 0; r < RUNS; r++) {
             if (bench_ours_session(ctx, data, len, sum, &ours[r]) != 0)
                 fprintf(stderr, "bench: djvudec session run %d failed\n", r + 1);
-            bench_print_session_line("djvudec", &ours[r]);
             if (bench_ddjvu_session(in, sum, &lib[r]) != 0)
                 fprintf(stderr, "bench: libdjvu session run %d failed\n", r + 1);
-            bench_print_session_line("libdjvu", &lib[r]);
         }
 
         {
@@ -1484,7 +1469,6 @@ int main(int argc, char **argv)
             rows[n + 2].ours = total_ours;
             rows[n + 2].lib = total_lib;
 
-            printf("(best of %d runs; + = djvudec slower)\n", RUNS);
             bench_print_compare_table(rows, n + 3);
             free(rows);
         }
