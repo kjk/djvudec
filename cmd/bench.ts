@@ -11,10 +11,11 @@
 // runs each for djvudec and libdjvu. Best-of-2 comparison (op | libdjvu |
 // djvudec | diff | %diff; + = djvudec slower).
 //
-// Default output per file: table header + total row only. After all files:
-// wall-clock elapsed and the top 10 pages where djvudec is slowest vs libdjvu
-// (by absolute ms diff). `-verbose` prints the full per-file table (open,
-// every page, close, total) plus the document alloc line.
+// Default output: one header line, then one total line per file
+//   libdjvu djvudec diff %diff file
+// After all files: wall-clock elapsed and the top 10 pages where djvudec is
+// slowest vs libdjvu (by absolute ms diff). `-verbose` prints the full
+// per-file table (open, every page, close, total) plus the document alloc line.
 // With no selection it prints usage + the available corpus file count.
 //
 // -like-sumatra (formerly cmd/bench-sum.ts): same harness, but instead of
@@ -77,8 +78,8 @@ options:
   -clang          build with clang instead of MSVC
   -clean          regenerate dist/ and delete out/ first
 
-Default: header + total row per file, then elapsed and top 10 slowest pages
-vs libdjvu (by ms diff; + = djvudec slower).
+Default: one header + one total line per file (libdjvu djvudec diff %diff file),
+then elapsed and top 10 slowest pages vs libdjvu (by ms diff; + = djvudec slower).
 
 ${corpusSummary()}`,
 );
@@ -207,9 +208,11 @@ let rc = 0;
 const pageHits: PageHit[] = [];
 const t0 = performance.now();
 
+if (!verbose) console.log("libdjvu djvudec diff %diff file");
+
 for (const file of files) {
   const label = fileLabel(file, ROOT);
-  if (files.length > 1) console.log(`\n=== ${label}`);
+  if (verbose && files.length > 1) console.log(`\n=== ${label}`);
 
   const r = Bun.spawnSync({
     cmd: [TEST, benchFlag, file],
@@ -223,7 +226,8 @@ for (const file of files) {
 
   if (rows.length === 0) {
     // Fallback: show raw output if the table wasn't parseable.
-    process.stdout.write(stdout);
+    if (!verbose) console.log(`ERROR ERROR ERROR ERROR ${label}`);
+    else process.stdout.write(stdout);
     continue;
   }
 
@@ -246,7 +250,13 @@ for (const file of files) {
     for (const line of extra) console.log(line);
   } else {
     const total = rows.find((r) => r.op === "total");
-    printTable(total ? [total] : []);
+    if (total) {
+      console.log(
+        `${fmtMs(total.lib)} ${fmtMs(total.ours)} ${fmtDiff(total.ours, total.lib)} ${fmtPct(total.ours, total.lib)} ${label}`,
+      );
+    } else {
+      console.log(`ERROR ERROR ERROR ERROR ${label}`);
+    }
   }
 }
 
