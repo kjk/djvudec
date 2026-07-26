@@ -9,8 +9,9 @@
 //                   concatenated with the local `#include "djvu.h"` /
 //                   `#include "djvu_internal.h"` lines stripped out; all C
 //                   comments and line-trailing whitespace removed.
-//   wasm/djvu.js -- Emscripten SINGLE_FILE module (wasm embedded) for the
-//                   committed demo at wasm/index.html; compiled from dist/djvu.c.
+//   dist/wasm/djvu.js + djvu.wasm -- Emscripten modularize split module for the
+//                   committed demo at dist/wasm/demo.html; compiled from dist/djvu.c.
+//                   Serve with `bun cmd/run-wasm-demo.ts` (file:// cannot load .wasm).
 //
 // A consumer drops both files into their tree and compiles djvu.c like any
 // other source. Verifies the result compiles with every available toolchain

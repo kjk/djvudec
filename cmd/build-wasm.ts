@@ -1,11 +1,12 @@
-// build-wasm.ts — build a WebAssembly drop of the djvu decoder into wasm/.
+// build-wasm.ts — build a WebAssembly drop of the djvu decoder into dist/wasm/.
 //
 //   bun cmd/build-wasm.ts            # incremental build (bootstraps emsdk once)
 //   bun cmd/build-wasm.ts -clean     # also wipe/re-activate the local emsdk
 //
-// Output: wasm/djvu.js  — a self-contained (SINGLE_FILE) Emscripten module that
-// embeds the .wasm as base64, so wasm/index.html works even from file://.
-// The demo web app (wasm/index.html) is committed alongside and left untouched.
+// Output (split module — needs an HTTP server; use `bun cmd/run-wasm-demo.ts`):
+//   dist/wasm/djvu.js
+//   dist/wasm/djvu.wasm
+// The demo page (dist/wasm/demo.html) is committed alongside and left untouched.
 //
 // Emscripten isn't assumed to be on PATH: if `emcc` is missing we git-clone the
 // emsdk into deps/emsdk and `install/activate latest` there (one-time, cached).
@@ -18,8 +19,9 @@ import path from "node:path";
 const ROOT = path.resolve(import.meta.dir, "..");
 const SRC = path.join(ROOT, "src");
 const DIST_C = path.join(ROOT, "dist", "djvu.c");
-const WASM = path.join(ROOT, "wasm");
-export const WASM_JS = path.join(WASM, "djvu.js");
+export const WASM_DIR = path.join(ROOT, "dist", "wasm");
+export const WASM_JS = path.join(WASM_DIR, "djvu.js");
+export const WASM_BIN = path.join(WASM_DIR, "djvu.wasm");
 const EMSDK = path.join(ROOT, "deps", "emsdk");
 const isWin = process.platform === "win32";
 const EMSDK_ENV = path.join(EMSDK, isWin ? "emsdk_env.bat" : "emsdk_env.sh");
@@ -138,20 +140,24 @@ function wasmInputMtime(useDist: boolean): number {
 }
 
 export function wasmOutdated(useDist = false): boolean {
-  if (!existsSync(WASM_JS)) return true;
-  return statSync(WASM_JS).mtimeMs < wasmInputMtime(useDist);
+  if (!existsSync(WASM_JS) || !existsSync(WASM_BIN)) return true;
+  const outMtime = Math.min(statSync(WASM_JS).mtimeMs, statSync(WASM_BIN).mtimeMs);
+  return outMtime < wasmInputMtime(useDist);
 }
 
 function compile(prefix: string, useDist: boolean) {
-  mkdirSync(WASM, { recursive: true });
+  mkdirSync(WASM_DIR, { recursive: true });
   const out = q(WASM_JS);
+  // Split output: djvu.js + djvu.wasm (no SINGLE_FILE). Needs an HTTP server —
+  // file:// cannot fetch the companion .wasm (use `bun cmd/run-wasm-demo.ts`).
   const flags = [
     "-O2",
     "-sMODULARIZE=1",
     "-sEXPORT_NAME=createDjvuModule",
-    "-sSINGLE_FILE=1",
     "-sALLOW_MEMORY_GROWTH=1",
-    "-sENVIRONMENT=web",
+    // web for the browser demo; node so verify-wasm.ts / Bun can load the .wasm
+    // via locateFile without needing fetch() of a URL.
+    "-sENVIRONMENT=web,node",
     "-sEXPORT_ES6=0",
     `-sEXPORTED_FUNCTIONS=${EXPORTS.join(",")}`,
     `-sEXPORTED_RUNTIME_METHODS=${RUNTIME.join(",")}`,
@@ -160,7 +166,7 @@ function compile(prefix: string, useDist: boolean) {
   let inputs: string;
   if (useDist) {
     inputs = q(DIST_C);
-    console.log("• compiling dist/djvu.c → wasm/djvu.js");
+    console.log("• compiling dist/djvu.c → dist/wasm/djvu.js + djvu.wasm");
   } else {
     const cfiles = readdirSync(SRC)
       .filter((f) => f.endsWith(".c"))
@@ -168,15 +174,17 @@ function compile(prefix: string, useDist: boolean) {
       .join(" ");
     inputs = `${cfiles} -I ${q(SRC)}`;
     const n = readdirSync(SRC).filter((f) => f.endsWith(".c")).length;
-    console.log(`• compiling ${n} C files → wasm/djvu.js`);
+    console.log(`• compiling ${n} C files → dist/wasm/djvu.js + djvu.wasm`);
   }
 
   sh(`${prefix}emcc ${inputs} ${flags} -o ${out}`);
-  const kb = (Bun.file(WASM_JS).size / 1024).toFixed(0);
-  console.log(`✓ wrote wasm/djvu.js (${kb} KB, wasm embedded)`);
-  const py = isWin ? "python" : "python3";
-  console.log(`  open the demo:  cd wasm && ${py} -m http.server 8000   → http://localhost:8000/`);
-  console.log("  (or just open wasm/index.html directly — SINGLE_FILE works from file://)");
+  if (!existsSync(WASM_BIN)) {
+    throw new Error(`emcc did not write ${WASM_BIN}`);
+  }
+  const jsKb = (Bun.file(WASM_JS).size / 1024).toFixed(0);
+  const wasmKb = (Bun.file(WASM_BIN).size / 1024).toFixed(0);
+  console.log(`✓ wrote dist/wasm/djvu.js (${jsKb} KB) + dist/wasm/djvu.wasm (${wasmKb} KB)`);
+  console.log("  open the demo:  bun cmd/run-wasm-demo.ts   → http://localhost:8000/demo.html");
 }
 
 export function buildWasm(opts: { useDist?: boolean; cleanEmsdk?: boolean } = {}): void {
@@ -188,7 +196,7 @@ export function buildWasm(opts: { useDist?: boolean; cleanEmsdk?: boolean } = {}
 
 export function ensureWasm(useDist = false): void {
   if (!wasmOutdated(useDist)) {
-    console.log("wasm/ up to date");
+    console.log("dist/wasm/ up to date");
     return;
   }
   buildWasm({ useDist });

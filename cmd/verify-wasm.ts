@@ -1,12 +1,12 @@
-// verify-wasm.ts — smoke-test wasm/djvu.js by decoding a file through the same
-// exports the web app uses, then cross-check dims against djvu_test.
+// verify-wasm.ts — smoke-test dist/wasm/djvu.js by decoding a file through the
+// same exports the web app uses, then cross-check dims.
 //   bun cmd/verify-wasm.ts <file.djvu | -rand N>
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { getDeps } from "./get-deps";
 import { corpusSummary, selectFiles } from "./corpus";
+import { WASM_JS, WASM_BIN, ensureWasm } from "./build-wasm";
 
-const ROOT = path.resolve(import.meta.dir, "..");
 await getDeps();
 const [file] = selectFiles(
   `usage: bun cmd/verify-wasm.ts <file.djvu | -rand 1>
@@ -14,10 +14,14 @@ const [file] = selectFiles(
 ${corpusSummary()}`,
 );
 
-// The glue is built for ENVIRONMENT=web; provide the browser globals it probes.
-globalThis.self = globalThis as any;
-const createDjvuModule = (await import(path.join(ROOT, "wasm/djvu.js"))).default;
-const M: any = await createDjvuModule();
+ensureWasm(false);
+
+// Built with ENVIRONMENT=web,node. Point locateFile at the companion .wasm so
+// the node path can read it from disk (no HTTP fetch).
+const createDjvuModule = (await import(WASM_JS)).default;
+const M: any = await createDjvuModule({
+  locateFile: (p: string) => (p.endsWith(".wasm") ? WASM_BIN : p),
+});
 
 const ctx = M._djvu_ctx_new(0, 0, 0, 0, 0, 0);
 const bytes = new Uint8Array(readFileSync(file));
