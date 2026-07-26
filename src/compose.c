@@ -45,13 +45,12 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg, int cache_l
     djvu_ctx *ctx = doc->ctx;
     iw_pixmap *pm;
     int bw, bh, w, h, pm_owned = 0;
-    uint32_t sz;
 
     if (!djvu_cache_stores_page(ctx)) return -1;
     if (!doc || !pg || pg->bg_native.d) return 0;
     if (!pg->has_info || pg->info.width <= 0 || pg->info.height <= 0)
         return -1;
-    if (!djvu_form_find_chunk(doc, pg->form_off, "BG44", &sz, NULL))
+    if (!djvu_form_bg_iw44_id(doc, pg->form_off))
         return -1;
     if (cache_locked)
         pm = djvu_doc_iw44_acquire_under_lock(doc, pg, "BG44");

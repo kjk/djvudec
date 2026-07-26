@@ -334,7 +334,8 @@ static page_kind_t page_kind(djvu_doc *doc, int page0)
     uint32_t form_off = doc->pages[page0].form_off;
     uint32_t sz;
     int has_sjbz = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
-    int has_bg = djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL ||
+    /* BG44, or standalone PM44/BM44 (libdjvu image/x-iw44), or FG/JPEG. */
+    int has_bg = djvu_form_bg_iw44_id(doc, form_off) != NULL ||
                  djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL) != NULL ||
                  djvu_form_find_chunk(doc, form_off, "BGjp", &sz, NULL) != NULL ||
                  djvu_form_find_chunk(doc, form_off, "FGjp", &sz, NULL) != NULL;

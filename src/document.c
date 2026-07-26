@@ -132,8 +132,31 @@ static int parse_info(const uint8_t *p, size_t len, djvu_page_info *info)
     return 0;
 }
 
+/* Primary (serial-0) IW44 chunk header → page geometry. Used for standalone
+   FORM:PM44/BM44 which have no INFO chunk (libdjvu sets dpi=100). */
+static int parse_iw44_primary_info(const uint8_t *p, size_t len, djvu_page_info *info)
+{
+    int serial, major, minor, w, h;
+    if (!p || !info || len < 8) return -1;
+    serial = p[0];
+    if (serial != 0) return -1;
+    major = p[2];
+    minor = p[3];
+    if ((major & 0x7f) != 1) return -1;
+    w = (p[4] << 8) | p[5];
+    h = (p[6] << 8) | p[7];
+    if (w <= 0 || h <= 0) return -1;
+    info->width = w;
+    info->height = h;
+    info->version = (major << 8) | minor;
+    info->dpi = 100;
+    info->rotation = 0;
+    return 0;
+}
+
 /* Find the INFO chunk inside a FORM:DJVU at form_off and fill info.
-   Returns 0 on success. */
+   Standalone FORM:PM44/BM44 have no INFO; dimensions come from the first
+   IW44 chunk (same as libdjvu). Returns 0 on success. */
 static int page_load_info(djvu_doc *doc, djvu_page_int *pg)
 {
     const uint8_t *data = doc->data;
@@ -141,6 +164,9 @@ static int page_load_info(djvu_doc *doc, djvu_page_int *pg)
     uint32_t off = pg->form_off;
     uint32_t form_end;
     uint32_t pos;
+    const char *iw_id;
+    const uint8_t *iw;
+    uint32_t iw_sz;
 
     if (pg->has_info) return 0;
     if ((size_t)off + 12 > len) return -1;
@@ -168,7 +194,15 @@ static int page_load_info(djvu_doc *doc, djvu_page_int *pg)
         pos = cdata + csize;
         if (csize & 1) pos++;   /* chunks padded to even length */
     }
-    return -1;
+
+    /* No INFO: standalone PM44/BM44 (or a bare IW44 primary). */
+    iw_id = djvu_form_bg_iw44_id(doc, pg->form_off);
+    if (!iw_id) return -1;
+    iw = djvu_form_find_chunk(doc, pg->form_off, iw_id, &iw_sz, NULL);
+    if (!iw || parse_iw44_primary_info(iw, iw_sz, &pg->info) != 0)
+        return -1;
+    pg->has_info = 1;
+    return 0;
 }
 
 /* ---- container ---- */
@@ -321,7 +355,7 @@ static void page_index_scan(djvu_doc *doc, djvu_page_int *pg)
     pg->chunk_flags = 0;
     if (djvu_form_find_chunk(doc, pg->form_off, "Sjbz", &sz, NULL))
         pg->chunk_flags |= DJVU_PG_SJBZ;
-    if (djvu_form_find_chunk(doc, pg->form_off, "BG44", &sz, NULL))
+    if (djvu_form_bg_iw44_id(doc, pg->form_off))
         pg->chunk_flags |= DJVU_PG_BG44;
     if (djvu_form_find_chunk(doc, pg->form_off, "FG44", &sz, NULL))
         pg->chunk_flags |= DJVU_PG_FG44;
@@ -384,6 +418,20 @@ static void free_page_bg_native(djvu_ctx *ctx, djvu_page_int *pg)
     djvu_cpix_free(ctx, &pg->bg_scaled);
 }
 
+/* Map a BG44 request onto the form's real bg/photo chunk id (BG44/PM44/BM44). */
+static const char *resolve_iw_layer_id(djvu_doc *doc, djvu_page_int *pg,
+                                       const char *id)
+{
+    const char *bg;
+    if (!id) return NULL;
+    if (id[0] == 'B' && id[1] == 'G' && id[2] == '4' && id[3] == '4' &&
+        id[4] == '\0') {
+        bg = djvu_form_bg_iw44_id(doc, pg->form_off);
+        return bg ? bg : id;
+    }
+    return id;
+}
+
 static iw_pixmap *decode_iw_layer_fresh(djvu_doc *doc, djvu_page_int *pg,
                                         const char *id)
 {
@@ -391,7 +439,8 @@ static iw_pixmap *decode_iw_layer_fresh(djvu_doc *doc, djvu_page_int *pg,
     int maxc;
     iw_pixmap *pm;
 
-    if (!djvu_form_find_chunk(doc, pg->form_off, id, &sz, NULL))
+    id = resolve_iw_layer_id(doc, pg, id);
+    if (!id || !djvu_form_find_chunk(doc, pg->form_off, id, &sz, NULL))
         return NULL;
     pm = djvu_iw44_new(doc->ctx);
     if (!pm) return NULL;
@@ -411,7 +460,8 @@ static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
     iw_pixmap *pm;
 
     if (!djvu_cache_stores_page(doc->ctx)) return;
-    if (*slot || !djvu_form_find_chunk(doc, pg->form_off, id, &sz, NULL))
+    id = resolve_iw_layer_id(doc, pg, id);
+    if (*slot || !id || !djvu_form_find_chunk(doc, pg->form_off, id, &sz, NULL))
         return;
     pm = djvu_iw44_new(doc->ctx);
     if (!pm) return;
@@ -973,6 +1023,16 @@ const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
     return NULL;
 }
 
+const char *djvu_form_bg_iw44_id(djvu_doc *doc, uint32_t form_off)
+{
+    uint32_t sz;
+    if (!doc) return NULL;
+    if (djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL)) return "BG44";
+    if (djvu_form_find_chunk(doc, form_off, "PM44", &sz, NULL)) return "PM44";
+    if (djvu_form_find_chunk(doc, form_off, "BM44", &sz, NULL)) return "BM44";
+    return NULL;
+}
+
 djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
 {
     djvu_doc *doc;
@@ -1003,8 +1063,11 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
     doc->len = len;
     doc->root_form_off = pos;
 
-    if (djvu_tag_eq(form_type, "DJVU")) {
-        /* single-page document: the top form IS the page */
+    if (djvu_tag_eq(form_type, "DJVU") ||
+        djvu_tag_eq(form_type, "PM44") ||
+        djvu_tag_eq(form_type, "BM44")) {
+        /* Single-page document: top form IS the page.
+           FORM:PM44/BM44 are standalone IW44 photos (libdjvu image/x-iw44). */
         doc->pages = (djvu_page_int *)djvu_alloc(ctx, sizeof(djvu_page_int));
         if (!doc->pages) { djvu_free(ctx, doc); return NULL; }
         memset(doc->pages, 0, sizeof(djvu_page_int));
@@ -1038,7 +1101,8 @@ djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)
             return NULL;
         }
     } else {
-        djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "unsupported FORM type");
+        djvu_errorf(ctx, DJVU_SEVERITY_ERROR,
+                    "unsupported FORM type '%.4s'", (const char *)form_type);
         djvu_doc_close(doc);
         return NULL;
     }
@@ -1137,7 +1201,7 @@ djvu_page_type djvu_page_get_type(djvu_doc *doc, int page_no)
     if (!doc || page_no < 0 || page_no >= doc->npages) return DJVU_PAGE_UNKNOWN;
     form_off = doc->pages[page_no].form_off;
     has_mask = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
-    has_bg   = djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL;
+    has_bg   = djvu_form_bg_iw44_id(doc, form_off) != NULL;
     has_fg   = djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL) != NULL ||
                djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL) != NULL;
     if (has_mask && (has_bg || has_fg)) return DJVU_PAGE_COMPOUND;

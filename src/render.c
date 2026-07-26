@@ -277,7 +277,7 @@ static djvu_image *page_render_timed_impl(djvu_doc *doc, int page_no, int subsam
        (anti-aliased mask stencil) instead of rendering full-res. */
     if (!out && info_ok && !ctx->no_compose &&
         (type == DJVU_PAGE_COMPOUND || type == DJVU_PAGE_PHOTO) &&
-        djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL) {
+        djvu_form_bg_iw44_id(doc, form_off) != NULL) {
         out = djvu_compose_page(doc, page_no, mask, pi.width, pi.height, subsample, t);
         if (out) goto done;
     }
@@ -351,7 +351,7 @@ static int render_plan(djvu_doc *doc, int page_no, int subsample,
     type = djvu_page_get_type(doc, page_no);
     info_ok = (djvu_doc_page_info(doc, page_no, &pi) == 0);
     if (!info_ok || pi.width <= 0 || pi.height <= 0) return -1;
-    has_bg = djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) != NULL;
+    has_bg = djvu_form_bg_iw44_id(doc, form_off) != NULL;
     has_mask = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
 
     color = !ctx->no_compose &&
