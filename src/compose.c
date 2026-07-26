@@ -511,10 +511,21 @@ static int compose_read_bm_run(const uint8_t **data)
 
 static void compose_fill_rgb_run(uint8_t *d, int n, int r, int g, int b)
 {
+    /* Unroll solid RGB fills; long FG ink runs on large pages spend real time
+       here (profiled under compose_stamp_bitmap_topdown_rgb). */
+    uint8_t r8 = (uint8_t)r, g8 = (uint8_t)g, b8 = (uint8_t)b;
+    while (n >= 4) {
+        d[0] = r8; d[1] = g8; d[2] = b8;
+        d[3] = r8; d[4] = g8; d[5] = b8;
+        d[6] = r8; d[7] = g8; d[8] = b8;
+        d[9] = r8; d[10] = g8; d[11] = b8;
+        d += 12;
+        n -= 4;
+    }
     while (n-- > 0) {
-        d[0] = (uint8_t)r;
-        d[1] = (uint8_t)g;
-        d[2] = (uint8_t)b;
+        d[0] = r8;
+        d[1] = g8;
+        d[2] = b8;
         d += 3;
     }
 }
@@ -571,14 +582,25 @@ static void compose_stamp_bitmap_topdown_rgb(const djvu_bitmap *src,
             if (py < 0 || py >= outh) continue;
             while (p < end) {
                 const uint8_t *start;
-                const void *next = memchr(p, 1, (size_t)(end - p));
+                const uint8_t *q;
+                size_t left_n;
                 int x0, x1;
-                if (!next) break;
-                start = (const uint8_t *)next;
-                next = memchr(start, 0, (size_t)(end - start));
-                p = next ? (const uint8_t *)next : end;
+                /* Skip white with 8-byte OR (0/1 bitmap). */
+                left_n = (size_t)(end - p);
+                while (left_n >= 8) {
+                    uint64_t w;
+                    memcpy(&w, p, 8);
+                    if (w) break;
+                    p += 8;
+                    left_n -= 8;
+                }
+                while (p < end && !*p) p++;
+                if (p >= end) break;
+                start = p;
+                while (p < end && *p) p++;
+                q = p;
                 x0 = left + (int)(start - row);
-                x1 = left + (int)(p - row);
+                x1 = left + (int)(q - row);
                 if (x0 < 0) x0 = 0;
                 if (x1 > outw) x1 = outw;
                 if (x0 < x1) {

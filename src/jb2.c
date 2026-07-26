@@ -324,11 +324,31 @@ static void code_bitmap_directly(jb2_codec *c, djvu_bitmap *bm)
         while (dx < dw) {
             if (context == 0 && (bd[0] & 1) == 0) {
                 int run = dw - dx;
-                const uint8_t *z1 = (const uint8_t *)memchr(up1 + dx + 2, 1, (size_t)run);
-                const uint8_t *z2 = (const uint8_t *)memchr(up2 + dx + 1, 1, (size_t)run);
-                if (z1) run = (int)(z1 - (up1 + dx + 2));
-                if (z2 && (int)(z2 - (up2 + dx + 1)) < run)
-                    run = (int)(z2 - (up2 + dx + 1));
+                /* Cap white-run by first ink on up1[dx+2..] or up2[dx+1..].
+                   Parallel 8-byte OR scan beats two memchr on mostly-white
+                   shapes (memchr alone was ~13% of test075C p1). */
+                {
+                    const uint8_t *p1 = up1 + dx + 2;
+                    const uint8_t *p2 = up2 + dx + 1;
+                    int k = 0;
+                    while (k + 8 <= run) {
+                        uint64_t w1, w2;
+                        memcpy(&w1, p1 + k, 8);
+                        memcpy(&w2, p2 + k, 8);
+                        if (w1 | w2) {
+                            int j;
+                            for (j = 0; j < 8; j++)
+                                if (p1[k + j] | p2[k + j]) { run = k + j; break; }
+                            break;
+                        }
+                        k += 8;
+                    }
+                    if (k < run) {
+                        while (k < run && !(p1[k] | p2[k]))
+                            k++;
+                        run = k;
+                    }
+                }
                 while (run > 0 && (bd[0] & 1) == 0) {
                     uint32_t p0 = zp->p[bd[0]];
                     if (p0 != 0 && a + p0 <= fence) {

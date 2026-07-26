@@ -44,6 +44,11 @@ Verification after any speed change:
 | Run-aware color stamp (`compose.c`) | **~30% composite** on FGbz palette pages (e.g. `test008C`) | `visit_ink_runs` + solid RGB fill; FG44 weaker win |
 | Bitonal `visit_ink_runs` + `memset` stamp | Already fast vs DjVuLibre on light pages | Do not go back to per-pixel stamps |
 | Shared Djbz / inline Djbz / IW44 layer acquire caches | Doc-wide or per-page when caching on | Shared dicts ≠ page Sjbz |
+| IW44 bucket **slab pool** (`iw44.c`) | Photo allocs **591k → 2.4k** on `test043C`; ~5–11% wall | 256×16-coeff slabs; free slabs only |
+| Hoisted a/fence in `decode_buckets` | Included above (photo ZP path) | Local `iw_zp_dec` / `iw_zp_dec_iw` |
+| Word-OR JB2 white-run scan (`jb2.c`) | Cuts dual-`memchr` on mostly-white shapes | Parallel up1/up2 8-byte OR |
+| Word-scan RLE encode + ink-run visit (`bitmap.c`) | Replaces hot `memchr` in compress/stamp | 0/1-only `bm_find_01` |
+| SSE2 `scaler_interp_row` + unrolled RGB fill | Helps 3× BG expand compound pages | `test008C` / `test075C` scale path |
 
 **Host must enable caching** for Sjbz/IW44/bg reuse across paints. Without
 `cache_per_page` + locks + long-lived `djvu_doc`, every render re-decodes.
@@ -52,16 +57,17 @@ Verification after any speed change:
 
 ## Slowest sample pages (profiling candidates)
 
-Sweep (`-bench-render -layers -reps 2`, min of 2) over
-`djvu3spec`, `1998_compression`, `test008C`, `test064C`, `lizard2002`,
-`test043C`. Wall times are machine-dependent; **order and dominant layer** matter.
+Sweep (`-bench-render -layers -reps 2`, min of 2) over largest artifacts +
+specs (2026-07). Wall times machine-dependent; **order and dominant layer** matter.
 
 | Priority | File | Page | ~total | Dominant | Why profile |
 |----------|------|------|--------|----------|-------------|
-| 1 | `deps/artifacts/test043C.djvu` | **p5** (also p1, p4) | ~200–215 ms | **iw44** (~all) | Purest IW44 stack |
-| 2 | `deps/artifacts/test008C.djvu` | **p1**, **p5** | ~168–171 ms | iw44 + composite | Compound + stamp |
-| 3 | `deps/DjvuNet/Specs/1998_compression.djvu` | **p25** etc. | ~53–60 ms | mixed | FG44 compound balance |
-| 4 | `deps/DjVuLibre/doc/djvu3spec.djvu` | **p61–63** | ~7–11 ms* | **jb2** | Cold Sjbz / ZP |
+| 1 | `deps/artifacts/test075C.djvu` | **p1** (4062×5304) | ~300–330 ms | **jb2** (~55%) + iw44 + composite | Heaviest wall; 1.2 MB Sjbz |
+| 2 | `deps/artifacts/test033C.djvu` | **p1** (6431×4547) | ~220 ms | iw44 + jb2 | Huge compound page |
+| 3 | `deps/artifacts/test043C.djvu` | **p4/p5** | ~150–170 ms | **iw44** (~all) | Purest IW44 / `decode_buckets` |
+| 4 | `deps/artifacts/test008C.djvu` | **p1** (4961×6591) | ~125–140 ms | iw44 scale + composite | 3× BG expand + stamp |
+| 5 | `deps/DjvuNet/Specs/1998_compression.djvu` | **p25** etc. | ~53–60 ms | mixed | FG44 compound balance |
+| 6 | `deps/DjVuLibre/doc/djvu3spec.djvu` | **p61–63** | ~7–11 ms* | **jb2** | Cold Sjbz / ZP |
 
 \*Bitonal absolute ms may be lower than older snapshots; still the place to
 profile **JB2**, not IW44. Color pages on `djvu3spec` (e.g. p21) are IW44-heavy

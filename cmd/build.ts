@@ -226,7 +226,8 @@ export const DJVUDEC_MSVC_CL_C =
 export const MSVC_LINK = `-LTCG -DEBUG -INCREMENTAL:NO`;
 
 /** Compiler intermediate PDB location (-Fd). Pass the object output directory. */
-export const msvcFd = (dir: string) => `-Fd${dir}/`;
+/* Bun's shell mangles `\`; always emit forward slashes for -Fd. */
+export const msvcFd = (dir: string) => `-Fd${dir.replaceAll("\\", "/")}/`;
 
 export const DJVUDEC_CLANG_C_WARN =
   "-Wall -Wextra -Wuninitialized -Wconditional-uninitialized -Winit-self -Werror";

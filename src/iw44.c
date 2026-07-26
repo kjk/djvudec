@@ -21,9 +21,22 @@ typedef struct {
     int16_t *buckets[64];   /* NULL or array of 16 */
 } iw_block;
 
+/* Slab of 16-coeff buckets: one malloc instead of one per sparse bucket.
+   Photo pages allocate tens of thousands of 32-byte buckets; a slab of 256
+   cuts allocator traffic and keeps coeffs denser in L1/L2. */
+#define IW_BUCKET_SLAB 256
+
+typedef struct iw_bucket_slab {
+    struct iw_bucket_slab *next;
+    int16_t data[IW_BUCKET_SLAB * 16];
+} iw_bucket_slab;
+
 typedef struct {
     int w, h, bw, bh, nb;
     iw_block *blocks;
+    iw_bucket_slab *slabs;
+    int slab_used;          /* buckets taken from slabs->data head */
+    int n_buckets;          /* total live buckets (for mem accounting) */
 } iw_map;
 
 /* band bucket table: {start, size} */
@@ -79,22 +92,43 @@ static iw_map *map_new(djvu_ctx *ctx, int w, int h)
 
 static void map_free(djvu_ctx *ctx, iw_map *m)
 {
-    int i, b;
+    iw_bucket_slab *s;
     if (!m) return;
-    for (i = 0; i < m->nb; i++)
-        for (b = 0; b < 64; b++)
-            djvu_free(ctx, m->blocks[i].buckets[b]);
+    /* Buckets live in slabs; free slabs only (not each pointer). */
+    s = m->slabs;
+    while (s) {
+        iw_bucket_slab *n = s->next;
+        djvu_free(ctx, s);
+        s = n;
+    }
     djvu_free(ctx, m->blocks);
     djvu_free(ctx, m);
 }
 
-static int16_t *block_get(iw_block *blk, int n) { return blk->buckets[n]; }
+static inline int16_t *block_get(iw_block *blk, int n) { return blk->buckets[n]; }
 
-static int16_t *block_get_init(djvu_ctx *ctx, iw_block *blk, int n)
+static int16_t *map_alloc_bucket(djvu_ctx *ctx, iw_map *map)
+{
+    int16_t *p;
+    if (!map->slabs || map->slab_used >= IW_BUCKET_SLAB) {
+        iw_bucket_slab *s = (iw_bucket_slab *)djvu_alloc(ctx, sizeof(iw_bucket_slab));
+        if (!s) return NULL;
+        /* Zero whole slab so new buckets start clean without per-bucket memset. */
+        memset(s->data, 0, sizeof(s->data));
+        s->next = map->slabs;
+        map->slabs = s;
+        map->slab_used = 0;
+    }
+    p = map->slabs->data + (size_t)map->slab_used * 16;
+    map->slab_used++;
+    map->n_buckets++;
+    return p;
+}
+
+static int16_t *block_get_init(djvu_ctx *ctx, iw_map *map, iw_block *blk, int n)
 {
     if (!blk->buckets[n]) {
-        blk->buckets[n] = (int16_t *)djvu_alloc(ctx, sizeof(int16_t) * 16);
-        if (blk->buckets[n]) memset(blk->buckets[n], 0, sizeof(int16_t) * 16);
+        blk->buckets[n] = map_alloc_bucket(ctx, map);
     }
     return blk->buckets[n];
 }
@@ -506,18 +540,58 @@ static int is_null_slice(iw_codec *c, int bit, int band)
     return 0;
 }
 
+/* Hoisted a/fence ZP decode — same contract as djvu_zp_decode / decode_iw,
+   but keeps a and fence in locals across the dense coeff loops. */
+static inline int iw_zp_dec(djvu_zp *DJVU_RESTRICT zp,
+                            uint32_t *DJVU_RESTRICT a,
+                            uint32_t *DJVU_RESTRICT fence,
+                            uint8_t *DJVU_RESTRICT ctx)
+{
+    uint32_t z = *a + zp->p[*ctx];
+    if (DJVU_LIKELY(z <= *fence)) {
+        *a = z;
+        return *ctx & 1;
+    }
+    zp->a = *a;
+    z = (uint32_t)zp_decode_sub(zp, ctx, z);
+    *a = zp->a;
+    *fence = zp->fence;
+    return (int)z;
+}
+
+static inline int iw_zp_dec_iw(djvu_zp *DJVU_RESTRICT zp,
+                               uint32_t *DJVU_RESTRICT a,
+                               uint32_t *DJVU_RESTRICT fence)
+{
+    int bit;
+    zp->a = *a;
+    bit = djvu_zp_decode_iw(zp);
+    *a = zp->a;
+    *fence = zp->fence;
+    return bit;
+}
+
 static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
                            iw_block *blk, int fbucket, int nbucket)
 {
     int thres = c->quant_high[band];
     int bbstate = 0;
-    int8_t *cstate = c->coeff_state;
+    int8_t *DJVU_RESTRICT cstate = c->coeff_state;
+    int8_t *DJVU_RESTRICT bstate = c->bucket_state;
+    int16_t *pbuck[16];
     int cidx = 0, buckno, i;
+    uint32_t a, fence;
+    const int band0 = (band == 0);
 
     (void)bit;
+
+    /* Cache bucket pointers once — every phase reuses them. */
+    for (buckno = 0; buckno < nbucket; buckno++)
+        pbuck[buckno] = blk->buckets[fbucket + buckno];
+
     for (buckno = 0; buckno < nbucket; buckno++, cidx += 16) {
         int bstatetmp = 0;
-        int16_t *pcoeff = block_get(blk, fbucket + buckno);
+        int16_t *pcoeff = pbuck[buckno];
         if (pcoeff == NULL) {
             bstatetmp = 8;
         } else {
@@ -529,24 +603,27 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
                 bstatetmp |= cstatetmp;
             }
         }
-        c->bucket_state[buckno] = (int8_t)bstatetmp;
+        bstate[buckno] = (int8_t)bstatetmp;
         bbstate |= bstatetmp;
     }
+
+    a = zp->a;
+    fence = zp->fence;
 
     if (nbucket < 16 || (bbstate & 2) != 0) {
         bbstate |= 4;
     } else if ((bbstate & 8) != 0) {
-        if (djvu_zp_decode(zp, &c->ctx_root) != 0)
+        if (iw_zp_dec(zp, &a, &fence, &c->ctx_root) != 0)
             bbstate |= 4;
     }
 
     if ((bbstate & 4) != 0) {
         for (buckno = 0; buckno < nbucket; buckno++) {
-            if ((c->bucket_state[buckno] & 8) != 0) {
+            if ((bstate[buckno] & 8) != 0) {
                 int ctx = 0;
-                if (band > 0) {
+                if (!band0) {
                     int k = (fbucket + buckno) << 2;
-                    int16_t *b = block_get(blk, k >> 4);
+                    int16_t *b = blk->buckets[k >> 4];
                     if (b != NULL) {
                         k &= 0xf;
                         if (b[k] != 0) ctx++;
@@ -556,20 +633,26 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
                     }
                 }
                 if ((bbstate & 2) != 0) ctx |= 4;
-                if (djvu_zp_decode(zp, &c->ctx_bucket[band][ctx]) != 0)
-                    c->bucket_state[buckno] |= 4;
+                if (iw_zp_dec(zp, &a, &fence, &c->ctx_bucket[band][ctx]) != 0)
+                    bstate[buckno] |= 4;
             }
         }
     }
 
     if ((bbstate & 4) != 0) {
-        cstate = c->coeff_state; cidx = 0;
+        cidx = 0;
         for (buckno = 0; buckno < nbucket; buckno++, cidx += 16) {
-            if ((c->bucket_state[buckno] & 4) != 0) {
-                int16_t *pcoeff = block_get(blk, fbucket + buckno);
+            if ((bstate[buckno] & 4) != 0) {
+                int16_t *pcoeff = pbuck[buckno];
                 int gotcha = 0, maxgotcha = 7;
                 if (pcoeff == NULL) {
-                    pcoeff = block_get_init(c->ctx, blk, fbucket + buckno);
+                    pcoeff = block_get_init(c->ctx, c->map, blk, fbucket + buckno);
+                    pbuck[buckno] = pcoeff;
+                    if (!pcoeff) {
+                        zp->a = a;
+                        zp->fence = fence;
+                        return;
+                    }
                     for (i = 0; i < 16; i++)
                         if ((cstate[cidx + i] & 1) == 0) cstate[cidx + i] = 8;
                 }
@@ -578,14 +661,14 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
                 for (i = 0; i < 16; i++) {
                     if ((cstate[cidx + i] & 8) != 0) {
                         int ctx, coeff, halfthres;
-                        if (band == 0) thres = c->quant_low[i];
+                        int t = band0 ? c->quant_low[i] : thres;
                         ctx = (gotcha >= maxgotcha) ? maxgotcha : gotcha;
-                        if ((c->bucket_state[buckno] & 2) != 0) ctx |= 8;
-                        if (djvu_zp_decode(zp, &c->ctx_start[ctx]) != 0) {
+                        if ((bstate[buckno] & 2) != 0) ctx |= 8;
+                        if (iw_zp_dec(zp, &a, &fence, &c->ctx_start[ctx]) != 0) {
                             cstate[cidx + i] |= 4;
-                            halfthres = thres >> 1;
-                            coeff = (thres + halfthres) - (halfthres >> 2);
-                            if (djvu_zp_decode_iw(zp) != 0)
+                            halfthres = t >> 1;
+                            coeff = (t + halfthres) - (halfthres >> 2);
+                            if (iw_zp_dec_iw(zp, &a, &fence) != 0)
                                 pcoeff[i] = (int16_t)(-coeff);
                             else
                                 pcoeff[i] = (int16_t)coeff;
@@ -599,26 +682,26 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
     }
 
     if ((bbstate & 2) != 0) {
-        cstate = c->coeff_state; cidx = 0;
+        cidx = 0;
         for (buckno = 0; buckno < nbucket; buckno++, cidx += 16) {
-            if ((c->bucket_state[buckno] & 2) != 0) {
-                int16_t *pcoeff = block_get(blk, fbucket + buckno);
+            if ((bstate[buckno] & 2) != 0) {
+                int16_t *pcoeff = pbuck[buckno];
                 for (i = 0; i < 16; i++) {
                     if ((cstate[cidx + i] & 2) != 0) {
                         int coeff = pcoeff[i];
+                        int t = band0 ? c->quant_low[i] : thres;
                         if (coeff < 0) coeff = -coeff;
-                        if (band == 0) thres = c->quant_low[i];
-                        if (coeff <= (3 * thres)) {
-                            coeff += (thres >> 2);
-                            if (djvu_zp_decode(zp, &c->ctx_mant) != 0)
-                                coeff += (thres >> 1);
+                        if (coeff <= (3 * t)) {
+                            coeff += (t >> 2);
+                            if (iw_zp_dec(zp, &a, &fence, &c->ctx_mant) != 0)
+                                coeff += (t >> 1);
                             else
-                                coeff = (coeff - thres) + (thres >> 1);
+                                coeff = (coeff - t) + (t >> 1);
                         } else {
-                            if (djvu_zp_decode_iw(zp) != 0)
-                                coeff += (thres >> 1);
+                            if (iw_zp_dec_iw(zp, &a, &fence) != 0)
+                                coeff += (t >> 1);
                             else
-                                coeff = (coeff - thres) + (thres >> 1);
+                                coeff = (coeff - t) + (t >> 1);
                         }
                         if (pcoeff[i] > 0) pcoeff[i] = (int16_t)coeff;
                         else pcoeff[i] = (int16_t)(-coeff);
@@ -627,6 +710,9 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
             }
         }
     }
+
+    zp->a = a;
+    zp->fence = fence;
 }
 
 /* decode one slice; returns 1 if more slices follow, 0 if done */
@@ -681,15 +767,18 @@ void djvu_iw44_free(iw_pixmap *pm)
 static size_t map_mem_size(const iw_map *m)
 {
     size_t n;
-    int i, b;
+    int nslabs;
     if (!m) return 0;
     n = sizeof(iw_map);
     if (m->blocks && m->nb > 0)
         n += sizeof(iw_block) * (size_t)m->nb;
-    for (i = 0; i < m->nb; i++)
-        for (b = 0; b < 64; b++)
-            if (m->blocks[i].buckets[b])
-                n += sizeof(int16_t) * 16;
+    /* Live buckets + slab overhead (allocated capacity, not just used). */
+    nslabs = 0;
+    {
+        const iw_bucket_slab *s = m->slabs;
+        while (s) { nslabs++; s = s->next; }
+    }
+    n += (size_t)nslabs * sizeof(iw_bucket_slab);
     return n;
 }
 

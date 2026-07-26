@@ -3,6 +3,12 @@
 #include "djvu_internal.h"
 #include <string.h>
 
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || \
+    (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define DJVU_SCALER_SSE2 1
+#include <emmintrin.h>
+#endif
+
 #define FRACBITS 4
 #define FRACSIZE (1 << FRACBITS)
 #define FRACSIZE2 (FRACSIZE >> 1)
@@ -160,8 +166,10 @@ static void scaler_expand_row3(const uint8_t *src, int w, int outw, uint8_t *dst
         const uint8_t *a = src + (size_t)x * 3;
         const uint8_t *b = a + 3;
         int ar = a[0], ag = a[1], ab = a[2];
-        int dr = b[0] - ar, dg = b[1] - ag, db = b[2] - ab;
+        int br = b[0], bg = b[1], bb = b[2];
+        int dr = br - ar, dg = bg - ag, db = bb - ab;
 
+        /* Triple: exact a, then 6/16 and 11/16 toward b (prepare_coord red=3). */
         d[0] = (uint8_t)ar;
         d[1] = (uint8_t)ag;
         d[2] = (uint8_t)ab;
@@ -186,9 +194,33 @@ static void scaler_expand_row3(const uint8_t *src, int w, int outw, uint8_t *dst
 static void scaler_interp_row(const uint8_t *lower, const uint8_t *upper,
                               int w, int vf, uint8_t *dst)
 {
-    int i, n = w * 3;
+    int i = 0, n = w * 3;
 
-    for (i = 0; i < n; i++) {
+#ifdef DJVU_SCALER_SSE2
+    /* lo + ((up - lo) * vf + 8) >> 4  with 16-bit arithmetic (bytes 0..255). */
+    if (n >= 16) {
+        const __m128i vvf = _mm_set1_epi16((short)vf);
+        const __m128i bias = _mm_set1_epi16(FRACSIZE2);
+        for (; i + 16 <= n; i += 16) {
+            __m128i lo8 = _mm_loadu_si128((const __m128i *)(lower + i));
+            __m128i up8 = _mm_loadu_si128((const __m128i *)(upper + i));
+            __m128i lo_lo = _mm_unpacklo_epi8(lo8, _mm_setzero_si128());
+            __m128i lo_hi = _mm_unpackhi_epi8(lo8, _mm_setzero_si128());
+            __m128i up_lo = _mm_unpacklo_epi8(up8, _mm_setzero_si128());
+            __m128i up_hi = _mm_unpackhi_epi8(up8, _mm_setzero_si128());
+            __m128i d_lo = _mm_sub_epi16(up_lo, lo_lo);
+            __m128i d_hi = _mm_sub_epi16(up_hi, lo_hi);
+            d_lo = _mm_srai_epi16(_mm_add_epi16(_mm_mullo_epi16(d_lo, vvf), bias),
+                                  FRACBITS);
+            d_hi = _mm_srai_epi16(_mm_add_epi16(_mm_mullo_epi16(d_hi, vvf), bias),
+                                  FRACBITS);
+            _mm_storeu_si128((__m128i *)(dst + i),
+                             _mm_packus_epi16(_mm_add_epi16(lo_lo, d_lo),
+                                              _mm_add_epi16(lo_hi, d_hi)));
+        }
+    }
+#endif
+    for (; i < n; i++) {
         int lo = lower[i];
         dst[i] = (uint8_t)(lo + (((upper[i] - lo) * vf + FRACSIZE2) >> FRACBITS));
     }

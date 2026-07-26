@@ -59,6 +59,48 @@ static void bm_append_run(uint8_t **data, int count)
     }
 }
 
+/* Bitmaps are 0/1 only. Word-OR/compare beats libc memchr on long runs
+   (RLE encode + ink-run visit are hot on large JB2 pages). */
+static const uint8_t *bm_find_01(const uint8_t *p, const uint8_t *end, int val)
+{
+    size_t n = (size_t)(end - p);
+    size_t i = 0;
+
+    if (val == 1) {
+        while (i + 8 <= n) {
+            uint64_t w;
+            memcpy(&w, p + i, 8);
+            if (w) {
+                size_t j;
+                for (j = 0; j < 8; j++)
+                    if (p[i + j]) return p + i + j;
+            }
+            i += 8;
+        }
+        while (i < n) {
+            if (p[i]) return p + i;
+            i++;
+        }
+    } else {
+        /* Find first 0 among 0/1 bytes: any word not all-0x01 has a 0. */
+        while (i + 8 <= n) {
+            uint64_t w;
+            memcpy(&w, p + i, 8);
+            if (w != 0x0101010101010101ULL) {
+                size_t j;
+                for (j = 0; j < 8; j++)
+                    if (p[i + j] == 0) return p + i + j;
+            }
+            i += 8;
+        }
+        while (i < n) {
+            if (p[i] == 0) return p + i;
+            i++;
+        }
+    }
+    return NULL;
+}
+
 static void bm_append_line(uint8_t **data, const uint8_t *row, int rowlen)
 {
     const uint8_t *rowend = row + rowlen;
@@ -66,13 +108,13 @@ static void bm_append_line(uint8_t **data, const uint8_t *row, int rowlen)
 
     while (row < rowend) {
         const uint8_t *start;
-        const void *next;
+        const uint8_t *next;
         int count;
 
         p = !p;
         start = row;
-        next = memchr(row, p ? 0 : 1, (size_t)(rowend - row));
-        row = next ? (const uint8_t *)next : rowend;
+        next = bm_find_01(row, rowend, p ? 0 : 1);
+        row = next ? next : rowend;
         count = (int)(row - start);
         bm_append_run(data, count);
     }
@@ -438,12 +480,11 @@ static void bm_visit_ink_runs_bytes(const djvu_bitmap *src, int left, int bottom
         int py = bottom + rr;
 
         while (p < end) {
-            const uint8_t *start;
-            const void *next = memchr(p, 1, (size_t)(end - p));
-            if (!next) break;
-            start = (const uint8_t *)next;
-            next = memchr(start, 0, (size_t)(end - start));
-            p = next ? (const uint8_t *)next : end;
+            const uint8_t *start = bm_find_01(p, end, 1);
+            const uint8_t *next;
+            if (!start) break;
+            next = bm_find_01(start, end, 0);
+            p = next ? next : end;
             fn(user, left + (int)(start - row), left + (int)(p - row), py);
         }
     }
