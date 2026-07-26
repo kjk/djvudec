@@ -203,12 +203,24 @@ function printTable(rows: BenchRow[]): void {
   for (const c of cells) console.log(line(c.op, c.lib, c.ours, c.diff, c.pct));
 }
 
+// Compact default line: 4× 8-char right-aligned number columns, then file.
+const col = (s: string) => s.padStart(8);
+function printCompactLine(
+  lib: string,
+  ours: string,
+  diff: string,
+  pct: string,
+  label: string,
+): void {
+  console.log(`${col(lib)} ${col(ours)} ${col(diff)} ${col(pct)} ${label}`);
+}
+
 const benchFlag = likeSumatra ? "-bench-sum" : "-bench";
 let rc = 0;
 const pageHits: PageHit[] = [];
 const t0 = performance.now();
 
-if (!verbose) console.log("libdjvu djvudec diff %diff file");
+if (!verbose) printCompactLine("libdjvu", "djvudec", "diff", "%diff", "file");
 
 for (const file of files) {
   const label = fileLabel(file, ROOT);
@@ -226,7 +238,7 @@ for (const file of files) {
 
   if (rows.length === 0) {
     // Fallback: show raw output if the table wasn't parseable.
-    if (!verbose) console.log(`ERROR ERROR ERROR ERROR ${label}`);
+    if (!verbose) printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", label);
     else process.stdout.write(stdout);
     continue;
   }
@@ -251,11 +263,15 @@ for (const file of files) {
   } else {
     const total = rows.find((r) => r.op === "total");
     if (total) {
-      console.log(
-        `${fmtMs(total.lib)} ${fmtMs(total.ours)} ${fmtDiff(total.ours, total.lib)} ${fmtPct(total.ours, total.lib)} ${label}`,
+      printCompactLine(
+        fmtMs(total.lib),
+        fmtMs(total.ours),
+        fmtDiff(total.ours, total.lib),
+        fmtPct(total.ours, total.lib),
+        label,
       );
     } else {
-      console.log(`ERROR ERROR ERROR ERROR ${label}`);
+      printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", label);
     }
   }
 }
