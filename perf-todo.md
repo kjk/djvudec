@@ -19,9 +19,12 @@ bun cmd/build-bench.ts before -clean
 bun cmd/build-bench.ts after -clean
 # Prefer running the two exes directly so auto-rebuild does not overwrite "before"
 
-# Profile build (MSVC: -O2 -Ob1 -Zi, no -GL/-LTCG) + WPR one-liners
+# Profile build (MSVC: -O2 -Ob1 -Zi, no -GL/-LTCG) + winperf one-liners
 bun cmd/build-prof.ts
 bun cmd/build-prof.ts -print
+
+# Sampling profile (winperf / xperf; needs Admin + ADK; build ../winperf first)
+bun cmd/prof.ts deps/artifacts/test043C.djvu -page 5 -runs 10
 ```
 
 Verification after any speed change:
@@ -64,13 +67,24 @@ Sweep (`-bench-render -layers -reps 2`, min of 2) over
 profile **JB2**, not IW44. Color pages on `djvu3spec` (e.g. p21) are IW44-heavy
 but smaller than `test043C`.
 
-### Profile one page (WPR)
+### Profile one page (winperf)
+
+```powershell
+# Once: git clone https://github.com/kjk/winperf ..\winperf
+#        cd ..\winperf && bun cmd/build.ts -release
+bun cmd/prof.ts deps/artifacts/test043C.djvu -page 5 -runs 10
+```
+
+`prof.ts` builds `djvudec_prof.exe`, runs it under winperf with `-profile N`
+section marks, and prints the agent report (hottest self-time functions,
+`file:line` hot spots, heaviest call path). ETL lands in `out/prof/`.
+
+Fallback (raw WPR, no agent report):
 
 ```powershell
 bun cmd/build-prof.ts
-# Admin recommended:
 wpr -start CPU -filemode
-out\msvc_prof\djvudec_prof.exe -bench-render -reps 8 -page 5 deps\artifacts\test043C.djvu
+out\msvc_prof\djvudec_prof.exe -profile 10 -page 5 deps\artifacts\test043C.djvu
 wpr -stop $env:TEMP\djvudec.etl
 ```
 
@@ -78,7 +92,7 @@ WPA: **Computation → CPU Usage (Sampled)** → process `djvudec_prof.exe` → 
 under `filter_bv` / `map_image` / `code_bitmap_*` / `compose_*`.
 
 For **instructions retired / CPI per function**: Intel VTune (or AMD uProf) on
-the same `djvudec_prof.exe` + same `-page` / `-reps` args.
+the same `djvudec_prof.exe` + same `-page` / `-profile` args.
 
 Always use **`-page N`** so the trace is one workload.
 

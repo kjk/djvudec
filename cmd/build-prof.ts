@@ -1,13 +1,16 @@
-// build-prof.ts -- MSVC profile build (no LTCG, with PDB) for WPR/VTune/VS.
+// build-prof.ts -- MSVC profile build (no LTCG, with PDB) for winperf/WPR/VTune.
 //
 //   bun cmd/build-prof.ts           # out/msvc_prof/djvudec_prof.exe
 //   bun cmd/build-prof.ts -clean    # wipe out/msvc_prof and rebuild
-//   bun cmd/build-prof.ts -print    # print workload + WPR one-liners only
+//   bun cmd/build-prof.ts -print    # print workload + winperf one-liners only
 //
 // Flags: -O2 -Ob1 -Zi (no -GL / no -LTCG) so sampled stacks map to real
-// functions. Links test/djvudec_dump.c (same CLI as djvudec_dump).
+// functions. Links test/djvudec_dump.c (same CLI as djvudec_dump, including
+// -profile N winperf section marks). Preferred workflow:
 //
-// After build, see printed commands for WPR recording and recommended pages.
+//   bun cmd/prof.ts <file.djvu> -page N
+//
+// which builds this binary and records under ../winperf.
 import { $ } from "bun";
 import { existsSync, mkdirSync, rmSync, statSync } from "fs";
 import { isWindows } from "./build";
@@ -157,10 +160,22 @@ PDB:            ${PDB}
   ${q(exe)} -bench-render -layers -reps 2 path\\to\\file.djvu
   # slowest lines: highest pN total ms; layer line shows jb2/iw44/composite
 
---- WPR (Windows Performance Recorder) CPU sample ---
+--- Preferred: winperf (ETW sampling + agent report) ---
+  # Build once:  cd ..\\winperf && bun cmd/build.ts -release
+  # Clone if missing: git clone https://github.com/kjk/winperf ..\\winperf
+  # Needs Windows Performance Toolkit (xperf) + UAC elevation.
+  bun cmd/prof.ts deps/artifacts/test043C.djvu -page 5 -runs 10
+
+  # Or drive winperf yourself (absolute path to the exe):
+  ..\\winperf\\out\\rel64\\winperf.exe record -i 4000 -o out\\prof\\winperf.etl -print-agent -- ${q(exe)} -profile 10 -page 5 deps/artifacts/test043C.djvu
+
+  # -profile N loops page render with winperf_profile_start/stop marks so
+  # samples outside the render (open, I/O) are dropped from the report.
+
+--- WPR (Windows Performance Recorder) fallback ---
   # Admin PowerShell recommended
   wpr -start CPU -filemode
-  ${q(exe)} -bench-render -reps 8 -page 5 deps/artifacts/test043C.djvu
+  ${q(exe)} -profile 10 -page 5 deps/artifacts/test043C.djvu
   wpr -stop %TEMP%\\djvudec.etl
 
   # Open %TEMP%\\djvudec.etl in Windows Performance Analyzer (WPA):
@@ -171,18 +186,19 @@ PDB:            ${PDB}
 --- Visual Studio ---
   Debug → Performance Profiler → CPU Usage
   Target: ${exe}
-  Args:   -bench-render -reps 5 -page 5 deps/artifacts/test043C.djvu
+  Args:   -profile 10 -page 5 deps/artifacts/test043C.djvu
 
 --- Intel VTune (instructions / CPI per function) ---
   Hotspots or Microarchitecture Exploration
   App:  ${exe}
-  Args: -bench-render -reps 5 -page 5 deps/artifacts/test043C.djvu
+  Args: -profile 10 -page 5 deps/artifacts/test043C.djvu
   # Prefer this for "CPU instructions retired" per function
 
 Notes:
   - Profile build avoids -GL/-LTCG so stacks match source functions.
   - Use -page N so the trace is one workload, not a mixed multipage soup.
-  - -reps 5+ so sampling has enough hits; ignore first-run noise or use -warm 0.
+  - -profile 10+ (or -runs 10+ via prof.ts) so sampling has enough hits.
+  - Keep test/winperf_control.h in sync with ..\\winperf\\client\\winperf_control.h.
 `);
 }
 

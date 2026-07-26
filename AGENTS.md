@@ -57,6 +57,41 @@ Real-world corpora used for stress testing: `Z:\sumtest` (36 files),
 `Z:\backup\books` (1396 files) — point scripts at them with `DJVU_SPECS`.
 
 ## Build & test
+
+### Windows sampling profiles (winperf)
+
+The dump/prof harness vendors `test/winperf_control.h`, so a **winperf**
+checkout is not required to compile. To record profiles, first look for the
+private winperf repository at `..\winperf`. If it is absent, try to clone it
+there:
+
+```
+git clone https://github.com/kjk/winperf ..\winperf
+cd ..\winperf && bun cmd/build.ts -release
+```
+
+The clone requires access to the private repository. Keep the vendored header
+in sync with `..\winperf\client\winperf_control.h`.
+
+```
+bun cmd/prof.ts <file.djvu> [-page N] [-runs N] [-hz N]
+```
+
+Builds `out/msvc_prof/djvudec_prof.exe` (MSVC `-O2 -Ob1 -Zi`, no LTCG) and
+records it under winperf with `-print-agent` (top self-time functions, hot
+source lines, heaviest call path). Needs the **Windows Performance Toolkit**
+(`xperf.exe` from the ADK) and **Administrator rights** (UAC prompt). The
+harness flag `-profile N` loops page render under `winperf_profile_start/stop`
+section marks so open/I/O samples are dropped. Override the winperf binary with
+`DJVUDEC_WINPERF`. Give winperf an **absolute path** to the exe.
+
+Manual equivalent:
+
+```
+bun cmd/build-prof.ts
+..\winperf\out\rel64\winperf.exe record -i 4000 -o out\prof\winperf.etl -print-agent -- out\msvc_prof\djvudec_prof.exe -profile 10 -page 5 deps\artifacts\test043C.djvu
+```
+
 - `bun cmd/build.ts` — fetches deps (`getDeps`), builds the DjVuLibre reference
   tools **once** into `ref_build/`, then compiles the C library + test harness.
   Two toolchains: **MSVC is the default on Windows** (`djvu_test_msvc.exe`);

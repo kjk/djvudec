@@ -8,6 +8,7 @@
  *   djvudec_dump -info file.djvu
  *   djvudec_dump -page 3 -zones -text file.djvu
  *   djvudec_dump -dump-features file.djvu
+ *   djvudec_dump -profile 20 -page 5 file.djvu   # winperf section marks
  *
  * No DjVuLibre dependency; links only src/ sources + this file. */
 #include "djvu.h"
@@ -16,13 +17,20 @@
 #include <stdlib.h>
 #include <string.h>
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <direct.h>
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+/* Vendored control client; calls are no-ops when winperf is not recording. */
+#include "winperf_control.h"
 #else
 #include <time.h>
 #include <unistd.h>
+static void winperf_profile_start(void) {}
+static void winperf_profile_stop(void) {}
 #endif
 
 static void on_error(void *user, djvu_severity sev, const char *msg)
@@ -348,6 +356,52 @@ static int bench_render_page(djvu_doc *doc, int page0, int warm, int sub,
     return 0;
 }
 
+/* Loop page renders with winperf section marks around each render.
+ * Doc stays open; marks bracket only djvu_page_render so open/IO is excluded. */
+static int run_profile_render(djvu_doc *doc, int loops, int sub, int page0)
+{
+    djvu_ctx *ctx = doc->ctx;
+    int npages = djvu_doc_page_count(doc);
+    int i, w = 0, h = 0;
+    double total = 0.0;
+    djvu_page_info info;
+
+    if (loops < 1) loops = 1;
+    if (sub < 1) sub = 1;
+    if (page0 < 0 || page0 >= npages) {
+        fprintf(stderr, "invalid page %d (document has %d pages)\n",
+                page0 + 1, npages);
+        return 1;
+    }
+    memset(&info, 0, sizeof(info));
+    if (djvu_doc_page_info(doc, page0, &info) == 0) {
+        w = info.width;
+        h = info.height;
+    }
+
+    for (i = 0; i < loops; i++) {
+        djvu_image *img;
+        double t0;
+
+        winperf_profile_start();
+        t0 = now_ms();
+        img = djvu_page_render(doc, page0, sub);
+        total += now_ms() - t0;
+        winperf_profile_stop();
+        if (!img) {
+            fprintf(stderr, "profile: render failed on loop %d page %d\n",
+                    i + 1, page0 + 1);
+            return 1;
+        }
+        if (img->width > 0) w = img->width;
+        if (img->height > 0) h = img->height;
+        djvu_image_destroy(ctx, img);
+    }
+    printf("profile loops=%d page=%d sub=%d size=%dx%d total_ms=%.2f avg_ms=%.2f\n",
+           loops, page0 + 1, sub, w, h, total, total / (double)loops);
+    return 0;
+}
+
 /* Two timed renders per page (djvudec only; for bench_before/after). */
 static int run_bench_render(djvu_doc *doc, int warm, int reps, int layers,
                             int sub, int page0, int single_page)
@@ -428,6 +482,7 @@ typedef struct {
     int bench_warm;
     int bench_reps;
     int bench_sub;
+    int profile_loops; /* >0: -profile N (winperf marks around each render) */
     int page_explicit;
     int do_bzz;
     int do_iw;
@@ -463,11 +518,13 @@ static void usage(void)
         "  -comps             list DJVM components (incl/page/thumb/anno)\n"
         "  -dump-features     tab-separated feature + render-time dump\n"
         "  -bench-render      time 2 renders/page (pN t1 t2 ms; djvudec only)\n"
-        "  -page N, -p N      with -bench-render: single page only (default: all)\n"
+        "  -page N, -p N      with -bench-render/-profile: single page (default: all / 1)\n"
         "  -warm N            discard first N renders/page before timing (default 0)\n"
         "  -reps N            timed renders/page for -bench-render (default 2)\n"
-        "  -sub N             with -bench-render: render at subsample N (default 1)\n"
+        "  -sub N             with -bench-render/-profile: subsample N (default 1)\n"
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
+        "  -profile N         render page N times with winperf section marks (see\n"
+        "                     bun cmd/prof.ts); needs -page for multipage files\n"
         "  -cache-probe       enable per-page cache; report size after first render and drop\n"
         "\n"
         "Codec layers (no full composite):\n"
@@ -509,7 +566,10 @@ static int parse_args(int argc, char **argv, opts_t *o)
         else if (!strcmp(argv[i], "-bench-render")) o->do_bench_render = 1;
         else if (!strcmp(argv[i], "-cache-probe")) o->do_cache_probe = 1;
         else if (!strcmp(argv[i], "-layers")) o->do_layers = 1;
-        else if (!strcmp(argv[i], "-warm") && i + 1 < argc)
+        else if (!strcmp(argv[i], "-profile") && i + 1 < argc) {
+            o->profile_loops = atoi(argv[++i]);
+            if (o->profile_loops < 1) o->profile_loops = 1;
+        } else if (!strcmp(argv[i], "-warm") && i + 1 < argc)
             o->bench_warm = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-reps") && i + 1 < argc)
             o->bench_reps = atoi(argv[++i]);
@@ -736,6 +796,13 @@ int main(int argc, char **argv)
 
     if (o.do_dump_features) {
         rc = run_dump_features(doc);
+        goto done;
+    }
+
+    if (o.profile_loops > 0) {
+        rc = run_profile_render(doc, o.profile_loops,
+                                o.bench_sub < 1 ? 1 : o.bench_sub,
+                                o.page - 1);
         goto done;
     }
 
