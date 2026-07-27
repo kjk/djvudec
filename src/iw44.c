@@ -540,35 +540,81 @@ static int is_null_slice(iw_codec *c, int bit, int band)
     return 0;
 }
 
-/* Hoisted a/fence ZP decode — same contract as djvu_zp_decode / decode_iw,
-   but keeps a and fence in locals across the dense coeff loops. */
+/* IW44 keeps a/fence in locals across the dense coefficient loops. Keep the
+   slow renormalization paths local too: round-tripping `a` through the large
+   djvu_zp struct for every coded coefficient otherwise creates avoidable
+   loads/stores in the hottest photo-decode loop. */
+static inline void iw_zp_renorm_lps(djvu_zp *DJVU_RESTRICT zp,
+                                    uint32_t *DJVU_RESTRICT a,
+                                    uint32_t *DJVU_RESTRICT fence,
+                                    uint32_t z)
+{
+    int shift;
+    z = 0x10000u - z;
+    *a += z;
+    zp->code += z;
+    shift = zp_ffz(zp, *a);
+    zp->scount -= (uint8_t)shift;
+    *a = (*a << shift) & 0xffff;
+    zp->code = ((zp->code << shift) & 0xffff)
+             | ((zp->buffer >> zp->scount) & ((1u << shift) - 1));
+    if (zp->scount < 16)
+        zp_preload(zp);
+    *fence = zp->code < 0x8000 ? zp->code : 0x7fff;
+}
+
+static inline void iw_zp_renorm_mps(djvu_zp *DJVU_RESTRICT zp,
+                                    uint32_t *DJVU_RESTRICT a,
+                                    uint32_t *DJVU_RESTRICT fence,
+                                    uint32_t z)
+{
+    zp->scount -= 1;
+    *a = (z << 1) & 0xffff;
+    zp->code = ((zp->code << 1) & 0xffff)
+             | ((zp->buffer >> zp->scount) & 1);
+    if (zp->scount < 16)
+        zp_preload(zp);
+    *fence = zp->code < 0x8000 ? zp->code : 0x7fff;
+}
+
 static inline int iw_zp_dec(djvu_zp *DJVU_RESTRICT zp,
                             uint32_t *DJVU_RESTRICT a,
                             uint32_t *DJVU_RESTRICT fence,
                             uint8_t *DJVU_RESTRICT ctx)
 {
     uint32_t z = *a + zp->p[*ctx];
+    int mps;
     if (DJVU_LIKELY(z <= *fence)) {
         *a = z;
         return *ctx & 1;
     }
-    zp->a = *a;
-    z = (uint32_t)zp_decode_sub(zp, ctx, z);
-    *a = zp->a;
-    *fence = zp->fence;
-    return (int)z;
+    mps = *ctx & 1;
+    {
+        uint32_t d = 0x6000u + ((z + *a) >> 2);
+        if (z > d) z = d;
+    }
+    if (z > zp->code) {
+        *ctx = zp->dn[*ctx];
+        iw_zp_renorm_lps(zp, a, fence, z);
+        return mps ^ 1;
+    }
+    if (*a >= zp->m[*ctx])
+        *ctx = zp->up[*ctx];
+    iw_zp_renorm_mps(zp, a, fence, z);
+    return mps;
 }
 
 static inline int iw_zp_dec_iw(djvu_zp *DJVU_RESTRICT zp,
                                uint32_t *DJVU_RESTRICT a,
                                uint32_t *DJVU_RESTRICT fence)
 {
-    int bit;
-    zp->a = *a;
-    bit = djvu_zp_decode_iw(zp);
-    *a = zp->a;
-    *fence = zp->fence;
-    return bit;
+    uint32_t z = 0x8000u + ((*a + *a + *a) >> 3);
+    if (z > zp->code) {
+        iw_zp_renorm_lps(zp, a, fence, z);
+        return 1;
+    }
+    iw_zp_renorm_mps(zp, a, fence, z);
+    return 0;
 }
 
 static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
@@ -594,6 +640,14 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
         int16_t *pcoeff = pbuck[buckno];
         if (pcoeff == NULL) {
             bstatetmp = 8;
+        } else if (!band0) {
+            /* is_null_slice clears every nonzero-band coefficient state.
+               Rebuilding it therefore needs no preserve-ZERO test. */
+            for (i = 0; i < 16; i++) {
+                int cstatetmp = pcoeff[i] != 0 ? 2 : 8;
+                cstate[cidx + i] = (int8_t)cstatetmp;
+                bstatetmp |= cstatetmp;
+            }
         } else {
             for (i = 0; i < 16; i++) {
                 int cstatetmp = cstate[cidx + i] & 1;
@@ -626,10 +680,9 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
                     int16_t *b = blk->buckets[k >> 4];
                     if (b != NULL) {
                         k &= 0xf;
-                        if (b[k] != 0) ctx++;
-                        if (b[k + 1] != 0) ctx++;
-                        if (b[k + 2] != 0) ctx++;
-                        if (ctx < 3 && b[k + 3] != 0) ctx++;
+                        ctx = (b[k] != 0) + (b[k + 1] != 0)
+                            + (b[k + 2] != 0) + (b[k + 3] != 0);
+                        if (ctx > 3) ctx = 3;
                     }
                 }
                 if ((bbstate & 2) != 0) ctx |= 4;
@@ -668,10 +721,10 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
                             cstate[cidx + i] |= 4;
                             halfthres = t >> 1;
                             coeff = (t + halfthres) - (halfthres >> 2);
-                            if (iw_zp_dec_iw(zp, &a, &fence) != 0)
-                                pcoeff[i] = (int16_t)(-coeff);
-                            else
-                                pcoeff[i] = (int16_t)coeff;
+                            {
+                                int neg = -iw_zp_dec_iw(zp, &a, &fence);
+                                pcoeff[i] = (int16_t)((coeff ^ neg) - neg);
+                            }
                         }
                         if ((cstate[cidx + i] & 4) != 0) gotcha = 0;
                         else if (gotcha > 0) gotcha--;
@@ -703,8 +756,10 @@ static void decode_buckets(iw_codec *c, djvu_zp *zp, int bit, int band,
                             else
                                 coeff = (coeff - t) + (t >> 1);
                         }
-                        if (pcoeff[i] > 0) pcoeff[i] = (int16_t)coeff;
-                        else pcoeff[i] = (int16_t)(-coeff);
+                        {
+                            int neg = -(pcoeff[i] < 0);
+                            pcoeff[i] = (int16_t)((coeff ^ neg) - neg);
+                        }
                     }
                 }
             }

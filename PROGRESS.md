@@ -139,6 +139,21 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- IW44 entropy-decode speed pass on `deps/artifacts/test043C.djvu` (5
+  high-resolution photo pages): whole-document winperf profiling put
+  `decode_buckets` at 54.7% self / 67.7% inclusive, plus 8.1% self in its
+  out-of-line ZP renormalization path. The IW44 hot loop now keeps the ZP
+  interval and fence local through both fast and renormalization paths,
+  specializes coefficient-state reconstruction for the reset nonzero bands,
+  and removes branches from parent-context counting and coefficient sign
+  restoration. Three alternating MSVC release runs of open + every page +
+  close improved from 542.4 ms to 507.7 ms average (-6.4%); isolated page
+  renders improved 7.6-8.7%. The final profile has no separate renormalization
+  hotspot (`decode_buckets` is 66.1% inclusive), and a cold-session comparison
+  is 680.06 ms DjVuLibre vs 503.31 ms djvudec (-26.0%). Target verification is
+  5/5 byte-exact under MSVC, clang, and ASan; the full MSVC corpus had 2489
+  matching renders and only the existing unrelated DjVuLibre oracle error on
+  399-byte `nasa001C.orig.png.djvu`.
 - whole-document render profiling and integer background-scale speed pass:
   `bun cmd/prof.ts file.djvu -document -runs N` now marks complete decoder
   sessions (`djvu_doc_open`, render every page, `djvu_doc_close`) for winperf,
