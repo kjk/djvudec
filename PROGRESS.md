@@ -139,6 +139,25 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- whole-document render profiling and integer background-scale speed pass:
+  `bun cmd/prof.ts file.djvu -document -runs N` now marks complete decoder
+  sessions (`djvu_doc_open`, render every page, `djvu_doc_close`) for winperf,
+  and the dump harness exposes the underlying `-profile-document N` mode.
+  Profiling all 48 pages of `djvulibre-book-ru.djvu` showed the generic
+  horizontal GPixmapScaler loop at 48.5% self / 66.2% inclusive samples: most
+  compound pages expand a 276x390 BG44 layer to 3307x4678 at red=12, with two
+  pages using red=4. Added grouped integer expansion plus byte-exact unrolled
+  prepare_coord phase cycles for red=4 (`2,6,10,14`) and red=12
+  (`0,1,2,4,5,6,8,9,10,12,13,14`), including partial final source pairs and
+  clamped tails. Alternating MSVC release runs of open + all pages + close
+  improved from 1014.9 ms to 791.0 ms average (-22.1%); the IW44 stage on a
+  typical red=12 page fell from ~28-29 ms to ~18-19 ms. Final cold-session
+  comparison was 1881.18 ms DjVuLibre vs 813.31 ms djvudec (-56.8%).
+  Target verification is 48/48 byte-exact under MSVC, clang, and ASan; the
+  full MSVC corpus had 2489 matching renders. Its sole reported failure,
+  399-byte standalone `nasa001C.orig.png.djvu`, is an unrelated DjVuLibre
+  oracle error and produces identical SHA-256 output in the before/after
+  djvudec binaries.
 - merged cmd/bench-sum.ts into cmd/bench.ts as the `-like-sumatra` flag
   (runs `djvu_test -bench-sum`, the SumatraPDF engine render path, instead
   of the bare full-res `djvu_test -bench`).

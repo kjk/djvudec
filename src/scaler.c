@@ -271,11 +271,143 @@ static int scaler_scale_red3_into(scaler *s, const djvu_cpix *in,
     return 0;
 }
 
+/* Horizontal bilinear expansion for integer scales. Output coordinates are
+   monotonic, so keep each source pair in registers for all of its destination
+   samples instead of reloading the pair through hinfo for every pixel. */
+static void scaler_expand_row_grouped(const uint8_t *src, int w,
+                                      const int *coord, int outw, uint8_t *dst)
+{
+    int x = 0, sx;
+    const uint8_t *last = src + (size_t)(w - 1) * 3;
+
+    while (x < outw && coord[x] < 0) {
+        dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+        dst += 3;
+        x++;
+    }
+    for (sx = 0; sx < w - 1 && x < outw; sx++) {
+        const uint8_t *a = src + (size_t)sx * 3;
+        const uint8_t *b = a + 3;
+        int ar = a[0], ag = a[1], ab = a[2];
+        int dr = b[0] - ar, dg = b[1] - ag, db = b[2] - ab;
+
+        while (x < outw && (coord[x] >> FRACBITS) == sx) {
+            int hf = coord[x] & FRACMASK;
+            dst[0] = (uint8_t)(ar + ((dr * hf + FRACSIZE2) >> FRACBITS));
+            dst[1] = (uint8_t)(ag + ((dg * hf + FRACSIZE2) >> FRACBITS));
+            dst[2] = (uint8_t)(ab + ((db * hf + FRACSIZE2) >> FRACBITS));
+            dst += 3;
+            x++;
+        }
+    }
+    while (x < outw) {
+        dst[0] = last[0]; dst[1] = last[1]; dst[2] = last[2];
+        dst += 3;
+        x++;
+    }
+}
+
+/* The prepare_coord phase cycles for exact 4x and 12x expansion. These are
+   common DjVu background reductions; unrolling full source-pair groups removes
+   the coordinate load, shift, and loop-exit test from every output pixel. */
+static void scaler_expand_row4(const uint8_t *src, int w, int outw, uint8_t *dst)
+{
+    static const uint8_t phase[4] = { 2, 6, 10, 14 };
+    int x = 0, sx, k, groups;
+    const uint8_t *last = src + (size_t)(w - 1) * 3;
+
+    while (x < outw && x < 2) {
+        dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+        dst += 3; x++;
+    }
+    groups = (outw - x) / 4;
+    if (groups > w - 1) groups = w - 1;
+    for (sx = 0; sx < groups; sx++) {
+        const uint8_t *a = src + (size_t)sx * 3;
+        const uint8_t *b = a + 3;
+        int ar = a[0], ag = a[1], ab = a[2];
+        int dr = b[0] - ar, dg = b[1] - ag, db = b[2] - ab;
+#define EMIT4(F) \
+        dst[0] = (uint8_t)(ar + ((dr * (F) + FRACSIZE2) >> FRACBITS)); \
+        dst[1] = (uint8_t)(ag + ((dg * (F) + FRACSIZE2) >> FRACBITS)); \
+        dst[2] = (uint8_t)(ab + ((db * (F) + FRACSIZE2) >> FRACBITS)); \
+        dst += 3
+        EMIT4(2); EMIT4(6); EMIT4(10); EMIT4(14);
+#undef EMIT4
+    }
+    x += groups * 4;
+    if (groups < w - 1) {
+        const uint8_t *a = src + (size_t)groups * 3;
+        const uint8_t *b = a + 3;
+        int ar = a[0], ag = a[1], ab = a[2];
+        int dr = b[0] - ar, dg = b[1] - ag, db = b[2] - ab;
+        for (k = 0; k < 4 && x < outw; k++, x++) {
+            int hf = phase[k];
+            dst[0] = (uint8_t)(ar + ((dr * hf + FRACSIZE2) >> FRACBITS));
+            dst[1] = (uint8_t)(ag + ((dg * hf + FRACSIZE2) >> FRACBITS));
+            dst[2] = (uint8_t)(ab + ((db * hf + FRACSIZE2) >> FRACBITS));
+            dst += 3;
+        }
+    }
+    while (x++ < outw) {
+        dst[0] = last[0]; dst[1] = last[1]; dst[2] = last[2];
+        dst += 3;
+    }
+}
+
+static void scaler_expand_row12(const uint8_t *src, int w, int outw, uint8_t *dst)
+{
+    static const uint8_t phase[12] =
+        { 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14 };
+    int x = 0, sx, k, groups;
+    const uint8_t *last = src + (size_t)(w - 1) * 3;
+
+    while (x < outw && x < 5) {
+        dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+        dst += 3; x++;
+    }
+    groups = (outw - x) / 12;
+    if (groups > w - 1) groups = w - 1;
+    for (sx = 0; sx < groups; sx++) {
+        const uint8_t *a = src + (size_t)sx * 3;
+        const uint8_t *b = a + 3;
+        int ar = a[0], ag = a[1], ab = a[2];
+        int dr = b[0] - ar, dg = b[1] - ag, db = b[2] - ab;
+#define EMIT12(F) \
+        dst[0] = (uint8_t)(ar + ((dr * (F) + FRACSIZE2) >> FRACBITS)); \
+        dst[1] = (uint8_t)(ag + ((dg * (F) + FRACSIZE2) >> FRACBITS)); \
+        dst[2] = (uint8_t)(ab + ((db * (F) + FRACSIZE2) >> FRACBITS)); \
+        dst += 3
+        EMIT12(0);  EMIT12(1);  EMIT12(2);  EMIT12(4);
+        EMIT12(5);  EMIT12(6);  EMIT12(8);  EMIT12(9);
+        EMIT12(10); EMIT12(12); EMIT12(13); EMIT12(14);
+#undef EMIT12
+    }
+    x += groups * 12;
+    if (groups < w - 1) {
+        const uint8_t *a = src + (size_t)groups * 3;
+        const uint8_t *b = a + 3;
+        int ar = a[0], ag = a[1], ab = a[2];
+        int dr = b[0] - ar, dg = b[1] - ag, db = b[2] - ab;
+        for (k = 0; k < 12 && x < outw; k++, x++) {
+            int hf = phase[k];
+            dst[0] = (uint8_t)(ar + ((dr * hf + FRACSIZE2) >> FRACBITS));
+            dst[1] = (uint8_t)(ag + ((dg * hf + FRACSIZE2) >> FRACBITS));
+            dst[2] = (uint8_t)(ab + ((db * hf + FRACSIZE2) >> FRACBITS));
+            dst += 3;
+        }
+    }
+    while (x++ < outw) {
+        dst[0] = last[0]; dst[1] = last[1]; dst[2] = last[2];
+        dst += 3;
+    }
+}
+
 static int scaler_scale_into(scaler *s, const djvu_cpix *in,
                              uint8_t *dst0, int stride, int topdown)
 {
     djvu_ctx *ctx = s->ctx;
-    int bufw, y;
+    int bufw, y, grouped;
     uint8_t *lbuf;
 
     if (!in || !in->d || in->w <= 0 || in->h <= 0 ||
@@ -297,6 +429,7 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
         s->outh >= 3 * s->inh - 2 && s->outh <= 3 * s->inh &&
         in->w == s->inw && in->h == s->inh)
         return scaler_scale_red3_into(s, in, dst0, stride, topdown);
+    grouped = s->xshift == 0 && s->hden == 1 && s->hnum >= 4;
     bufw = s->redw;
     lbuf = (uint8_t *)djvu_alloc(ctx, (size_t)(bufw + 2) * 3);
     if (!lbuf) return -1;
@@ -305,7 +438,7 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
         p2 = (uint8_t *)djvu_alloc(ctx, (size_t)bufw * 3);
         if (!p1 || !p2) { djvu_free(ctx, lbuf); djvu_free(ctx, p1); djvu_free(ctx, p2); return -1; }
     }
-    if (red_xmin == 0) {
+    if (red_xmin == 0 && !grouped) {
         int x;
         int use16 = (s->redw * 3) <= 0x0fff;
         if (use16)
@@ -372,7 +505,15 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
         lbuf[0]=lbuf[3]; lbuf[1]=lbuf[4]; lbuf[2]=lbuf[5];
         lbuf[(bufw+1)*3+0]=lbuf[bufw*3+0]; lbuf[(bufw+1)*3+1]=lbuf[bufw*3+1]; lbuf[(bufw+1)*3+2]=lbuf[bufw*3+2];
         dest = dst0 + (size_t)(topdown ? (s->outh - 1 - y) : y) * stride;
-        if (hinfo16) {
+        if (grouped) {
+            if (s->hnum == 12)
+                scaler_expand_row12(lbuf + 3, bufw, s->outw, dest);
+            else if (s->hnum == 4)
+                scaler_expand_row4(lbuf + 3, bufw, s->outw, dest);
+            else
+                scaler_expand_row_grouped(lbuf + 3, bufw, s->hcoord,
+                                          s->outw, dest);
+        } else if (hinfo16) {
             uint8_t *dp = dest;
             for (x = 0; x < s->outw; x++) {
                 int n = hinfo16[x];

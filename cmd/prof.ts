@@ -1,6 +1,6 @@
 // prof.ts -- sampling profile of our page render on Windows via ../winperf.
 //
-//   bun cmd/prof.ts <file.djvu> [-page N] [-runs N] [-hz N] [-sub N]
+//   bun cmd/prof.ts <file.djvu> [-page N | -document] [-runs N] [-hz N] [-sub N]
 //
 // Builds the profile binary (MSVC -O2 -Ob1 -Zi, no LTCG → out/msvc_prof/
 // djvudec_prof.exe) then records it under winperf and prints the agent report:
@@ -8,7 +8,7 @@
 //
 // Windows only. winperf drives xperf (Windows Performance Toolkit / ADK) and
 // needs Administrator rights (UAC prompt). The harness uses winperf section
-// marks (-profile N) so samples outside render are dropped.
+// marks so samples outside the requested page render or document session drop.
 //
 // Build winperf once:
 //   cd ../winperf && bun cmd/build.ts -release
@@ -45,6 +45,7 @@ const RUNS = flagVal("-runs", "10");
 const HZ = flagVal("-hz", "4000");
 const PAGE = flagVal("-page", flagVal("-p", "1"));
 const SUB = flagVal("-sub", "1");
+const DOCUMENT = argv.includes("-document");
 // Only these take a value; treating every flag as if it did would swallow
 // the filename after a boolean one.
 const VALUE_FLAGS = ["-runs", "-hz", "-page", "-p", "-sub"];
@@ -53,8 +54,9 @@ const files = argv.filter(
 );
 
 function usage(): void {
-  console.error(`usage: bun cmd/prof.ts <file.djvu> [-page N] [-runs N] [-hz N] [-sub N]
+  console.error(`usage: bun cmd/prof.ts <file.djvu> [-page N | -document] [-runs N] [-hz N] [-sub N]
   -page N   1-based page to render (default 1)
+  -document profile complete sessions: open, render every page, close
   -runs N   render loops inside the profiled process (default 10)
   -hz N     sampling rate (default 4000)
   -sub N    render subsample (default 1)
@@ -97,7 +99,10 @@ const OUT = resolve(outDir, "winperf.etl");
 
 console.log(`prof: ${WINPERF}`);
 console.log(`  exe:  ${EXE}`);
-console.log(`  work: -profile ${RUNS} -page ${PAGE} -sub ${SUB} ${file}`);
+const work = DOCUMENT
+  ? ["-profile-document", RUNS, "-sub", SUB, file]
+  : ["-profile", RUNS, "-page", PAGE, "-sub", SUB, file];
+console.log(`  work: ${work.join(" ")}`);
 console.log(`  out:  ${OUT}`);
 
 const proc = Bun.spawnSync({
@@ -113,13 +118,7 @@ const proc = Bun.spawnSync({
     "-print-agent",
     "--",
     resolve(EXE),
-    "-profile",
-    RUNS,
-    "-page",
-    PAGE,
-    "-sub",
-    SUB,
-    file,
+    ...work,
   ],
   stdout: "inherit",
   stderr: "inherit",

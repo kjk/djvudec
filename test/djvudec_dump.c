@@ -402,6 +402,52 @@ static int run_profile_render(djvu_doc *doc, int loops, int sub, int page0)
     return 0;
 }
 
+/* Loop complete decoder sessions with winperf section marks around
+ * djvu_doc_open + render every page + djvu_doc_close. The input buffer and
+ * context stay alive, matching the public API's in-memory ownership model. */
+static int run_profile_document(djvu_ctx *ctx, const uint8_t *data, size_t len,
+                                int loops, int sub)
+{
+    int i, p, npages = 0;
+    double total = 0.0;
+
+    if (loops < 1) loops = 1;
+    if (sub < 1) sub = 1;
+
+    for (i = 0; i < loops; i++) {
+        djvu_doc *doc;
+        double t0;
+
+        winperf_profile_start();
+        t0 = now_ms();
+        doc = djvu_doc_open(ctx, data, len);
+        if (!doc) {
+            winperf_profile_stop();
+            fprintf(stderr, "profile-document: open failed on loop %d\n", i + 1);
+            return 1;
+        }
+        npages = djvu_doc_page_count(doc);
+        for (p = 0; p < npages; p++) {
+            djvu_image *img = djvu_page_render(doc, p, sub);
+            if (!img) {
+                djvu_doc_close(doc);
+                winperf_profile_stop();
+                fprintf(stderr,
+                        "profile-document: render failed on loop %d page %d\n",
+                        i + 1, p + 1);
+                return 1;
+            }
+            djvu_image_destroy(ctx, img);
+        }
+        djvu_doc_close(doc);
+        total += now_ms() - t0;
+        winperf_profile_stop();
+    }
+    printf("profile-document loops=%d pages=%d sub=%d total_ms=%.2f avg_ms=%.2f\n",
+           loops, npages, sub, total, total / (double)loops);
+    return 0;
+}
+
 /* Two timed renders per page (djvudec only; for bench_before/after). */
 static int run_bench_render(djvu_doc *doc, int warm, int reps, int layers,
                             int sub, int page0, int single_page)
@@ -483,6 +529,7 @@ typedef struct {
     int bench_reps;
     int bench_sub;
     int profile_loops; /* >0: -profile N (winperf marks around each render) */
+    int profile_document_loops; /* >0: profile open + all pages + close */
     int page_explicit;
     int do_bzz;
     int do_iw;
@@ -525,6 +572,8 @@ static void usage(void)
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
         "  -profile N         render page N times with winperf section marks (see\n"
         "                     bun cmd/prof.ts); needs -page for multipage files\n"
+        "  -profile-document N  open, render every page, close N times with\n"
+        "                       winperf section marks\n"
         "  -cache-probe       enable per-page cache; report size after first render and drop\n"
         "\n"
         "Codec layers (no full composite):\n"
@@ -569,6 +618,9 @@ static int parse_args(int argc, char **argv, opts_t *o)
         else if (!strcmp(argv[i], "-profile") && i + 1 < argc) {
             o->profile_loops = atoi(argv[++i]);
             if (o->profile_loops < 1) o->profile_loops = 1;
+        } else if (!strcmp(argv[i], "-profile-document") && i + 1 < argc) {
+            o->profile_document_loops = atoi(argv[++i]);
+            if (o->profile_document_loops < 1) o->profile_document_loops = 1;
         } else if (!strcmp(argv[i], "-warm") && i + 1 < argc)
             o->bench_warm = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-reps") && i + 1 < argc)
@@ -781,6 +833,14 @@ int main(int argc, char **argv)
             } else rc = 1;
             djvu_free(ctx, out);
         }
+        djvu_ctx_free(ctx);
+        free(data);
+        return rc;
+    }
+
+    if (o.profile_document_loops > 0) {
+        rc = run_profile_document(ctx, data, len, o.profile_document_loops,
+                                  o.bench_sub < 1 ? 1 : o.bench_sub);
         djvu_ctx_free(ctx);
         free(data);
         return rc;
