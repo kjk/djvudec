@@ -15,6 +15,7 @@
 #define FRACMASK (FRACSIZE - 1)
 
 static short s_interp[FRACSIZE][512];
+static uint32_t s_interp3_delta[512];
 static int s_interp_ready = 0;
 
 static void prepare_interp(void)
@@ -25,6 +26,11 @@ static void prepare_interp(void)
         short *d = &s_interp[i][256];
         for (j = -256; j < 256; j++)
             d[j] = (short)((j * i + FRACSIZE2) >> FRACBITS);
+    }
+    for (j = -255; j <= 255; j++) {
+        uint16_t d6 = (uint16_t)s_interp[6][256 + j];
+        uint16_t d11 = (uint16_t)s_interp[11][256 + j];
+        s_interp3_delta[255 + j] = (uint32_t)d6 | ((uint32_t)d11 << 16);
     }
     s_interp_ready = 1;
 }
@@ -166,19 +172,20 @@ static void scaler_expand_row3(const uint8_t *src, int w, int outw, uint8_t *dst
         const uint8_t *a = src + (size_t)x * 3;
         const uint8_t *b = a + 3;
         int ar = a[0], ag = a[1], ab = a[2];
-        int br = b[0], bg = b[1], bb = b[2];
-        int dr = br - ar, dg = bg - ag, db = bb - ab;
+        uint32_t ir = s_interp3_delta[255 + b[0] - ar];
+        uint32_t ig = s_interp3_delta[255 + b[1] - ag];
+        uint32_t ib = s_interp3_delta[255 + b[2] - ab];
 
         /* Triple: exact a, then 6/16 and 11/16 toward b (prepare_coord red=3). */
         d[0] = (uint8_t)ar;
         d[1] = (uint8_t)ag;
         d[2] = (uint8_t)ab;
-        d[3] = (uint8_t)(ar + ((dr * 6 + FRACSIZE2) >> FRACBITS));
-        d[4] = (uint8_t)(ag + ((dg * 6 + FRACSIZE2) >> FRACBITS));
-        d[5] = (uint8_t)(ab + ((db * 6 + FRACSIZE2) >> FRACBITS));
-        d[6] = (uint8_t)(ar + ((dr * 11 + FRACSIZE2) >> FRACBITS));
-        d[7] = (uint8_t)(ag + ((dg * 11 + FRACSIZE2) >> FRACBITS));
-        d[8] = (uint8_t)(ab + ((db * 11 + FRACSIZE2) >> FRACBITS));
+        d[3] = (uint8_t)(ar + (int16_t)ir);
+        d[4] = (uint8_t)(ag + (int16_t)ig);
+        d[5] = (uint8_t)(ab + (int16_t)ib);
+        d[6] = (uint8_t)(ar + (int16_t)(ir >> 16));
+        d[7] = (uint8_t)(ag + (int16_t)(ig >> 16));
+        d[8] = (uint8_t)(ab + (int16_t)(ib >> 16));
         d += 9;
     }
 

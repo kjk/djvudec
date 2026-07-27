@@ -139,6 +139,21 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- red=3 background-expansion speed pass on `deps/artifacts/test041C.djvu`
+  (14 palette-compound pages, mostly 9094x5630): whole-document winperf
+  profiling put `scaler_expand_row3` at 17.1% self / 31.9% inclusive, ahead
+  of IW44 bucket decode at 10.5%. Added a 2 KB packed delta table containing
+  the exact 6/16 and 11/16 interpolation results for every possible byte
+  difference. Each RGB source pair now uses three L1-sized lookups instead of
+  six signed multiply/round sequences. The post-change profile reduced
+  `scaler_expand_row3` to 13.9% self / 30.1% inclusive. Three alternating
+  MSVC release runs of open + every page + close improved from 1987.7 ms to
+  1930.0 ms average (-2.9%). A cold-session comparison is 3809.71 ms
+  DjVuLibre vs 1896.59 ms djvudec (-50.2%). Target verification is 14/14
+  byte-exact under MSVC, clang, and ASan; the full MSVC corpus had 2489
+  matching renders and only the existing unrelated DjVuLibre oracle error on
+  399-byte `nasa001C.orig.png.djvu`. The regenerated amalgamation compiled
+  cleanly under clang, MSVC, and Emscripten.
 - direct FG44 composite speed pass on `deps/artifacts/test032C.djvu` (9
   5196x7322 compound pages): whole-document winperf profiling put red=3
   background expansion at 19.1% self, IW44 bucket decode at 15.7%, and the
