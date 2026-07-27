@@ -535,11 +535,6 @@ static inline int djvu_zp_decode_pass(djvu_zp *zp)
     return zp_decode_sub_simple(zp, 0, 0x8000u + (zp->a >> 1));
 }
 
-static inline int djvu_zp_decode_iw(djvu_zp *zp)
-{
-    return zp_decode_sub_simple(zp, 0, 0x8000u + ((zp->a + zp->a + zp->a) >> 3));
-}
-
 /* ===================================================================== */
 /* bitmap.c -- 8bpp gray bitmap with a context border (GBitmap port).     */
 /* Used for JB2 shape/mask bitmaps. 0 = background(white), >0 = ink.       */

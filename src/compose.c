@@ -639,6 +639,70 @@ static int compose_fgbz_stencil_topdown_rgb(jb2_image *mask,
     return 0;
 }
 
+typedef struct {
+    const djvu_cpix *fg;
+    uint8_t *dst;
+    int stride;
+    int width, height, red;
+} compose_fg44_topdown_ctx;
+
+static void compose_stamp_fg_run_topdown(void *user, int x0, int x1, int py)
+{
+    compose_fg44_topdown_ctx *ink = (compose_fg44_topdown_ctx *)user;
+    int fy;
+    uint8_t *d;
+
+    if (py < 0 || py >= ink->height) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 > ink->width) x1 = ink->width;
+    if (x0 >= x1) return;
+    fy = py / ink->red;
+    if (fy >= ink->fg->h) fy = ink->fg->h - 1;
+    d = ink->dst + (size_t)(ink->height - 1 - py) * ink->stride
+                 + (size_t)x0 * 3;
+    while (x0 < x1) {
+        int fx = x0 / ink->red;
+        int x_end;
+        const uint8_t *f;
+        if (fx >= ink->fg->w) fx = ink->fg->w - 1;
+        if (fx >= ink->fg->w - 1)
+            x_end = x1;
+        else {
+            x_end = (fx + 1) * ink->red;
+            if (x_end > x1) x_end = x1;
+        }
+        f = ink->fg->d + ((size_t)fy * ink->fg->w + fx) * 3;
+        compose_fill_rgb_run(d, x_end - x0, f[0], f[1], f[2]);
+        d += (size_t)(x_end - x0) * 3;
+        x0 = x_end;
+    }
+}
+
+static int compose_fg44_stencil_topdown_rgb(jb2_image *mask,
+                                            const djvu_cpix *fg, int red,
+                                            int width, int height,
+                                            uint8_t *dst, int stride)
+{
+    compose_fg44_topdown_ctx ink;
+    int i;
+
+    if (!fg || !fg->d || red < 1) return -1;
+    ink.fg = fg;
+    ink.dst = dst;
+    ink.stride = stride;
+    ink.width = width;
+    ink.height = height;
+    ink.red = red;
+    for (i = 0; mask && i < mask->nblits; i++) {
+        jb2_blit *b = &mask->blits[i];
+        jb2_shape *s = djvu_jb2_get_shape(mask, b->shapeno);
+        if (!s || !djvu_bm_has_pixels(&s->bm)) continue;
+        djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
+                               compose_stamp_fg_run_topdown, &ink);
+    }
+    return 0;
+}
+
 /* Composite a page into *bg (bottom-up RGB; caller frees via djvu_cpix_free).
    width/height are the full page dims; the composite is at
    ceil(width/subsample) x ceil(height/subsample). Returns 0 on success, -1 on
@@ -767,40 +831,68 @@ static int compose_gamma_lut(djvu_doc *doc, uint32_t form_off, unsigned char *lu
     return build_gamma_lut(2.2 / page_gamma(doc, form_off), lut);
 }
 
-static int compose_page_fgbz_direct_rgb(djvu_doc *doc, int page_no,
-                                        jb2_image *mask,
-                                        int width, int height,
-                                        uint8_t *dst, int stride,
-                                        djvu_render_timings *t)
+static int compose_page_direct_rgb(djvu_doc *doc, int page_no,
+                                   jb2_image *mask,
+                                   int width, int height,
+                                   uint8_t *dst, int stride,
+                                   djvu_render_timings *t)
 {
     djvu_ctx *ctx = doc->ctx;
     uint32_t form_off = doc->pages[page_no].form_off;
     uint32_t sz;
     const uint8_t *fgbz;
+    iw_pixmap *fgpm = NULL;
+    djvu_cpix fgnat;
     unsigned char lut[256];
     fgbz_palette fg;
     double t0 = 0.0;
-    int rc = -1;
+    int fgred = 0, fg_owned = 0, rc = -1;
 
     memset(&fg, 0, sizeof(fg));
+    memset(&fgnat, 0, sizeof(fgnat));
     if (!mask || ctx->bgr) return -1;
     if (compose_gamma_lut(doc, form_off, lut)) return -1;
-    if (djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL) != NULL)
-        return -1;
     fgbz = djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL);
-    if (fgbz_palette_parse(ctx, fgbz, sz, &fg) != 0)
-        return -1;
+    /* Preserve the existing cached-RGB background path for FG44 callers that
+       install page-cache callbacks. The palette fast path predates that cache. */
+    if (!fgbz && djvu_cache_stores_page(ctx)) return -1;
+    if (fgbz) {
+        if (fgbz_palette_parse(ctx, fgbz, sz, &fg) != 0)
+            goto done;
+    } else {
+        int fw, fh;
+        if (t) t0 = djvu_bench_now_ms();
+        fgpm = djvu_doc_iw44_acquire(doc, page_no, "FG44", &fg_owned);
+        if (!fgpm) goto done;
+        fw = djvu_iw44_width(fgpm);
+        fh = djvu_iw44_height(fgpm);
+        fgred = djvu_compute_red(width, height, fw, fh);
+        if (fgred < 1 || djvu_cpix_init(ctx, &fgnat, fw, fh) != 0 ||
+            djvu_iw44_render_rgb_raw(fgpm, fgnat.d) != 0)
+            goto done;
+        if (t) {
+            t->iw44_ms += djvu_bench_now_ms() - t0;
+            t0 = 0.0;
+        }
+    }
 
     if (compose_background_topdown_rgb(doc, form_off, width, height,
                                        dst, stride, t) != 0)
         goto done;
 
     if (t) t0 = djvu_bench_now_ms();
-    rc = compose_fgbz_stencil_topdown_rgb(mask, &fg, width, height, dst, stride);
+    if (fgbz)
+        rc = compose_fgbz_stencil_topdown_rgb(mask, &fg, width, height,
+                                              dst, stride);
+    else
+        rc = compose_fg44_stencil_topdown_rgb(mask, &fgnat, fgred,
+                                              width, height, dst, stride);
     if (t) t->composite_ms += djvu_bench_now_ms() - t0;
 
 done:
     fgbz_palette_free(ctx, &fg);
+    djvu_cpix_free(ctx, &fgnat);
+    djvu_doc_iw44_release(ctx, fgpm, fg_owned);
     return rc;
 }
 
@@ -815,10 +907,11 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
 
     if (subsample < 1) subsample = 1;
     memset(&bg, 0, sizeof(bg));
-    /* full-res-only fast path: hard FGbz stencil straight into the output */
+    /* Full-res hard stencil straight into the top-down RGB output. */
     if (subsample == 1 && mask && !ctx->bgr &&
-        djvu_form_find_chunk(doc, form_off, "FGbz", NULL, NULL) != NULL &&
-        djvu_form_find_chunk(doc, form_off, "FG44", NULL, NULL) == NULL &&
+        (djvu_form_find_chunk(doc, form_off, "FGbz", NULL, NULL) != NULL ||
+         (!djvu_cache_stores_page(ctx) &&
+          djvu_form_find_chunk(doc, form_off, "FG44", NULL, NULL) != NULL)) &&
         !compose_gamma_lut(doc, form_off, lut)) {
         out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
         if (out) {
@@ -830,8 +923,8 @@ djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
             if (!out->data) {
                 djvu_free(ctx, out);
                 out = NULL;
-            } else if (compose_page_fgbz_direct_rgb(doc, page_no, mask, width, height,
-                                                    out->data, out->stride, t) == 0) {
+            } else if (compose_page_direct_rgb(doc, page_no, mask, width, height,
+                                               out->data, out->stride, t) == 0) {
                 return out;
             } else {
                 djvu_image_destroy(ctx, out);
@@ -870,8 +963,8 @@ int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
     if (subsample < 1) subsample = 1;
     memset(&bg, 0, sizeof(bg));
     if (subsample == 1 &&
-        compose_page_fgbz_direct_rgb(doc, page_no, mask, width, height,
-                                     dst, stride, NULL) == 0)
+        compose_page_direct_rgb(doc, page_no, mask, width, height,
+                                dst, stride, NULL) == 0)
         return 0;
     if (compose_to_bg(doc, page_no, mask, width, height, subsample, NULL, &bg) != 0)
         return -1;

@@ -139,6 +139,24 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (compose.c); the C# port does not.
 
 ## Change log (most recent first)
+- direct FG44 composite speed pass on `deps/artifacts/test032C.djvu` (9
+  5196x7322 compound pages): whole-document winperf profiling put red=3
+  background expansion at 19.1% self, IW44 bucket decode at 15.7%, and the
+  final bottom-up-to-top-down frame copy at 11.1%. Extended the existing
+  full-resolution palette fast path to FG44: render the background directly
+  into the top-down RGB destination, then stencil FG44 ink runs into that same
+  buffer. BGR, gamma-corrected, subsampled, and page-cached renders retain the
+  old general path. This removes one full 114 MB intermediate frame/copy per
+  page. Three alternating MSVC release runs of open + every page + close
+  improved from 1133.6 ms to 1065.5 ms average (-6.0%); the final profile has
+  no `memcpy` hotspot. A cold-session comparison is 1982.26 ms DjVuLibre vs
+  1015.84 ms djvudec (-48.8%), with 158.76 MB peak allocation. Target
+  verification is 9/9 byte-exact under MSVC, clang, and ASan, and
+  `-verify-into` is 27/27; the full MSVC corpus had 2489 matching renders and
+  only the existing unrelated DjVuLibre oracle error on 399-byte
+  `nasa001C.orig.png.djvu`. Also removed the now-unused generic
+  `djvu_zp_decode_iw` helper exposed by strict amalgamation compilation after
+  the preceding IW44-local ZP optimization.
 - IW44 entropy-decode speed pass on `deps/artifacts/test043C.djvu` (5
   high-resolution photo pages): whole-document winperf profiling put
   `decode_buckets` at 54.7% self / 67.7% inclusive, plus 8.1% self in its
