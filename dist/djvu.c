@@ -198,6 +198,13 @@ void djvu_page_links_destroy(djvu_ctx *ctx, djvu_page_links *links);
 #else
 #include <time.h>
 #include <stdatomic.h>
+
+#if !defined(CLOCK_MONOTONIC)
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+int clock_gettime(int clock_id, struct timespec *tp);
+#endif
 #endif
 
 #ifndef DJVU_RESTRICT
