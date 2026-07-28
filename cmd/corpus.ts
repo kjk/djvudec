@@ -116,16 +116,23 @@ export function fmtBytesHuman(n: number): string {
   return `${n} B`;
 }
 
-// "path/to/file.djvu : 1,234,567 bytes" with the path relative to the repo
-// root when it is inside it. Strips a leading "deps/" so corpus paths read
-// as "artifacts/foo.djvu" rather than "deps/artifacts/foo.djvu".
-export function fileLabel(f: string, root: string): string {
+/** Path relative to `root` when possible (forward slashes). */
+export function fileRel(f: string, root: string): string {
   let rel = relative(root, f);
   if (rel.startsWith("..") || isAbsolute(rel)) rel = f;
-  rel = rel.replaceAll("\\", "/");
-  if (rel.startsWith("deps/")) rel = rel.slice("deps/".length);
+  return rel.replaceAll("\\", "/");
+}
+
+/** Basename + size for compact bench lines under a directory header. */
+export function fileNameLabel(f: string): string {
   const size = statSync(f).size;
-  return `${rel} : ${fmtBytesExact(size)} bytes`;
+  return `${basename(f)} : ${fmtBytesExact(size)} bytes`;
+}
+
+/** Full relative path + size (e.g. top-10 summary, djvu-info). */
+export function fileLabel(f: string, root: string): string {
+  const size = statSync(f).size;
+  return `${fileRel(f, root)} : ${fmtBytesExact(size)} bytes`;
 }
 
 // One-line corpus summary for usage screens.

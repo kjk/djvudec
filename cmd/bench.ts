@@ -11,11 +11,12 @@
 // runs each for djvudec and libdjvu. Best-of-2 comparison (op | libdjvu |
 // djvudec | diff | %diff; + = djvudec slower).
 //
-// Default output: one header line, then one total line per file
-//   libdjvu djvudec diff %diff file
-// After all files: wall-clock elapsed and the top 10 pages where djvudec is
-// slowest vs libdjvu (by absolute ms diff). `-verbose` prints the full
-// per-file table (open, every page, close, total) plus the document alloc line.
+// Default output: directory header lines (`deps/...`), then per-file totals
+//   libdjvu djvudec diff %diff <basename> : <bytes>
+// Last data line is sum of per-file totals, label "total". After that:
+// wall-clock elapsed and the top 10 pages where djvudec is slowest vs
+// libdjvu (by absolute ms diff). `-verbose` prints the full per-file table
+// (open, every page, close, total) plus the document alloc line.
 // With no selection it prints usage + the available corpus file count.
 //
 // -like-sumatra (formerly cmd/bench-sum.ts): same harness, but instead of
@@ -32,11 +33,18 @@
 // ours preloads Sjbz at doc-open; libdjvu runs ddjvu_page_decoding_done before
 // the timer. The timed region is render-to-buffer only (GDI StretchBlt excluded).
 import { readFileSync } from "fs";
-import { dirname } from "path";
+import { basename, dirname } from "path";
 import { getDeps } from "./get-deps";
 import { buildDist } from "./build-dist";
 import { buildRef, buildBench, cleanBuildOutput, defaultUseClang } from "./build";
-import { corpusFiles, corpusSummary, fileLabel, selectFiles } from "./corpus";
+import {
+  corpusFiles,
+  corpusSummary,
+  fileLabel,
+  fileNameLabel,
+  fileRel,
+  selectFiles,
+} from "./corpus";
 import { parseDjvu } from "./djvu-parse";
 
 const ROOT = dirname(import.meta.dir);
@@ -45,20 +53,40 @@ const doClean = process.argv.includes("-clean");
 const likeSumatra = process.argv.includes("-like-sumatra");
 const verbose = process.argv.includes("-verbose");
 
+/** Print `deps/...` dir once when it changes; return basename(+size) for the line. */
+function enterDirAndName(
+  file: string,
+  lastDir: { value: string },
+): string {
+  const rel = fileRel(file, ROOT);
+  const dir = dirname(rel).replaceAll("\\", "/");
+  if (dir !== lastDir.value) {
+    console.log(dir);
+    lastDir.value = dir;
+  }
+  try {
+    return fileNameLabel(file);
+  } catch {
+    return basename(file);
+  }
+}
+
 await getDeps();
 
-// -list-files: relative path, size, page count of every corpus file.
+// -list-files: dir headers + basename, size, page count of every corpus file.
 if (process.argv.includes("-list-files")) {
   let pages = 0;
   const all = corpusFiles();
+  const lastDir = { value: "" };
   for (const f of all) {
+    const name = enterDirAndName(f, lastDir);
     let n = "?";
     try {
       const np = parseDjvu(new Uint8Array(readFileSync(f))).pages.length;
       pages += np;
       n = String(np);
     } catch {}
-    console.log(`${fileLabel(f, ROOT)}, ${n} page(s)`);
+    console.log(`${name}, ${n} page(s)`);
   }
   console.log(`\n${all.length} file(s), ${pages} page(s)`);
   process.exit(0);
@@ -70,7 +98,7 @@ selection (required; default prints this help):
   file.djvu ...   bench the given files
   -rand N         bench N randomly selected corpus files
   -all            bench every corpus file
-  -list-files     list corpus files (path, size, pages) and exit
+  -list-files     list corpus dirs + basenames (size, pages) and exit
 options:
   -like-sumatra   time the SumatraPDF engine render path (djvu_test -bench-sum)
                   instead of the bare full-res djvu_page_render
@@ -78,8 +106,9 @@ options:
   -clang          build with clang instead of MSVC
   -clean          regenerate dist/ and delete out/ first
 
-Default: one header + one total line per file (libdjvu djvudec diff %diff file),
-then elapsed and top 10 slowest pages vs libdjvu (by ms diff; + = djvudec slower).
+Default: dir headers (deps/...), then basename lines (libdjvu djvudec diff %diff file),
+ends with a "total" line (sum of per-file totals), then elapsed and top 10
+slowest pages vs libdjvu (by ms diff; + = djvudec slower).
 
 ${corpusSummary()}`,
 );
@@ -222,9 +251,21 @@ const t0 = performance.now();
 
 if (!verbose) printCompactLine("libdjvu", "djvudec", "diff", "%diff", "file");
 
+let sumOurs = 0;
+let sumLib = 0;
+let nOk = 0;
+
+const lastDir = { value: "" };
 for (const file of files) {
-  const label = fileLabel(file, ROOT);
-  if (verbose && files.length > 1) console.log(`\n=== ${label}`);
+  const nameLabel = enterDirAndName(file, lastDir);
+  const rankLabel = (() => {
+    try {
+      return fileLabel(file, ROOT);
+    } catch {
+      return fileRel(file, ROOT);
+    }
+  })();
+  if (verbose && files.length > 1) console.log(`\n=== ${nameLabel}`);
 
   const r = Bun.spawnSync({
     cmd: [TEST, benchFlag, file],
@@ -238,7 +279,7 @@ for (const file of files) {
 
   if (rows.length === 0) {
     // Fallback: show raw output if the table wasn't parseable.
-    if (!verbose) printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", label);
+    if (!verbose) printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", nameLabel);
     else process.stdout.write(stdout);
     continue;
   }
@@ -248,7 +289,7 @@ for (const file of files) {
     const diff = row.ours - row.lib;
     const pct = row.lib > 0 ? (diff / row.lib) * 100 : 0;
     pageHits.push({
-      file: label,
+      file: rankLabel,
       page: Number(row.op),
       lib: row.lib,
       ours: row.ours,
@@ -257,23 +298,39 @@ for (const file of files) {
     });
   }
 
+  const total = rows.find((r) => r.op === "total");
+  if (total && total.lib !== null && total.ours !== null) {
+    sumOurs += total.ours;
+    sumLib += total.lib;
+    nOk++;
+  }
+
   if (verbose) {
     printTable(rows);
     for (const line of extra) console.log(line);
   } else {
-    const total = rows.find((r) => r.op === "total");
     if (total) {
       printCompactLine(
         fmtMs(total.lib),
         fmtMs(total.ours),
         fmtDiff(total.ours, total.lib),
         fmtPct(total.ours, total.lib),
-        label,
+        nameLabel,
       );
     } else {
-      printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", label);
+      printCompactLine("ERROR", "ERROR", "ERROR", "ERROR", nameLabel);
     }
   }
+}
+
+if (nOk > 0) {
+  printCompactLine(
+    fmtMs(sumLib),
+    fmtMs(sumOurs),
+    fmtDiff(sumOurs, sumLib),
+    fmtPct(sumOurs, sumLib),
+    "total",
+  );
 }
 
 console.log(`elapsed ${formatElapsed(performance.now() - t0)}`);
