@@ -71,7 +71,11 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
+          # clang/clang++ for harness + DjVuLibre oracle; matching libFuzzer for crash replay
           sudo apt-get install -y clang
+          major=$(clang -dumpversion | cut -d. -f1)
+          sudo apt-get install -y "libfuzzer-${major}-dev" || \
+            sudo apt-get install -y "libclang-rt-${major}-dev" || true
       - name: Clone deps
         run: bun cmd/get-deps.ts
       - name: Build clang harness

@@ -25,8 +25,10 @@ const OBJDIR = `${REF}/djvuobj`;
 
 export const isWindows = process.platform === "win32";
 export const isMac = process.platform === "darwin";
+/** Non-Windows POSIX (macOS, Linux, …) — shared ref-tool / clang paths. */
+export const isUnix = !isWindows;
 
-// Windows: libdjvu.lib + llvm-lib; macOS: libdjvu.a + ar.
+// Windows: libdjvu.lib + llvm-lib; Unix: libdjvu.a + ar.
 const LIBDJVU = `${REF}/${isWindows ? "libdjvu.lib" : "libdjvu.a"}`;
 
 const outDir = (useClang: boolean) =>
@@ -43,7 +45,8 @@ const DJVU_CXXFLAGS_WIN =
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
-const DJVU_CXXFLAGS_MAC =
+// macOS + Linux: same AUTOCONF/UNIX defines DjVuLibre expects without config.h.
+const DJVU_CXXFLAGS_UNIX =
   `-std=c++14 -w -O3 -DAUTOCONF -DHAVE_STDINCLUDES ` +
   `-DHAVE_NAMESPACES -DHAVE_PTHREAD -DHAVE_STDINT_H -DHAVE_WCHAR_H ` +
   `-DHAVE_STRERROR -DHAVE_DIRENT_H -DHAVE_SYS_TIME_H ` +
@@ -52,8 +55,15 @@ const DJVU_CXXFLAGS_MAC =
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
-const djvuLinkLibs = () => (isWindows ? "-ladvapi32" : "-lpthread");
+/** @deprecated alias — prefer DJVU_CXXFLAGS_UNIX */
+const DJVU_CXXFLAGS_MAC = DJVU_CXXFLAGS_UNIX;
 
+// Windows: advapi32. Unix: pthread; Linux also needs libm for libdjvu.
+const djvuLinkLibs = () => {
+  if (isWindows) return "-ladvapi32";
+  // macOS libSystem already provides libm; Linux needs -lm explicitly.
+  return isMac ? "-lpthread" : "-lpthread -lm";
+};
 const INTERNAL_H = `${ROOT}/src/djvu_internal.h`;
 const PUBLIC_H = `${ROOT}/src/djvu.h`;
 
@@ -166,7 +176,7 @@ async function buildRefMac() {
 
 export async function buildRef() {
   if (isWindows) return buildRefWindows();
-  if (isMac) return buildRefMac();
+  if (isUnix) return buildRefMac();
   throw new Error(`unsupported platform: ${process.platform}`);
 }
 
@@ -192,7 +202,7 @@ async function buildLibDjvuMac() {
 
 export async function buildLibDjvu() {
   if (isWindows) return buildLibDjvuWindows();
-  if (isMac) return buildLibDjvuMac();
+  if (isUnix) return buildLibDjvuMac();
   throw new Error(`unsupported platform: ${process.platform}`);
 }
 
@@ -236,7 +246,10 @@ const DJVUDEC_CLANG_C_DEFINES_WIN = "-D_CRT_SECURE_NO_WARNINGS";
 
 /** clang flags for djvudec C sources only (not libdjvu). */
 export function clangCFlags(opt = "-g -O3", win = isWindows): string {
-  const crt = win ? ` ${DJVUDEC_CLANG_C_DEFINES_WIN}` : "";
+  // _DEFAULT_SOURCE: glibc exposes clock_gettime under -std=c11.
+  const crt = win
+    ? ` ${DJVUDEC_CLANG_C_DEFINES_WIN}`
+    : " -D_DEFAULT_SOURCE";
   return `${DJVUDEC_CLANG_C_STD} ${opt} ${DJVUDEC_CLANG_C_WARN}${crt}`;
 }
 const harnessExeName = (useClang: boolean) =>
@@ -321,7 +334,7 @@ async function buildClangMac(): Promise<string> {
 
 async function buildClang(): Promise<string> {
   if (isWindows) return buildClangWindows();
-  if (isMac) return buildClangMac();
+  if (isUnix) return buildClangMac();
   throw new Error(`unsupported platform: ${process.platform}`);
 }
 
@@ -444,7 +457,7 @@ async function buildBenchClangMac(): Promise<string> {
 
 async function buildBenchClang(): Promise<string> {
   if (isWindows) return buildBenchClangWindows();
-  if (isMac) return buildBenchClangMac();
+  if (isUnix) return buildBenchClangMac();
   throw new Error(`unsupported platform: ${process.platform}`);
 }
 
@@ -526,7 +539,7 @@ export async function buildBench(useClang = defaultUseClang): Promise<string> {
 // Returns the path to the built executable.
 export async function build(useClang = defaultUseClang): Promise<string> {
   if (!useClang && !isWindows) {
-    throw new Error("MSVC build requires Windows; use clang on macOS");
+    throw new Error("MSVC build requires Windows; use clang on Unix");
   }
   await buildLibDjvu();
   const name = harnessExeName(useClang);
@@ -639,7 +652,7 @@ async function buildAsanMac(): Promise<string> {
 
 export async function buildAsan(): Promise<string> {
   if (isWindows) return buildAsanWindows();
-  if (isMac) return buildAsanMac();
+  if (isUnix) return buildAsanMac();
   throw new Error(`unsupported platform: ${process.platform}`);
 }
 

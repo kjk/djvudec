@@ -16,6 +16,15 @@
 #else
 #include <time.h>
 #include <stdatomic.h>
+/* glibc + strict -std=c11 hides POSIX clocks unless a feature-test macro is
+ * set. Amalgamation consumers may compile with plain `clang -std=c11 -c`.
+ * Declare what we need when the system headers omit them. */
+#if !defined(CLOCK_MONOTONIC)
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+int clock_gettime(int clock_id, struct timespec *tp);
+#endif
 #endif
 
 #ifndef DJVU_RESTRICT

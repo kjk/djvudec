@@ -240,8 +240,10 @@ bun cmd/build-prof.ts
   become regression seeds.
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC smoke + amalgamation,
   Windows clang crash regression, Linux clang smoke + amalgamation + UBSan
-  crashes, WASM decode smoke). Full `tests.ts -all` stays local (longer; known
-  ddjvu fg-stencil quirk on `1998_compression` p19).
+  crashes, WASM decode smoke). The build driver supports Windows + Unix
+  (macOS/Linux) for the harness, DjVuLibre oracle, and ASan/fuzzer paths.
+  Full `tests.ts -all` stays local (longer; known ddjvu fg-stencil quirk on
+  `1998_compression` p19).
 
 ### Verification scripts
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier
