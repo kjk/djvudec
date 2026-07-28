@@ -7,6 +7,9 @@
     (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #define DJVU_SCALER_SSE2 1
 #include <emmintrin.h>
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
+#define DJVU_SCALER_NEON 1
+#include <arm_neon.h>
 #endif
 
 #define FRACBITS 4
@@ -168,7 +171,59 @@ static void scaler_expand_row3(const uint8_t *src, int w, int outw, uint8_t *dst
     d[2] = src[2];
     d += 3;
 
-    for (x = 0; x < w - 1; x++) {
+    x = 0;
+#ifdef DJVU_SCALER_NEON
+    /* 8 source pairs: vld3 loads planar R/G/B for a[x..x+7] and b[x+1..x+8].
+       mid/far use the same (diff*k+8)>>4 recipe as s_interp3_delta[k=6,11].
+       Dominant cost on compound 3× BG pages (e.g. test008C p1). */
+    for (; x + 8 <= w - 1; x += 8) {
+        uint8x8x3_t pa = vld3_u8(src + (size_t)x * 3);
+        uint8x8x3_t pb = vld3_u8(src + (size_t)(x + 1) * 3);
+        uint8x8_t ar = pa.val[0], ag = pa.val[1], ab = pa.val[2];
+        int16x8_t ars = vreinterpretq_s16_u16(vmovl_u8(ar));
+        int16x8_t ags = vreinterpretq_s16_u16(vmovl_u8(ag));
+        int16x8_t abs16 = vreinterpretq_s16_u16(vmovl_u8(ab));
+        int16x8_t dr = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(pb.val[0])), ars);
+        int16x8_t dg = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(pb.val[1])), ags);
+        int16x8_t db = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(pb.val[2])), abs16);
+        int16x8_t bias = vdupq_n_s16(FRACSIZE2);
+        int16x8_t d6r = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dr, 6), bias), FRACBITS);
+        int16x8_t d6g = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dg, 6), bias), FRACBITS);
+        int16x8_t d6b = vshrq_n_s16(vaddq_s16(vmulq_n_s16(db, 6), bias), FRACBITS);
+        int16x8_t d11r = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dr, 11), bias), FRACBITS);
+        int16x8_t d11g = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dg, 11), bias), FRACBITS);
+        int16x8_t d11b = vshrq_n_s16(vaddq_s16(vmulq_n_s16(db, 11), bias), FRACBITS);
+        /* mid = a + (d*6+8)>>4 ; far = a + (d*11+8)>>4 (in 0..255 for RGB). */
+        uint8x8_t mr = vqmovun_s16(vaddq_s16(ars, d6r));
+        uint8x8_t mg = vqmovun_s16(vaddq_s16(ags, d6g));
+        uint8x8_t mb = vqmovun_s16(vaddq_s16(abs16, d6b));
+        uint8x8_t fr = vqmovun_s16(vaddq_s16(ars, d11r));
+        uint8x8_t fg = vqmovun_s16(vaddq_s16(ags, d11g));
+        uint8x8_t fb = vqmovun_s16(vaddq_s16(abs16, d11b));
+        {
+            /* vst3 → interleaved RGB for a/mid/far, then merge a,m,f per pixel. */
+            uint8_t abuf[24], mbuf[24], fbuf[24];
+            uint8x8x3_t va, vm, vf3;
+            int i;
+            va.val[0] = ar; va.val[1] = ag; va.val[2] = ab;
+            vm.val[0] = mr; vm.val[1] = mg; vm.val[2] = mb;
+            vf3.val[0] = fr; vf3.val[1] = fg; vf3.val[2] = fb;
+            vst3_u8(abuf, va);
+            vst3_u8(mbuf, vm);
+            vst3_u8(fbuf, vf3);
+            for (i = 0; i < 8; i++) {
+                const uint8_t *aa = abuf + i * 3;
+                const uint8_t *mm = mbuf + i * 3;
+                const uint8_t *ff = fbuf + i * 3;
+                d[0] = aa[0]; d[1] = aa[1]; d[2] = aa[2];
+                d[3] = mm[0]; d[4] = mm[1]; d[5] = mm[2];
+                d[6] = ff[0]; d[7] = ff[1]; d[8] = ff[2];
+                d += 9;
+            }
+        }
+    }
+#endif
+    for (; x < w - 1; x++) {
         const uint8_t *a = src + (size_t)x * 3;
         const uint8_t *b = a + 3;
         int ar = a[0], ag = a[1], ab = a[2];
@@ -224,6 +279,26 @@ static void scaler_interp_row(const uint8_t *lower, const uint8_t *upper,
             _mm_storeu_si128((__m128i *)(dst + i),
                              _mm_packus_epi16(_mm_add_epi16(lo_lo, d_lo),
                                               _mm_add_epi16(lo_hi, d_hi)));
+        }
+    }
+#endif
+#ifdef DJVU_SCALER_NEON
+    if (n >= 16) {
+        const int16x8_t vvf = vdupq_n_s16((int16_t)vf);
+        const int16x8_t bias = vdupq_n_s16(FRACSIZE2);
+        for (; i + 16 <= n; i += 16) {
+            uint8x16_t lo8 = vld1q_u8(lower + i);
+            uint8x16_t up8 = vld1q_u8(upper + i);
+            int16x8_t lo_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(lo8)));
+            int16x8_t lo_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(lo8)));
+            int16x8_t up_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(up8)));
+            int16x8_t up_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(up8)));
+            int16x8_t d_lo = vsubq_s16(up_lo, lo_lo);
+            int16x8_t d_hi = vsubq_s16(up_hi, lo_hi);
+            d_lo = vshrq_n_s16(vmlaq_s16(bias, d_lo, vvf), FRACBITS);
+            d_hi = vshrq_n_s16(vmlaq_s16(bias, d_hi, vvf), FRACBITS);
+            vst1q_u8(dst + i, vcombine_u8(vqmovun_s16(vaddq_s16(lo_lo, d_lo)),
+                                          vqmovun_s16(vaddq_s16(lo_hi, d_hi))));
         }
     }
 #endif

@@ -508,11 +508,30 @@ static int compose_read_bm_run(const uint8_t **data)
     return z;
 }
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
+#define DJVU_COMPOSE_NEON 1
+#include <arm_neon.h>
+#endif
+
 static void compose_fill_rgb_run(uint8_t *d, int n, int r, int g, int b)
 {
     /* Unroll solid RGB fills; long FG ink runs on large pages spend real time
        here (profiled under compose_stamp_bitmap_topdown_rgb). */
     uint8_t r8 = (uint8_t)r, g8 = (uint8_t)g, b8 = (uint8_t)b;
+#ifdef DJVU_COMPOSE_NEON
+    /* vst3q writes 16 RGB pixels (48 bytes) from three planar channels. */
+    if (n >= 16) {
+        uint8x16x3_t rgb;
+        rgb.val[0] = vdupq_n_u8(r8);
+        rgb.val[1] = vdupq_n_u8(g8);
+        rgb.val[2] = vdupq_n_u8(b8);
+        while (n >= 16) {
+            vst3q_u8(d, rgb);
+            d += 48;
+            n -= 16;
+        }
+    }
+#endif
     while (n >= 4) {
         d[0] = r8; d[1] = g8; d[2] = b8;
         d[3] = r8; d[4] = g8; d[5] = b8;
