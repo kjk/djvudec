@@ -6,11 +6,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* SSE2 is baseline on x86-64; MSVC does not define __SSE2__ automatically. */
+/* SSE2 is baseline on x86-64; MSVC does not define __SSE2__ automatically.
+   On Apple Silicon / aarch64 we use NEON for the same hot paths. */
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || \
     (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #define DJVU_IW44_SSE2 1
 #include <emmintrin.h>
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__)
+#define DJVU_IW44_NEON 1
+#include <arm_neon.h>
 #endif
 
 extern const int16_t djvu_iw44_zigzag[1024];
@@ -76,17 +80,17 @@ struct iw_pixmap {
 static iw_map *map_new(djvu_ctx *ctx, int w, int h)
 {
     iw_map *m = (iw_map *)djvu_alloc(ctx, sizeof(iw_map));
-    int i;
+    size_t blocks_bytes;
     if (!m) return NULL;
     memset(m, 0, sizeof(*m));
     m->w = w; m->h = h;
     m->bw = (w + 0x20 - 1) & ~0x1f;
     m->bh = (h + 0x20 - 1) & ~0x1f;
     m->nb = (m->bw * m->bh) / 1024;
-    m->blocks = (iw_block *)djvu_alloc(ctx, sizeof(iw_block) * m->nb);
+    blocks_bytes = sizeof(iw_block) * (size_t)m->nb;
+    m->blocks = (iw_block *)djvu_alloc(ctx, blocks_bytes);
     if (!m->blocks) { djvu_free(ctx, m); return NULL; }
-    for (i = 0; i < m->nb; i++)
-        memset(&m->blocks[i], 0, sizeof(iw_block));
+    memset(m->blocks, 0, blocks_bytes);
     return m;
 }
 
@@ -104,8 +108,6 @@ static void map_free(djvu_ctx *ctx, iw_map *m)
     djvu_free(ctx, m->blocks);
     djvu_free(ctx, m);
 }
-
-static inline int16_t *block_get(iw_block *blk, int n) { return blk->buckets[n]; }
 
 static int16_t *map_alloc_bucket(djvu_ctx *ctx, iw_map *map)
 {
@@ -133,16 +135,20 @@ static int16_t *block_get_init(djvu_ctx *ctx, iw_map *map, iw_block *blk, int n)
     return blk->buckets[n];
 }
 
-/* write the 32x32 lift block (1024 coeffs, zigzag-scattered) for `blk` */
-static void write_lift_block(iw_block *blk, int16_t *coeff)
+/* Scatter sparse 16-coeff buckets into a already-zeroed 32×32 region of the
+   unified transform buffer. Zigzag index → row-major (zi>>5)*bw + (zi&31).
+   Avoids a 2 KB temp zero + full 32×32 memcpy per block (photo pages have
+   thousands of blocks × 3 planes). */
+static void scatter_lift_block(iw_block *blk, int16_t *data16, int base, int bw)
 {
     int n = 0, n1, n2;
-    memset(coeff, 0, sizeof(int16_t) * 1024);
     for (n1 = 0; n1 < 64; n1++) {
-        int16_t *d = block_get(blk, n1);
+        int16_t *d = blk->buckets[n1];
         if (d) {
-            for (n2 = 0; n2 < 16; n2++, n++)
-                coeff[djvu_iw44_zigzag[n]] = d[n2];
+            for (n2 = 0; n2 < 16; n2++, n++) {
+                int zi = djvu_iw44_zigzag[n];
+                data16[base + (zi >> 5) * bw + (zi & 31)] = d[n2];
+            }
         } else {
             n += 16;
         }
@@ -236,6 +242,72 @@ static void filter_bv_interp_interior_s1(int16_t *q, int w, int s, int s3)
 }
 #endif /* DJVU_IW44_SSE2 */
 
+#ifdef DJVU_IW44_NEON
+/* Apply lift (sub=1) or interp (sub=0) for 8 contiguous samples at q+i.
+   Truncating int32→int16 via vmovn matches C cast (int16_t), not sat. */
+static void filter_bv_apply8_s1(int16_t *q, int i, int s, int s3, int lift)
+{
+    int16x8_t qv = vld1q_s16(q + i);
+    int16x8_t ms = vld1q_s16(q + i - s);
+    int16x8_t ps = vld1q_s16(q + i + s);
+    int16x8_t ms3 = vld1q_s16(q + i - s3);
+    int16x8_t ps3 = vld1q_s16(q + i + s3);
+    int32x4_t a_lo = vaddl_s16(vget_low_s16(ms), vget_low_s16(ps));
+    int32x4_t a_hi = vaddl_s16(vget_high_s16(ms), vget_high_s16(ps));
+    int32x4_t b_lo = vaddl_s16(vget_low_s16(ms3), vget_low_s16(ps3));
+    int32x4_t b_hi = vaddl_s16(vget_high_s16(ms3), vget_high_s16(ps3));
+    /* 9*a - b + bias, then >> rshift */
+    int32x4_t t_lo = vaddq_s32(vshlq_n_s32(a_lo, 3), a_lo);
+    int32x4_t t_hi = vaddq_s32(vshlq_n_s32(a_hi, 3), a_hi);
+    t_lo = vsubq_s32(t_lo, b_lo);
+    t_hi = vsubq_s32(t_hi, b_hi);
+    if (lift) {
+        t_lo = vshrq_n_s32(vaddq_s32(t_lo, vdupq_n_s32(16)), 5);
+        t_hi = vshrq_n_s32(vaddq_s32(t_hi, vdupq_n_s32(16)), 5);
+        t_lo = vsubq_s32(vmovl_s16(vget_low_s16(qv)), t_lo);
+        t_hi = vsubq_s32(vmovl_s16(vget_high_s16(qv)), t_hi);
+    } else {
+        t_lo = vshrq_n_s32(vaddq_s32(t_lo, vdupq_n_s32(8)), 4);
+        t_hi = vshrq_n_s32(vaddq_s32(t_hi, vdupq_n_s32(8)), 4);
+        t_lo = vaddq_s32(vmovl_s16(vget_low_s16(qv)), t_lo);
+        t_hi = vaddq_s32(vmovl_s16(vget_high_s16(qv)), t_hi);
+    }
+    vst1q_s16(q + i, vcombine_s16(vmovn_s32(t_lo), vmovn_s32(t_hi)));
+}
+
+static void filter_bv_lift_interior_s1(int16_t *q, int w, int s, int s3)
+{
+    int i = 0;
+    for (; i + 16 <= w; i += 16) {
+        filter_bv_apply8_s1(q, i, s, s3, 1);
+        filter_bv_apply8_s1(q, i + 8, s, s3, 1);
+    }
+    for (; i + 8 <= w; i += 8)
+        filter_bv_apply8_s1(q, i, s, s3, 1);
+    for (; i < w; i++) {
+        int a = (int)q[i - s] + (int)q[i + s];
+        int b = (int)q[i - s3] + (int)q[i + s3];
+        q[i] = (int16_t)(q[i] - (((a << 3) + a - b + 16) >> 5));
+    }
+}
+
+static void filter_bv_interp_interior_s1(int16_t *q, int w, int s, int s3)
+{
+    int i = 0;
+    for (; i + 16 <= w; i += 16) {
+        filter_bv_apply8_s1(q, i, s, s3, 0);
+        filter_bv_apply8_s1(q, i + 8, s, s3, 0);
+    }
+    for (; i + 8 <= w; i += 8)
+        filter_bv_apply8_s1(q, i, s, s3, 0);
+    for (; i < w; i++) {
+        int a = (int)q[i - s] + (int)q[i + s];
+        int b = (int)q[i - s3] + (int)q[i + s3];
+        q[i] = (int16_t)(q[i] + (((a << 3) + a - b + 8) >> 4));
+    }
+}
+#endif /* DJVU_IW44_NEON */
+
 static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
 {
     int y = 0;
@@ -248,7 +320,7 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
             int16_t *q = p;
             int16_t *e = q + w;
             if (y >= 3 && y + 3 < h) {
-#ifdef DJVU_IW44_SSE2
+#if defined(DJVU_IW44_SSE2) || defined(DJVU_IW44_NEON)
                 if (scale == 1) {
                     filter_bv_lift_interior_s1(q, w, s, s3);
                 } else
@@ -293,7 +365,7 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
             int16_t *q = p - s3;
             int16_t *e = q + w;
             if (y >= 6 && y < h) {
-#ifdef DJVU_IW44_SSE2
+#if defined(DJVU_IW44_SSE2) || defined(DJVU_IW44_NEON)
                 if (scale == 1) {
                     filter_bv_interp_interior_s1(q, w, s, s3);
                 } else
@@ -320,64 +392,162 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
     }
 }
 
+/* One horizontal filter pass over a single row (recurrence left→right).
+   Rows are independent, so the dual-row path below interleaves two of these
+   for ILP / dual memory streams (scale==1 interior). */
+static void filter_bh_row(int16_t *p, int w, int s, int s3)
+{
+    int16_t *q = p;
+    int16_t *e = p + w;
+    int a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+    int b0 = 0, b1 = 0, b2 = 0, b3 = 0;
+    if (q < e) {                         /* x = 0 */
+        if (q + s < e) a2 = q[s];
+        if (q + s3 < e) a3 = q[s3];
+        b2 = b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        q[0] = (int16_t)b3;
+        q += s + s;
+    }
+    if (q < e) {                         /* x = 2 */
+        a0 = a1; a1 = a2; a2 = a3;
+        if (q + s3 < e) a3 = q[s3];
+        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        q[0] = (int16_t)b3;
+        q += s + s;
+    }
+    if (q < e) {                         /* x = 4 */
+        b1 = b2; b2 = b3; a0 = a1; a1 = a2; a2 = a3;
+        if (q + s3 < e) a3 = q[s3];
+        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        q[0] = (int16_t)b3;
+        q[-s3] = (int16_t)(q[-s3] + ((b1 + b2 + 1) >> 1));
+        q += s + s;
+    }
+    while (q + s3 < e) {                  /* generic */
+        a0 = a1; a1 = a2; a2 = a3; a3 = q[s3];
+        b0 = b1; b1 = b2; b2 = b3;
+        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        q[0] = (int16_t)b3;
+        q[-s3] = (int16_t)(q[-s3] + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 8) >> 4));
+        q += s + s;
+    }
+    while (q < e) {                       /* w-3 <= x < w */
+        a0 = a1; a1 = a2; a2 = a3; a3 = 0;
+        b0 = b1; b1 = b2; b2 = b3;
+        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        q[0] = (int16_t)b3;
+        q[-s3] = (int16_t)(q[-s3] + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 8) >> 4));
+        q += s + s;
+    }
+    while (q - s3 < e) {                   /* w <= x < w+3 */
+        b0 = b1; b1 = b2; b2 = b3;
+        if (q - s3 >= p)
+            q[-s3] = (int16_t)(q[-s3] + ((b1 + b2 + 1) >> 1));
+        q += s + s;
+    }
+    (void)b0;
+}
+
+/* Two independent scale==1 rows interleaved for ILP. Same math as
+   filter_bh_row × 2; only the generic / tail loops are fused. */
+static void filter_bh_two_rows_s1(int16_t *p0, int16_t *p1, int w)
+{
+    const int s = 1, s3 = 3;
+    int16_t *q0 = p0, *q1 = p1;
+    int16_t *e0 = p0 + w;
+    int a0_0 = 0, a1_0 = 0, a2_0 = 0, a3_0 = 0;
+    int b0_0 = 0, b1_0 = 0, b2_0 = 0, b3_0 = 0;
+    int a0_1 = 0, a1_1 = 0, a2_1 = 0, a3_1 = 0;
+    int b0_1 = 0, b1_1 = 0, b2_1 = 0, b3_1 = 0;
+
+    /* x = 0 */
+    if (q0 < e0) {
+        if (q0 + s < e0) { a2_0 = q0[s]; a2_1 = q1[s]; }
+        if (q0 + s3 < e0) { a3_0 = q0[s3]; a3_1 = q1[s3]; }
+        b2_0 = b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b2_1 = b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
+        q0 += 2; q1 += 2;
+    }
+    /* x = 2 */
+    if (q0 < e0) {
+        a0_0 = a1_0; a1_0 = a2_0; a2_0 = a3_0;
+        a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1;
+        if (q0 + s3 < e0) { a3_0 = q0[s3]; a3_1 = q1[s3]; }
+        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
+        q0 += 2; q1 += 2;
+    }
+    /* x = 4 */
+    if (q0 < e0) {
+        b1_0 = b2_0; b2_0 = b3_0; a0_0 = a1_0; a1_0 = a2_0; a2_0 = a3_0;
+        b1_1 = b2_1; b2_1 = b3_1; a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1;
+        if (q0 + s3 < e0) { a3_0 = q0[s3]; a3_1 = q1[s3]; }
+        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
+        q0[-s3] = (int16_t)(q0[-s3] + ((b1_0 + b2_0 + 1) >> 1));
+        q1[-s3] = (int16_t)(q1[-s3] + ((b1_1 + b2_1 + 1) >> 1));
+        q0 += 2; q1 += 2;
+    }
+    while (q0 + s3 < e0) {
+        a0_0 = a1_0; a1_0 = a2_0; a2_0 = a3_0; a3_0 = q0[s3];
+        a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1; a3_1 = q1[s3];
+        b0_0 = b1_0; b1_0 = b2_0; b2_0 = b3_0;
+        b0_1 = b1_1; b1_1 = b2_1; b2_1 = b3_1;
+        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
+        q0[-s3] = (int16_t)(q0[-s3] + ((((b1_0 + b2_0) << 3) + (b1_0 + b2_0) - b0_0 - b3_0 + 8) >> 4));
+        q1[-s3] = (int16_t)(q1[-s3] + ((((b1_1 + b2_1) << 3) + (b1_1 + b2_1) - b0_1 - b3_1 + 8) >> 4));
+        q0 += 2; q1 += 2;
+    }
+    while (q0 < e0) {
+        a0_0 = a1_0; a1_0 = a2_0; a2_0 = a3_0; a3_0 = 0;
+        a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1; a3_1 = 0;
+        b0_0 = b1_0; b1_0 = b2_0; b2_0 = b3_0;
+        b0_1 = b1_1; b1_1 = b2_1; b2_1 = b3_1;
+        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
+        q0[-s3] = (int16_t)(q0[-s3] + ((((b1_0 + b2_0) << 3) + (b1_0 + b2_0) - b0_0 - b3_0 + 8) >> 4));
+        q1[-s3] = (int16_t)(q1[-s3] + ((((b1_1 + b2_1) << 3) + (b1_1 + b2_1) - b0_1 - b3_1 + 8) >> 4));
+        q0 += 2; q1 += 2;
+    }
+    while (q0 - s3 < e0) {
+        b0_0 = b1_0; b1_0 = b2_0; b2_0 = b3_0;
+        b0_1 = b1_1; b1_1 = b2_1; b2_1 = b3_1;
+        if (q0 - s3 >= p0)
+            q0[-s3] = (int16_t)(q0[-s3] + ((b1_0 + b2_0 + 1) >> 1));
+        if (q1 - s3 >= p1)
+            q1[-s3] = (int16_t)(q1[-s3] + ((b1_1 + b2_1 + 1) >> 1));
+        q0 += 2; q1 += 2;
+    }
+    (void)b0_0; (void)b0_1;
+}
+
 static void filter_bh(int16_t *p, int w, int h, int rowsize, int scale)
 {
     int y = 0;
     int s = scale;
     int s3 = s + s + s;
-    rowsize *= scale;
+    int step = scale * rowsize; /* advance in int16 samples */
+    if (scale == 1) {
+        /* Dual-row ILP path; leftover single row uses the same math. */
+        while (y + 1 < h) {
+            filter_bh_two_rows_s1(p, p + rowsize, w);
+            y += 2;
+            p += 2 * rowsize;
+        }
+        if (y < h)
+            filter_bh_row(p, w, s, s3);
+        return;
+    }
     while (y < h) {
-        int16_t *q = p;
-        int16_t *e = p + w;
-        int a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-        int b0 = 0, b1 = 0, b2 = 0, b3 = 0;
-        if (q < e) {                         /* x = 0 */
-            if (q + s < e) a2 = q[s];
-            if (q + s3 < e) a3 = q[s3];
-            b2 = b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
-            q[0] = (int16_t)b3;
-            q += s + s;
-        }
-        if (q < e) {                         /* x = 2 */
-            a0 = a1; a1 = a2; a2 = a3;
-            if (q + s3 < e) a3 = q[s3];
-            b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
-            q[0] = (int16_t)b3;
-            q += s + s;
-        }
-        if (q < e) {                         /* x = 4 */
-            b1 = b2; b2 = b3; a0 = a1; a1 = a2; a2 = a3;
-            if (q + s3 < e) a3 = q[s3];
-            b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
-            q[0] = (int16_t)b3;
-            q[-s3] = (int16_t)(q[-s3] + ((b1 + b2 + 1) >> 1));
-            q += s + s;
-        }
-        while (q + s3 < e) {                  /* generic */
-            a0 = a1; a1 = a2; a2 = a3; a3 = q[s3];
-            b0 = b1; b1 = b2; b2 = b3;
-            b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
-            q[0] = (int16_t)b3;
-            q[-s3] = (int16_t)(q[-s3] + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 8) >> 4));
-            q += s + s;
-        }
-        while (q < e) {                       /* w-3 <= x < w */
-            a0 = a1; a1 = a2; a2 = a3; a3 = 0;
-            b0 = b1; b1 = b2; b2 = b3;
-            b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
-            q[0] = (int16_t)b3;
-            q[-s3] = (int16_t)(q[-s3] + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 8) >> 4));
-            q += s + s;
-        }
-        while (q - s3 < e) {                   /* w <= x < w+3 */
-            b0 = b1; b1 = b2; b2 = b3;
-            if (q - s3 >= p)
-                q[-s3] = (int16_t)(q[-s3] + ((b1 + b2 + 1) >> 1));
-            q += s + s;
-        }
-        (void)b0;
+        filter_bh_row(p, w, s, s3);
         y += scale;
-        p += rowsize;
+        p += step;
     }
 }
 
@@ -395,18 +565,15 @@ static int16_t *build_unified(djvu_ctx *ctx, iw_map *m)
     /* allocate with a safety margin (filter may look one macroblock ahead) */
     size_t n = (size_t)m->bw * m->bh + (size_t)m->bw * 4 + 16;
     int16_t *data16 = (int16_t *)djvu_alloc(ctx, sizeof(int16_t) * n);
-    int16_t liftblock[1024];
-    int blockidx = 0, i, j, ii, p1idx, ppidx, pidx = 0;
+    int blockidx = 0, i, j, pidx = 0;
     if (!data16) return NULL;
+    /* Zero once; scatter_lift_block only writes live sparse buckets. */
     memset(data16, 0, sizeof(int16_t) * n);
 
     for (i = 0; i < m->bh; i += 32, pidx += 32 * m->bw) {
         for (j = 0; j < m->bw; j += 32) {
-            write_lift_block(&m->blocks[blockidx], liftblock);
+            scatter_lift_block(&m->blocks[blockidx], data16, pidx + j, m->bw);
             blockidx++;
-            ppidx = pidx + j;
-            for (ii = 0, p1idx = 0; ii < 32; ii++, p1idx += 32, ppidx += m->bw)
-                memcpy(data16 + ppidx, liftblock + p1idx, sizeof(int16_t) * 32);
         }
     }
     return data16;
@@ -433,6 +600,33 @@ static void map_image_clamp_row(const int16_t *src, int8_t *dst, int w)
                 __m128i p8 = _mm_packs_epi16(p16, p16);
                 _mm_storel_epi64((__m128i *)(dst + j), p8);
             }
+        }
+    }
+#endif
+#ifdef DJVU_IW44_NEON
+    {
+        const int32x4_t thirty_two = vdupq_n_s32(32);
+        for (; j + 16 <= w; j += 16) {
+            int16x8_t v0 = vld1q_s16(src + j);
+            int16x8_t v1 = vld1q_s16(src + j + 8);
+            int32x4_t lo0 = vaddq_s32(vmovl_s16(vget_low_s16(v0)), thirty_two);
+            int32x4_t hi0 = vaddq_s32(vmovl_s16(vget_high_s16(v0)), thirty_two);
+            int32x4_t lo1 = vaddq_s32(vmovl_s16(vget_low_s16(v1)), thirty_two);
+            int32x4_t hi1 = vaddq_s32(vmovl_s16(vget_high_s16(v1)), thirty_two);
+            /* Arithmetic >> 6, then saturating narrow to int8 [-128,127]. */
+            int16x8_t p0 = vcombine_s16(vqmovn_s32(vshrq_n_s32(lo0, 6)),
+                                        vqmovn_s32(vshrq_n_s32(hi0, 6)));
+            int16x8_t p1 = vcombine_s16(vqmovn_s32(vshrq_n_s32(lo1, 6)),
+                                        vqmovn_s32(vshrq_n_s32(hi1, 6)));
+            vst1q_s8(dst + j, vcombine_s8(vqmovn_s16(p0), vqmovn_s16(p1)));
+        }
+        for (; j + 8 <= w; j += 8) {
+            int16x8_t v = vld1q_s16(src + j);
+            int32x4_t lo = vaddq_s32(vmovl_s16(vget_low_s16(v)), thirty_two);
+            int32x4_t hi = vaddq_s32(vmovl_s16(vget_high_s16(v)), thirty_two);
+            int16x8_t p16 = vcombine_s16(vqmovn_s32(vshrq_n_s32(lo, 6)),
+                                         vqmovn_s32(vshrq_n_s32(hi, 6)));
+            vst1_s8(dst + j, vqmovn_s16(p16));
         }
     }
 #endif
@@ -999,6 +1193,36 @@ static void ycbcr_row_to_rgb(const int8_t *y, const int8_t *b, const int8_t *r,
                     dst[2] = (uint8_t)(p >> 16);
                     dst += 3;
                 }
+            }
+        }
+    }
+#endif
+#ifdef DJVU_IW44_NEON
+    {
+        const int16x8_t c128 = vdupq_n_s16(128);
+        for (; x + 8 <= w; x += 8) {
+            int16x8_t yv = vmovl_s8(vld1_s8(y + x));
+            int16x8_t bv = vmovl_s8(vld1_s8(b + x));
+            int16x8_t rv = vmovl_s8(vld1_s8(r + x));
+            int16x8_t t1 = vshrq_n_s16(bv, 2);
+            int16x8_t t2 = vaddq_s16(rv, vshrq_n_s16(rv, 1));
+            int16x8_t y128 = vaddq_s16(yv, c128);
+            int16x8_t t3 = vsubq_s16(y128, t1);
+            int16x8_t tr = vaddq_s16(y128, t2);
+            int16x8_t tg = vsubq_s16(t3, vshrq_n_s16(t2, 1));
+            int16x8_t tb = vaddq_s16(t3, vshlq_n_s16(bv, 1));
+            /* saturating signed int16 -> uint8 0..255 (= clamp255) */
+            uint8x8_t ru = vqmovun_s16(tr);
+            uint8x8_t gu = vqmovun_s16(tg);
+            uint8x8_t bu = vqmovun_s16(tb);
+            /* Interleave RGB: vst3 writes 8 pixels as RGBRGB... */
+            {
+                uint8x8x3_t rgb;
+                rgb.val[0] = ru;
+                rgb.val[1] = gu;
+                rgb.val[2] = bu;
+                vst3_u8(dst, rgb);
+                dst += 24;
             }
         }
     }
