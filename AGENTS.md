@@ -222,16 +222,20 @@ bun cmd/build-prof.ts
   JB2 shape heap-use-after-free: page renders read dict-shape RLE lock-free
   while another thread's `MatchedRefine` uncompressed the same shared shape
   in place.)
-- `bun cmd/fuzz.ts` — coverage-guided fuzzing (libFuzzer + ASan, both bundled
-  with the VS clang; nothing to install). `test/fuzz_target.c` opens each input
-  as a `.djvu` and drives the full decode surface (page info, render at full +
-  4x subsample, page text, outline), capped at 20 pages/input. Builds into
-  `out/fuzz/djvudec_fuzz.exe` via `buildFuzz()`. First run seeds `fuzz/corpus/`
-  from the deps/ corpus (files over `-max-len` skipped); the corpus dir **is**
-  the checkpoint — kill to stop, rerun to resume. Flags: `-jobs N` (parallel workers), `-repro FILE` (replay a
-  crash with a stack trace), `-minimize` (`-merge=1` corpus shrink), `-clean`,
-  `-max-len N`. `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so
-  crash inputs become regression seeds.
+- `bun cmd/fuzz.ts` — coverage-guided fuzzing (libFuzzer + ASan).
+  Windows: both ship with the VS clang (nothing to install). macOS: Apple
+  clang has no fuzzer runtime — install Homebrew LLVM (`brew install llvm`);
+  `buildFuzz()` uses `/opt/homebrew/opt/llvm/bin/clang` (override with
+  `DJVUDEC_FUZZ_CLANG`). `test/fuzz_target.c` opens each input as a `.djvu`
+  and drives the full decode surface (page info, render at full + 4x
+  subsample, page text, outline), capped at 20 pages/input. Builds into
+  `out/fuzz/djvudec_fuzz` (`.exe` on Windows) via `buildFuzz()`. First run
+  seeds `fuzz/corpus/` from the deps/ corpus (files over `-max-len` skipped);
+  the corpus dir **is** the checkpoint — kill to stop, rerun to resume.
+  Flags: `-jobs N` (parallel workers), `-repro FILE` (replay a crash with a
+  stack trace), `-minimize` (`-merge=1` corpus shrink), `-max-len N`.
+  `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so crash inputs
+  become regression seeds.
 
 ### Verification scripts
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier

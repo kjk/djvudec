@@ -16,7 +16,10 @@
 // regression seeds); each is a .djvu-shaped input reproducible with
 //   out/fuzz/djvudec_fuzz.exe <crashfile>
 //
-// No install needed: libFuzzer + ASan ship with the VS-bundled clang.
+// Windows: libFuzzer + ASan ship with the VS-bundled clang (nothing to install).
+// macOS: Apple clang has no fuzzer runtime — needs Homebrew LLVM
+// (`brew install llvm`); buildFuzz picks /opt/homebrew/opt/llvm/bin/clang
+// (override with DJVUDEC_FUZZ_CLANG).
 import {
   existsSync,
   mkdirSync,

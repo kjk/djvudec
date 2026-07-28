@@ -34,6 +34,9 @@ const q = (s: string) => {
 };
 
 // Run a shell command. On Windows uses cmd.exe + emsdk_env.bat; elsewhere bash.
+// Use bash -c (not -lc): a login shell rewrites PATH on macOS (system paths
+// before Homebrew), so Homebrew emcc finds /usr/bin/python3 3.9 and dies —
+// emscripten requires Python >= 3.10 (EMSDK_PYTHON / command -v python3).
 function sh(cmd: string, opts: { cwd?: string; allowFail?: boolean; quiet?: boolean } = {}) {
   const cwd = opts.cwd ?? ROOT;
   const stdio = opts.quiet ? ("pipe" as const) : ("inherit" as const);
@@ -44,7 +47,7 @@ function sh(cmd: string, opts: { cwd?: string; allowFail?: boolean; quiet?: bool
   delete env.MSYSTEM;
   const r = isWin
     ? spawnSync("cmd.exe", ["/d", "/s", "/c", cmd], { cwd, stdio, encoding: "utf8", env })
-    : spawnSync("bash", ["-lc", cmd], { cwd, stdio, encoding: "utf8", env });
+    : spawnSync("bash", ["-c", cmd], { cwd, stdio, encoding: "utf8", env });
   if (!opts.allowFail && r.status !== 0) {
     if (opts.quiet) process.stderr.write(r.stderr ?? "");
     throw new Error(`command failed (${r.status}): ${cmd}`);
@@ -52,11 +55,15 @@ function sh(cmd: string, opts: { cwd?: string; allowFail?: boolean; quiet?: bool
   return r;
 }
 
+// True only if emcc is present *and* can print its version (a PATH hit that
+// fails on a too-old python3 must not short-circuit emsdk bootstrap).
 function emccOnPath(): boolean {
   if (isWin) {
     return spawnSync("where", ["emcc"], { shell: true, encoding: "utf8" }).status === 0;
   }
-  return spawnSync("bash", ["-lc", "command -v emcc"], { encoding: "utf8" }).status === 0;
+  return spawnSync("bash", ["-c", "command -v emcc >/dev/null && emcc --version >/dev/null"], {
+    encoding: "utf8",
+  }).status === 0;
 }
 
 // Return the shell prefix that puts `emcc` on PATH, or null if we must bootstrap.
@@ -72,9 +79,11 @@ function findEmcc(): string | null {
     });
     if (r.status === 0) return `call ${q(EMSDK_ENV)} >nul 2>&1 && `;
   } else {
-    const r = spawnSync("bash", ["-lc", `source ${q(EMSDK_ENV)} >/dev/null 2>&1 && command -v emcc`], {
-      encoding: "utf8",
-    });
+    const r = spawnSync(
+      "bash",
+      ["-c", `source ${q(EMSDK_ENV)} >/dev/null 2>&1 && command -v emcc >/dev/null && emcc --version >/dev/null`],
+      { encoding: "utf8" },
+    );
     if (r.status === 0) return `source ${q(EMSDK_ENV)} >/dev/null 2>&1 && `;
   }
   return null;

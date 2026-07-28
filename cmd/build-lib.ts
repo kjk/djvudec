@@ -6,12 +6,43 @@ import {
   copyAsanRuntimeDll,
   defaultUseClang,
   DJVUDEC_MSVC_CL_C,
+  isMac,
   isWindows,
   MSVC_LINK,
   msvcFd,
 } from "./build";
 
 const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
+
+// libFuzzer is not in Apple clang (Xcode). On macOS use Homebrew LLVM
+// (`brew install llvm`); Windows keeps the VS-bundled clang. Override with
+// DJVUDEC_FUZZ_CLANG=/path/to/clang if needed.
+function resolveFuzzClang(): string {
+  const override = process.env.DJVUDEC_FUZZ_CLANG;
+  if (override) {
+    if (!existsSync(override)) {
+      throw new Error(`DJVUDEC_FUZZ_CLANG not found: ${override}`);
+    }
+    return override;
+  }
+  if (!isMac) return "clang";
+
+  const candidates = [
+    process.env.LLVM_PREFIX
+      ? `${process.env.LLVM_PREFIX.replaceAll("\\", "/")}/bin/clang`
+      : "",
+    "/opt/homebrew/opt/llvm/bin/clang",
+    "/usr/local/opt/llvm/bin/clang",
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  throw new Error(
+    "libFuzzer needs Homebrew LLVM on macOS (Apple clang has no fuzzer runtime).\n" +
+      "  brew install llvm\n" +
+      "Then re-run, or set DJVUDEC_FUZZ_CLANG=/opt/homebrew/opt/llvm/bin/clang",
+  );
+}
 
 export const LIB_SRCS = [
   "src/zptable.c",
@@ -143,7 +174,7 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
 
 // libFuzzer target: LIB_SRCS + test/fuzz_target.c, instrumented with ASan +
 // fuzzer (-O1 for readable traces), no main() (libFuzzer provides it). Output
-// out/fuzz/djvudec_fuzz.exe. Driven by cmd/fuzz.ts.
+// out/fuzz/djvudec_fuzz[.exe]. Driven by cmd/fuzz.ts.
 const FUZZ_DIR = `${ROOT}/out/fuzz`;
 export const FUZZ_EXE = `${FUZZ_DIR}/${isWindows ? "djvudec_fuzz.exe" : "djvudec_fuzz"}`;
 
@@ -156,6 +187,7 @@ export async function buildFuzz(clean = false): Promise<string> {
     rmSync(FUZZ_EXE, { force: true });
   }
 
+  const clang = resolveFuzzClang();
   const cflags = `-fsanitize=address,fuzzer ${clangCFlags("-g -O1")}`;
   const staleObj = units.some(objStale);
   const staleExe = needsRebuild(FUZZ_EXE, ...units.map((u) => u.obj));
@@ -167,14 +199,14 @@ export async function buildFuzz(clean = false): Promise<string> {
     return FUZZ_EXE;
   }
 
-  console.log("building djvudec_fuzz (clang+asan+fuzzer)...");
+  console.log(`building djvudec_fuzz (clang+asan+fuzzer; ${clang})...`);
   for (const u of units) {
     if (!objStale(u)) continue;
-    await $`clang ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
+    await $`${clang} ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
   }
   const objs = units.map((u) => u.obj);
   if (needsRebuild(FUZZ_EXE, ...objs)) {
-    await $`clang -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }} -o ${FUZZ_EXE}`;
+    await $`${clang} -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }} -o ${FUZZ_EXE}`;
   }
   if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
   console.log("built djvudec_fuzz");
