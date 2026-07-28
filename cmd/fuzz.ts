@@ -3,6 +3,7 @@
 //   bun cmd/fuzz.ts             build, seed corpus if empty, fuzz until killed
 //   bun cmd/fuzz.ts -jobs 8     run 8 parallel workers sharing the corpus
 //   bun cmd/fuzz.ts -repro F    replay a single crash artifact and exit
+//   bun cmd/fuzz.ts -check-crashes  replay fuzz/crashes/* under ASan (CI)
 //   bun cmd/fuzz.ts -minimize   shrink the corpus to a minimal covering set
 //
 // The fuzzer is always rebuilt from scratch: build-lib.ts doesn't track header
@@ -46,6 +47,7 @@ function usage(): never {
   -jobs N        run N parallel workers sharing the corpus
   -max-len N     max input size in bytes (default 4000000)
   -repro FILE    replay a single crash artifact and exit
+  -check-crashes replay every fuzz/crashes artifact under ASan (CI regression)
   -minimize      shrink the corpus to a minimal covering set
   -h, --help`,
   );
@@ -56,6 +58,7 @@ const args = process.argv.slice(2);
 let jobs = 1;
 let maxLen = 4000000;
 let repro = "";
+let checkCrashes = false;
 let minimize = false;
 
 for (let i = 0; i < args.length; i++) {
@@ -63,6 +66,7 @@ for (let i = 0; i < args.length; i++) {
   if (a === "-jobs") jobs = intArg(args[++i], "-jobs");
   else if (a === "-max-len") maxLen = intArg(args[++i], "-max-len");
   else if (a === "-repro") repro = args[++i] ?? usage();
+  else if (a === "-check-crashes") checkCrashes = true;
   else if (a === "-minimize") minimize = true;
   else if (a === "-h" || a === "--help") usage();
   else usage();
@@ -79,7 +83,7 @@ function intArg(v: string | undefined, name: string): number {
 
 // Artifact kinds libFuzzer writes on a finding (all reproducible by replay).
 const isArtifact = (name: string) =>
-  /^(crash|timeout|oom|leak)-/.test(name);
+  /^(crash|timeout|oom|leak|slow-unit)-/.test(name);
 
 function listArtifacts(): string[] {
   if (!existsSync(CRASHES)) return [];
@@ -109,6 +113,34 @@ if (repro) {
   }
   console.log(`replaying ${path}`);
   process.exit(await run([path]));
+}
+
+// -check-crashes: every tracked artifact must complete without ASan/libFuzzer
+// crash (exit 0). Used by CI as a fixed regression suite.
+if (checkCrashes) {
+  const arts = listArtifacts();
+  if (arts.length === 0) {
+    console.log("no crash/slow artifacts in fuzz/crashes — nothing to check");
+    process.exit(0);
+  }
+  let fail = 0;
+  console.log(`checking ${arts.length} fuzz/crashes artifact(s) under ASan...`);
+  for (const name of arts) {
+    const path = join(CRASHES, name);
+    const rc = await run([path]);
+    if (rc !== 0) {
+      fail++;
+      console.error(`[fail] ${name} exit=${rc}`);
+    } else {
+      console.log(`[ok] ${name}`);
+    }
+  }
+  if (fail) {
+    console.error(`${fail}/${arts.length} artifact(s) still crash`);
+    process.exit(1);
+  }
+  console.log(`check-crashes: ${arts.length} ok`);
+  process.exit(0);
 }
 
 // -minimize: merge the corpus into a fresh minimal covering set, then swap.

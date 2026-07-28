@@ -233,9 +233,15 @@ bun cmd/build-prof.ts
   seeds `fuzz/corpus/` from the deps/ corpus (files over `-max-len` skipped);
   the corpus dir **is** the checkpoint — kill to stop, rerun to resume.
   Flags: `-jobs N` (parallel workers), `-repro FILE` (replay a crash with a
-  stack trace), `-minimize` (`-merge=1` corpus shrink), `-max-len N`.
+  stack trace), `-check-crashes` (CI: replay all `fuzz/crashes/*`, expect exit
+  0), `-minimize` (`-merge=1` corpus shrink), `-max-len N`. Linux/macOS CI may
+  set `DJVU_FUZZ_UBSAN=1` for ASan+UBSan+fuzzer.
   `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so crash inputs
   become regression seeds.
+- GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC smoke + amalgamation,
+  Windows clang crash regression, Linux clang smoke + amalgamation + UBSan
+  crashes, WASM decode smoke). Full `tests.ts -all` stays local (longer; known
+  ddjvu fg-stencil quirk on `1998_compression` p19).
 
 ### Verification scripts
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier

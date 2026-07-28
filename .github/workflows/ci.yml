@@ -1,0 +1,111 @@
+# CI for djvudec — build, amalgamation, sample oracle, fuzz crash regression, WASM.
+#
+# Full pixel-oracle corpus (tests.ts -all vs DjVuLibre) is optional/local: it is
+# longer and the known ddjvu fg-stencil quirk on 1998_compression p19 would fail
+# a strict -all. CI keeps the feedback loop under ~15–20 min.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.bun-cache
+
+jobs:
+  windows-msvc:
+    name: Windows MSVC + smoke
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Clone deps
+        run: bun cmd/get-deps.ts
+      - name: Build harness (MSVC)
+        run: bun cmd/build.ts
+      - name: Smoke (info + verify-into + sample oracle)
+        run: |
+          $h = "out/msvc/djvu_test_msvc.exe"
+          & $h -info deps/artifacts/test001C.djvu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $h -verify-into deps/artifacts/test001C.djvu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun cmd/tests.ts deps/artifacts/test001C.djvu deps/artifacts/test010C.djvu deps/DjVuLibre/doc/djvu3spec.djvu
+      - name: Amalgamation
+        run: bun cmd/build-dist.ts
+
+  windows-clang-fuzz:
+    name: Windows clang ASan crash regression
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: MSVC environment (clang from VS)
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Replay tracked fuzz crashes under ASan
+        run: bun cmd/fuzz.ts -check-crashes
+
+  linux:
+    name: Linux clang + amalgamation + crashes
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Clone deps
+        run: bun cmd/get-deps.ts
+      - name: Build clang harness
+        run: bun cmd/build.ts -clang
+      - name: Smoke (info + verify-into + sample oracle)
+        run: |
+          H=out/clang/djvu_test_clang
+          test -x "$H"
+          "$H" -info deps/artifacts/test001C.djvu
+          "$H" -verify-into deps/artifacts/test001C.djvu
+          bun cmd/tests.ts deps/artifacts/test001C.djvu deps/artifacts/test010C.djvu deps/DjVuLibre/doc/djvu3spec.djvu
+      - name: Amalgamation
+        run: bun cmd/build-dist.ts
+      - name: Fuzz crashes (ASan + UBSan)
+        env:
+          DJVU_FUZZ_UBSAN: "1"
+        run: bun cmd/fuzz.ts -check-crashes
+
+  wasm:
+    name: WASM decode smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Clone deps (corpus)
+        run: bun cmd/get-deps.ts
+      - name: Build amalgamation + WASM
+        run: bun cmd/build-dist.ts
+      - name: Verify WASM decode
+        run: bun cmd/verify-wasm.ts deps/artifacts/test001C.djvu

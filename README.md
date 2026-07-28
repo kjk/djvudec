@@ -29,7 +29,11 @@ automatically.
 bun cmd/get-deps.ts     # clone deps (the corpus; auto-run below)
 bun cmd/build.ts        # build reference tools + the C library and djvu_test.exe
 bun cmd/tests.ts -all   # build, then verify render + text against DjVuLibre
+bun cmd/fuzz.ts -check-crashes  # replay tracked fuzz/crashes under ASan (CI)
 ```
+
+CI (GitHub Actions): `.github/workflows/ci.yml` — MSVC/Linux smoke + amalgamation,
+fuzz crash regression, WASM decode.
 
 `djvu_test` CLI (jbig2dec-flavored):
 ```

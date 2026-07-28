@@ -188,7 +188,13 @@ export async function buildFuzz(clean = false): Promise<string> {
   }
 
   const clang = resolveFuzzClang();
-  const cflags = `-fsanitize=address,fuzzer ${clangCFlags("-g -O1")}`;
+  // DJVU_FUZZ_UBSAN=1 adds undefined sanitizer (Linux/macOS CI; Windows
+  // ASan+UBSan together is flaky with the VS clang runtime).
+  const wantUbsan =
+    process.env.DJVU_FUZZ_UBSAN === "1" || process.env.DJVU_FUZZ_UBSAN === "true";
+  const sanitize =
+    wantUbsan && !isWindows ? "address,undefined,fuzzer" : "address,fuzzer";
+  const cflags = `-fsanitize=${sanitize} ${clangCFlags("-g -O1")}`;
   const staleObj = units.some(objStale);
   const staleExe = needsRebuild(FUZZ_EXE, ...units.map((u) => u.obj));
   if (!staleObj && !staleExe && existsSync(FUZZ_EXE)) {
@@ -199,14 +205,14 @@ export async function buildFuzz(clean = false): Promise<string> {
     return FUZZ_EXE;
   }
 
-  console.log(`building djvudec_fuzz (clang+asan+fuzzer; ${clang})...`);
+  console.log(`building djvudec_fuzz (clang+${sanitize}; ${clang})...`);
   for (const u of units) {
     if (!objStale(u)) continue;
     await $`${clang} ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
   }
   const objs = units.map((u) => u.obj);
   if (needsRebuild(FUZZ_EXE, ...objs)) {
-    await $`${clang} -fsanitize=address,fuzzer ${{ raw: objs.join(" ") }} -o ${FUZZ_EXE}`;
+    await $`${clang} -fsanitize=${sanitize} ${{ raw: objs.join(" ") }} -o ${FUZZ_EXE}`;
   }
   if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
   console.log("built djvudec_fuzz");
