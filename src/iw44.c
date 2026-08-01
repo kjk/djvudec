@@ -68,6 +68,8 @@ typedef struct {
 
 struct iw_pixmap {
     djvu_ctx *ctx;
+    /* Page-cache pin count (create at 1; retain on acquire; free unrefs). */
+    djvu_refcount refs;
     iw_map *ymap, *cbmap, *crmap;
     iw_codec *yc, *cbc, *crc;
     int cslices, cserial;
@@ -995,14 +997,22 @@ iw_pixmap *djvu_iw44_new(djvu_ctx *ctx)
     if (!pm) return NULL;
     memset(pm, 0, sizeof(*pm));
     pm->ctx = ctx;
+    djvu_refcount_init(&pm->refs, 1);
     pm->crcbdelay = 10;
     return pm;
+}
+
+void djvu_iw44_retain(iw_pixmap *pm)
+{
+    if (pm) djvu_refcount_retain(&pm->refs);
 }
 
 void djvu_iw44_free(iw_pixmap *pm)
 {
     djvu_ctx *ctx;
     if (!pm) return;
+    if (djvu_refcount_release(&pm->refs) > 0)
+        return;
     ctx = pm->ctx;
     map_free(ctx, pm->ymap);
     map_free(ctx, pm->cbmap);

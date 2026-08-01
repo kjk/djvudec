@@ -61,6 +61,20 @@ static inline void djvu_atomic_epoch_bump(djvu_atomic_epoch *a)
 {
     InterlockedIncrement((LONG *)&a->v);
 }
+
+/* Shared page-cache layers (JB2 mask / IW44) use this so drop can detach a
+   page slot while a concurrent render still holds the object. */
+typedef volatile LONG djvu_refcount;
+static inline void djvu_refcount_init(djvu_refcount *r, int v) { *r = (LONG)v; }
+static inline void djvu_refcount_retain(djvu_refcount *r)
+{
+    InterlockedIncrement(r);
+}
+/* Returns the new count; destroy when 0. */
+static inline int djvu_refcount_release(djvu_refcount *r)
+{
+    return (int)InterlockedDecrement(r);
+}
 #else
 typedef struct { atomic_uint v; } djvu_atomic_epoch;
 static inline void djvu_atomic_epoch_init(djvu_atomic_epoch *a)
@@ -74,6 +88,20 @@ static inline uint32_t djvu_atomic_epoch_load(const djvu_atomic_epoch *a)
 static inline void djvu_atomic_epoch_bump(djvu_atomic_epoch *a)
 {
     atomic_fetch_add_explicit(&a->v, 1, memory_order_relaxed);
+}
+
+typedef atomic_int djvu_refcount;
+static inline void djvu_refcount_init(djvu_refcount *r, int v)
+{
+    atomic_init(r, v);
+}
+static inline void djvu_refcount_retain(djvu_refcount *r)
+{
+    atomic_fetch_add_explicit(r, 1, memory_order_relaxed);
+}
+static inline int djvu_refcount_release(djvu_refcount *r)
+{
+    return atomic_fetch_sub_explicit(r, 1, memory_order_acq_rel) - 1;
 }
 #endif
 
@@ -664,6 +692,9 @@ typedef struct { int left, bottom, shapeno; } jb2_blit;
 
 typedef struct jb2_image {
     djvu_ctx *ctx;
+    /* Shared ownership for page-cache masks (and exclusive for decode-only).
+       Create at 1; retain on cache acquire; free unrefs and destroys at 0. */
+    djvu_refcount refs;
     /* dictionary part */
     jb2_shape *shapes;
     int nshapes, cap_shapes;
@@ -674,6 +705,9 @@ typedef struct jb2_image {
     jb2_blit *blits;
     int nblits, cap_blits;
 } jb2_image;
+
+/* Bump refs (page-cache pin). Pair with djvu_jb2_free. */
+void djvu_jb2_retain(jb2_image *img);
 
 /* Decode a JB2 stream (Sjbz mask or Djbz dictionary) from [data,len).
    `dict` is the inherited shape dictionary (from a Djbz), or NULL.
@@ -695,6 +729,7 @@ jb2_shape *djvu_jb2_get_shape(jb2_image *img, int shapeno);
 /* ===================================================================== */
 
 iw_pixmap *djvu_iw44_new(djvu_ctx *ctx);
+void djvu_iw44_retain(iw_pixmap *pm);
 void djvu_iw44_free(iw_pixmap *pm);
 
 /* Feed one IW44 chunk (e.g. one BG44). Chunks must arrive in serial order.

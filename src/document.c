@@ -581,12 +581,17 @@ iw_pixmap *djvu_doc_iw44_acquire(djvu_doc *doc, int page_no, const char *chunk_i
         if (pm && owned_out) *owned_out = 1;
         return pm;
     }
-    if (*slot) return *slot;
+    /* Pin under lock (same race as JB2 masks vs drop_page_cache). */
     djvu_cache_lock(doc->ctx);
     if (!*slot)
         preload_iw_layer(doc, pg, chunk_id, slot);
+    pm = *slot;
+    if (pm) {
+        djvu_iw44_retain(pm);
+        if (owned_out) *owned_out = 1;
+    }
     djvu_cache_unlock(doc->ctx);
-    return *slot;
+    return pm;
 }
 
 void djvu_doc_iw44_release(djvu_ctx *ctx, iw_pixmap *pm, int owned)
@@ -606,26 +611,41 @@ iw_pixmap *djvu_doc_iw44_by_form_acquire(djvu_doc *doc, uint32_t form_off,
     return NULL;
 }
 
+/* Borrowed look-up for debug/tools: only valid while the page-cache slot still
+   holds the layer (no concurrent drop). Prefer acquire/release for renders. */
 iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id)
 {
-    int owned = 0;
-    iw_pixmap *pm = djvu_doc_iw44_acquire(doc, page_no, chunk_id, &owned);
-    if (owned) {
-        djvu_doc_iw44_release(doc->ctx, pm, 1);
+    djvu_page_int *pg;
+    iw_pixmap **slot;
+    iw_pixmap *pm;
+
+    if (!doc || page_no < 0 || page_no >= doc->npages || !chunk_id)
         return NULL;
-    }
+    if (!djvu_cache_stores_page(doc->ctx))
+        return NULL; /* exclusive decode has no borrowable slot */
+    pg = &doc->pages[page_no];
+    if (chunk_id[0] == 'B' && chunk_id[1] == 'G' && chunk_id[2] == '4')
+        slot = &pg->iw_bg;
+    else if (chunk_id[0] == 'F' && chunk_id[1] == 'G' && chunk_id[2] == '4')
+        slot = &pg->iw_fg;
+    else
+        return NULL;
+    djvu_cache_lock(doc->ctx);
+    if (!*slot)
+        preload_iw_layer(doc, pg, chunk_id, slot);
+    pm = *slot;
+    djvu_cache_unlock(doc->ctx);
     return pm;
 }
 
 iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id)
 {
-    int owned = 0;
-    iw_pixmap *pm = djvu_doc_iw44_by_form_acquire(doc, form_off, chunk_id, &owned);
-    if (owned) {
-        djvu_doc_iw44_release(doc->ctx, pm, 1);
-        return NULL;
-    }
-    return pm;
+    int i;
+    if (!doc) return NULL;
+    for (i = 0; i < doc->npages; i++)
+        if (doc->pages[i].form_off == form_off)
+            return djvu_doc_iw44(doc, i, chunk_id);
+    return NULL;
 }
 
 /* ---- JB2 shared-dict cache (doc-wide; immutable during render) ---- */
@@ -840,12 +860,19 @@ jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out)
         if (mask && owned_out) *owned_out = 1;
         return mask;
     }
-    if (pg->jb2_mask) return pg->jb2_mask;
+    /* Pin under the cache lock so drop cannot free the mask out from under a
+       concurrent render (SumatraPDF LRU eviction while RenderCache threads run).
+       owned=1: caller must djvu_doc_jb2_mask_release, which unrefs. */
     djvu_cache_lock(doc->ctx);
     if (!pg->jb2_mask)
         preload_jb2_mask(doc, pg);
+    mask = pg->jb2_mask;
+    if (mask) {
+        djvu_jb2_retain(mask);
+        if (owned_out) *owned_out = 1;
+    }
     djvu_cache_unlock(doc->ctx);
-    return pg->jb2_mask;
+    return mask;
 }
 
 void djvu_doc_jb2_mask_release(djvu_doc *doc, jb2_image *mask, int owned)
@@ -856,19 +883,28 @@ void djvu_doc_jb2_mask_release(djvu_doc *doc, jb2_image *mask, int owned)
     if (!owned || !mask || !doc) return;
     ctx = doc->ctx;
     dict = mask->inherited_dict;
+    /* Unref; last release frees. Page-cache drop also unrefs the slot pin. */
     djvu_jb2_free(ctx, mask);
-    if (dict && !jb2_dict_is_shared(doc, dict))
+    /* Exclusive (non-cache) masks may own a non-shared dict. Cache pins only
+       unref the mask — dicts stay doc-owned. */
+    if (!djvu_cache_stores_page(ctx) && dict && !jb2_dict_is_shared(doc, dict))
         djvu_jb2_free(ctx, dict);
 }
 
 jb2_image *djvu_doc_jb2_mask(djvu_doc *doc, int page_no)
 {
-    int owned = 0;
-    jb2_image *mask = djvu_doc_jb2_mask_acquire(doc, page_no, &owned);
-    if (owned) {
-        djvu_doc_jb2_mask_release(doc, mask, 1);
-        return NULL;
-    }
+    djvu_page_int *pg;
+    jb2_image *mask;
+
+    if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
+    if (!djvu_cache_stores_page(doc->ctx))
+        return NULL; /* exclusive decode has no borrowable slot */
+    pg = &doc->pages[page_no];
+    djvu_cache_lock(doc->ctx);
+    if (!pg->jb2_mask)
+        preload_jb2_mask(doc, pg);
+    mask = pg->jb2_mask;
+    djvu_cache_unlock(doc->ctx);
     return mask;
 }
 

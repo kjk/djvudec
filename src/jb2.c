@@ -73,13 +73,23 @@ jb2_image *jb2_image_new(djvu_ctx *ctx)
     if (!im) return NULL;
     memset(im, 0, sizeof(*im));
     im->ctx = ctx;
+    djvu_refcount_init(&im->refs, 1);
     return im;
+}
+
+void djvu_jb2_retain(jb2_image *im)
+{
+    if (im) djvu_refcount_retain(&im->refs);
 }
 
 void djvu_jb2_free(djvu_ctx *ctx, jb2_image *im)
 {
     int i;
     if (!im) return;
+    /* Shared page-cache masks: drop may unref while a render still holds a
+       pin. Destroy only on the last release. */
+    if (djvu_refcount_release(&im->refs) > 0)
+        return;
     for (i = 0; i < im->nshapes; i++)
         djvu_bm_free(ctx, &im->shapes[i].bm);
     djvu_free(ctx, im->shapes);
