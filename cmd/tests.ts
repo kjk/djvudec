@@ -516,14 +516,27 @@ async function main(): Promise<number> {
     usage();
   }
 
-  // CI: drop the known ddjvu three-layer-stencil quirk (1998_compression p19).
-  // That mismatch is not our bug (see AGENTS.md); local -all still reports it.
+  // CI: drop known DjVuLibre oracle failures that are not our bugs (see
+  // AGENTS.md). Local -all still reports them.
+  // - 1998_compression.djvu p19: ddjvu three-layer-stencil quirk
+  // - nasa001C.orig.png.djvu: ddjvu "Cannot decode page 1" on standalone PM44
   if (process.env.CI) {
-    const before = files.length;
-    files = files.filter((f) => basename(f).toLowerCase() !== "1998_compression.djvu");
-    if (files.length < before) {
+    const ciSkip = new Set([
+      "1998_compression.djvu",
+      "nasa001c.orig.png.djvu",
+    ]);
+    const skipped: string[] = [];
+    files = files.filter((f) => {
+      const name = basename(f).toLowerCase();
+      if (ciSkip.has(name)) {
+        skipped.push(basename(f));
+        return false;
+      }
+      return true;
+    });
+    if (skipped.length > 0) {
       console.log(
-        "CI: skipping 1998_compression.djvu (known ddjvu fg-stencil oracle quirk on p19)",
+        `CI: skipping ${skipped.join(", ")} (known DjVuLibre oracle quirks, not decoder bugs)`,
       );
       totalFiles = files.length;
     }

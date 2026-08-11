@@ -242,8 +242,10 @@ bun cmd/build-prof.ts
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +
   amalgamation + UBSan crashes, macOS clang + full oracle + amalgamation, WASM
   decode smoke). deps/ and ref_build/ are cached per OS. Under `CI=true`,
-  `tests.ts -all` skips `1998_compression.djvu` (known ddjvu fg-stencil quirk
-  on p19 — not a decoder bug); a local `-all` still reports that mismatch.
+  `tests.ts -all` skips known DjVuLibre oracle quirks that are not decoder
+  bugs: `1998_compression.djvu` (ddjvu fg-stencil quirk on p19) and
+  `nasa001C.orig.png.djvu` (ddjvu "Cannot decode page 1" on this standalone
+  PM44; our decoder renders it). A local `-all` still reports those.
 
 ### Verification scripts
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier
@@ -260,10 +262,14 @@ bun cmd/build-prof.ts
   default shrinks one dimension after the ceil(dim/sub) rect to preserve
   aspect, a tool-only behavior that would misreport as a size mismatch.
 
-The single render MISMATCH is `1998_compression.djvu` p19 — NOT a decode bug.
-It is a ddjvu three-layer-stencil quirk (ddjvu paints a few FG pixels ~1px off
-from the JB2 mask). Verified our mask/bg/fg are byte-exact vs DjVuLibre
-internals. Our output is arguably more correct. Do not "fix" it.
+Known oracle-only mismatches (not decode bugs; CI skips both under `CI=true`):
+- `1998_compression.djvu` p19 — ddjvu three-layer-stencil quirk (ddjvu paints
+  a few FG pixels ~1px off from the JB2 mask). Verified our mask/bg/fg are
+  byte-exact vs DjVuLibre internals. Our output is arguably more correct.
+  Do not "fix" it.
+- `nasa001C.orig.png.djvu` (399-byte standalone PM44) — ddjvu fails with
+  "Cannot decode page 1"; our decoder renders a full 1200×400 color page.
+  Do not "fix" it.
 
 ### Amalgamation (single-file distribution)
 - `bun cmd/build-dist.ts` — generates an SQLite-style amalgamation in `dist/`:

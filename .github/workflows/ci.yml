@@ -3,8 +3,10 @@
 #
 # `bun cmd/tests.ts -all` needs the deps tree (DjVuLibre oracle + corpus).
 # deps/ is cached per OS so cold runs pay the clone/build cost once.
-# Under CI, tests.ts skips 1998_compression.djvu (known ddjvu fg-stencil
-# quirk on p19 — not a decoder bug; local -all still reports it).
+# Under CI, tests.ts skips known DjVuLibre oracle quirks that are not
+# decoder bugs: 1998_compression.djvu (fg-stencil on p19) and
+# nasa001C.orig.png.djvu (ddjvu cannot decode this standalone PM44).
+# Local -all still reports both.
 name: ci
 
 on:
