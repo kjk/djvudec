@@ -1,8 +1,10 @@
-# CI for djvudec — build, amalgamation, sample oracle, fuzz crash regression, WASM.
+# CI for djvudec — host build, amalgamation, full pixel-oracle tests against
+# DjVuLibre on Windows, Linux, and macOS, plus fuzz crash regression and WASM.
 #
-# Full pixel-oracle corpus (tests.ts -all vs DjVuLibre) is optional/local: it is
-# longer and the known ddjvu fg-stencil quirk on 1998_compression p19 would fail
-# a strict -all. CI keeps the feedback loop under ~15–20 min.
+# `bun cmd/tests.ts -all` needs the deps tree (DjVuLibre oracle + corpus).
+# deps/ is cached per OS so cold runs pay the clone/build cost once.
+# Under CI, tests.ts skips 1998_compression.djvu (known ddjvu fg-stencil
+# quirk on p19 — not a decoder bug; local -all still reports it).
 name: ci
 
 on:
@@ -20,9 +22,9 @@ env:
 
 jobs:
   windows-msvc:
-    name: Windows MSVC + smoke
+    name: Windows MSVC + tests
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -30,18 +32,19 @@ jobs:
           bun-version: latest
       - name: MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            ref_build
+          key: deps-v1-windows-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts', 'cmd/corpus.ts') }}
+          restore-keys: |
+            deps-v1-windows-
       - name: Clone deps
         run: bun cmd/get-deps.ts
-      - name: Build harness (MSVC)
-        run: bun cmd/build.ts
-      - name: Smoke (info + verify-into + sample oracle)
-        run: |
-          $h = "out/msvc/djvu_test_msvc.exe"
-          & $h -info deps/artifacts/test001C.djvu
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $h -verify-into deps/artifacts/test001C.djvu
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun cmd/tests.ts deps/artifacts/test001C.djvu deps/artifacts/test010C.djvu deps/DjVuLibre/doc/djvu3spec.djvu
+      - name: Oracle tests (MSVC)
+        run: bun cmd/tests.ts -all
       - name: Amalgamation
         run: bun cmd/build-dist.ts
 
@@ -60,9 +63,9 @@ jobs:
         run: bun cmd/fuzz.ts -check-crashes
 
   linux:
-    name: Linux clang + amalgamation + crashes
+    name: Linux clang + tests + crashes
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -76,23 +79,52 @@ jobs:
           major=$(clang -dumpversion | cut -d. -f1)
           sudo apt-get install -y "libfuzzer-${major}-dev" || \
             sudo apt-get install -y "libclang-rt-${major}-dev" || true
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            ref_build
+          key: deps-v1-linux-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts', 'cmd/corpus.ts') }}
+          restore-keys: |
+            deps-v1-linux-
       - name: Clone deps
         run: bun cmd/get-deps.ts
-      - name: Build clang harness
-        run: bun cmd/build.ts -clang
-      - name: Smoke (info + verify-into + sample oracle)
-        run: |
-          H=out/clang/djvu_test_clang
-          test -x "$H"
-          "$H" -info deps/artifacts/test001C.djvu
-          "$H" -verify-into deps/artifacts/test001C.djvu
-          bun cmd/tests.ts deps/artifacts/test001C.djvu deps/artifacts/test010C.djvu deps/DjVuLibre/doc/djvu3spec.djvu
+      - name: Oracle tests (clang)
+        run: bun cmd/tests.ts -all -clang
       - name: Amalgamation
         run: bun cmd/build-dist.ts
       - name: Fuzz crashes (ASan + UBSan)
         env:
           DJVU_FUZZ_UBSAN: "1"
         run: bun cmd/fuzz.ts -check-crashes
+
+  macos:
+    name: macOS clang + tests
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            ref_build
+          key: deps-v1-macos-${{ hashFiles('cmd/get-deps.ts', 'cmd/build.ts', 'cmd/corpus.ts') }}
+          restore-keys: |
+            deps-v1-macos-
+      - name: Clone deps
+        run: bun cmd/get-deps.ts
+      - name: Oracle tests (clang)
+        # Apple clang is on the runner; -clang is the default off Windows but
+        # keep it explicit so this job stays parallel to linux.
+        run: bun cmd/tests.ts -all -clang
+      - name: Amalgamation
+        run: bun cmd/build-dist.ts
 
   wasm:
     name: WASM decode smoke
@@ -107,6 +139,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-v1-linux-wasm-${{ hashFiles('cmd/get-deps.ts', 'cmd/build-wasm.ts') }}
+          restore-keys: |
+            deps-v1-linux-wasm-
+            deps-v1-linux-
       - name: Clone deps (corpus)
         run: bun cmd/get-deps.ts
       - name: Build amalgamation + WASM

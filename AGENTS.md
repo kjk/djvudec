@@ -238,12 +238,12 @@ bun cmd/build-prof.ts
   set `DJVU_FUZZ_UBSAN=1` for ASan+UBSan+fuzzer.
   `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so crash inputs
   become regression seeds.
-- GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC smoke + amalgamation,
-  Windows clang crash regression, Linux clang smoke + amalgamation + UBSan
-  crashes, WASM decode smoke). The build driver supports Windows + Unix
-  (macOS/Linux) for the harness, DjVuLibre oracle, and ASan/fuzzer paths.
-  Full `tests.ts -all` stays local (longer; known ddjvu fg-stencil quirk on
-  `1998_compression` p19).
+- GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
+  + amalgamation, Windows clang crash regression, Linux clang + full oracle +
+  amalgamation + UBSan crashes, macOS clang + full oracle + amalgamation, WASM
+  decode smoke). deps/ and ref_build/ are cached per OS. Under `CI=true`,
+  `tests.ts -all` skips `1998_compression.djvu` (known ddjvu fg-stencil quirk
+  on p19 — not a decoder bug); a local `-all` still reports that mismatch.
 
 ### Verification scripts
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier
@@ -267,11 +267,13 @@ internals. Our output is arguably more correct. Do not "fix" it.
 
 ### Amalgamation (single-file distribution)
 - `bun cmd/build-dist.ts` — generates an SQLite-style amalgamation in `dist/`:
-  `dist/djvu.h` (verbatim public header) and `dist/djvu.c` (the public header +
+  `dist/djvu.h` (public header) and `dist/djvu.c` (the public header +
   `djvu_internal.h` + every `src/*.c` concatenated into one translation unit,
-  with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped). The
-  script verifies the result with `clang -c` before finishing. Regenerate after
-  touching `src/` so the amalgamation still compiles; build artifacts are
+  with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped,
+  comments removed, LF only, trailing whitespace stripped, and at most one
+  blank line in a row). The script verifies the result with `clang -c` (and
+  MSVC on Windows) before finishing, then builds the WASM drop. Regenerate
+  after touching `src/` so the amalgamation still compiles; build artifacts are
   gitignored. This works because no two `.c` files share a file-local (`static`)
   symbol name — keep it that way or the single-unit build breaks.
 - **`dist/djvu.c` and `dist/djvu.h` are never committed by agents.** The user
