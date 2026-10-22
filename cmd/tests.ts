@@ -161,6 +161,8 @@ type VerifyResult = {
   memPeak: number; // peak live bytes for a single ctx (max over chunks)
   memAllocs: number; // number of allocations (sum over page chunks)
   memLeak: boolean; // a chunk reported unfreed allocations
+  renderCrashed?: boolean; // djvu_test -verify-render died (no per-page result)
+  textCrashed?: boolean; // djvu_test -verify-text died
 };
 
 // Human-readable byte count, e.g. 52279209 -> "49.86 MB".
@@ -283,12 +285,42 @@ async function fetchRefText(f: string, nPages: number): Promise<Buffer> {
   return Buffer.concat(packed);
 }
 
+// Bun reports only the low byte of a Windows exit status, so an NTSTATUS crash
+// shows up as e.g. 9 (0xC0000409 fast-fail: abort, uncaught C++ exception,
+// /GS failure). Name the likely status, the last page djvu_test finished
+// (stdout is flushed per page) and its `crash` breadcrumb from stderr.
+const WIN_CRASH_LOW_BYTE: Record<number, string> = {
+  5: "0xC0000005 access violation",
+  9: "0xC0000409 fast-fail (abort / uncaught exception / stack cookie)",
+  23: "0xC0000017 out of memory",
+  253: "0xC00000FD stack overflow",
+};
+
+function crashDetail(code: number, out: Buffer, errTxt: string): string {
+  const parts = [`exited ${code}`];
+  const status = process.platform === "win32" ? WIN_CRASH_LOW_BYTE[code] : undefined;
+  if (status) parts.push(`(likely ${status})`);
+  const done = out
+    .toString("latin1")
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith("render\t"));
+  parts.push(done.length ? `after p${done[done.length - 1].split("\t")[1]}` : "before any page finished");
+  const crash = errTxt.split(/\r?\n/).filter((l) => l.startsWith("crash\t")).pop();
+  if (crash) {
+    const [, page, phase, what, ntstatus] = crash.split("\t");
+    parts.push(`[${what} ${ntstatus} on p${page} in ${phase}]`);
+  }
+  return parts.join(" ");
+}
+
 // In-memory render verify via djvu_test -verify-render (ddjvuapi oracle inside).
 async function verifyRender(
   f: string,
   name: string,
   nPages: number,
-): Promise<Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad">> {
+): Promise<
+  Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad" | "memTotal" | "memPeak" | "memAllocs" | "memLeak" | "renderCrashed">
+> {
   const diffDir = join(VERIFY_DIFFS, safeDirName(name));
   mkdirSync(diffDir, { recursive: true });
 
@@ -304,12 +336,11 @@ async function verifyRender(
     memLeak: false,
   };
 
-  for (let lo = 1; lo <= nPages; lo += VERIFY_PAGE_CHUNK) {
-    const hi = Math.min(nPages, lo + VERIFY_PAGE_CHUNK - 1);
+  const runChunk = async (lo: number, hi: number) => {
     const proc = Bun.spawn({
       cmd: [TEST, "-verify-render", "-diffdir", diffDir, f],
       stdout: "pipe",
-      stderr: ASAN ? "pipe" : "ignore",
+      stderr: "pipe",
       env: {
         ...process.env,
         DJVU_VERIFY_LO: String(lo),
@@ -318,12 +349,18 @@ async function verifyRender(
       },
     });
     trackDjvuTestProc(proc, f, pidToFile);
-    // read stdout and (asan) stderr concurrently to avoid pipe-buffer deadlock
+    // read stdout and stderr concurrently to avoid pipe-buffer deadlock
     const [out, errTxt] = await Promise.all([
       new Response(proc.stdout).arrayBuffer().then((b) => Buffer.from(b)),
-      ASAN ? new Response(proc.stderr!).text() : Promise.resolve(""),
+      new Response(proc.stderr).text(),
     ]);
     const code = await awaitDjvuTestProc(proc, pidToFile);
+    return { code, out, errTxt };
+  };
+
+  for (let lo = 1; lo <= nPages; lo += VERIFY_PAGE_CHUNK) {
+    const hi = Math.min(nPages, lo + VERIFY_PAGE_CHUNK - 1);
+    let { code, out, errTxt } = await runChunk(lo, hi);
     if (ASAN && code === ASAN_EXITCODE) {
       return {
         fRender: [] as number[],
@@ -335,6 +372,7 @@ async function verifyRender(
         memPeak: 0,
         memAllocs: 0,
         memLeak: false,
+        renderCrashed: true,
       };
     }
     if (code === 3) {
@@ -348,20 +386,31 @@ async function verifyRender(
         memPeak: 0,
         memAllocs: 0,
         memLeak: false,
+        renderCrashed: true,
       };
     }
     if (code !== 0 && code !== 1) {
-      return {
-        fRender: [] as number[],
-        m: 0,
-        mm: 1,
-        skip: 0,
-        bad: [`${name}: djvu_test -verify-render p${lo}-${hi} exited ${code}`],
-        memTotal: 0,
-        memPeak: 0,
-        memAllocs: 0,
-        memLeak: false,
-      };
+      // A crash (e.g. a rare one inside the in-process ddjvu oracle) is retried
+      // once: a real decoder crash is deterministic and fails again.
+      const first = crashDetail(code, out, errTxt);
+      console.log(`  CRASH ${name}: djvu_test -verify-render p${lo}-${hi} ${first}; retrying`);
+      ({ code, out, errTxt } = await runChunk(lo, hi));
+      if (code !== 0 && code !== 1) {
+        const again = crashDetail(code, out, errTxt);
+        return {
+          fRender: [] as number[],
+          m: 0,
+          mm: 1,
+          skip: 0,
+          bad: [`${name}: djvu_test -verify-render p${lo}-${hi} ${first}; retry ${again}`],
+          memTotal: 0,
+          memPeak: 0,
+          memAllocs: 0,
+          memLeak: false,
+          renderCrashed: true,
+        };
+      }
+      console.log(`  CRASH ${name}: p${lo}-${hi} passed on retry (flaky)`);
     }
     const part = parseVerifyRender(name, out);
     merged.m += part.m;
@@ -402,6 +451,7 @@ async function verifyText(f: string, nPages: number, hasText: boolean, name: str
       tmm: 1,
       te: 0,
       tbad: [`${name}: AddressSanitizer error (verify-text)\n${asanReport(errTxt)}`],
+      textCrashed: true,
     };
   }
   if (code !== 0 && code !== 1) {
@@ -411,6 +461,7 @@ async function verifyText(f: string, nPages: number, hasText: boolean, name: str
       tmm: 1,
       te: 0,
       tbad: [`${name}: djvu_test -verify-text exited ${code}`],
+      textCrashed: true,
     };
   }
   return parseVerifyText(name, out);
@@ -602,6 +653,8 @@ async function main(): Promise<number> {
     if (vr.fRender.length) diffs.push(`render diff p${vr.fRender.join(",p")}`);
     if (vr.fText.length) diffs.push(`text diff p${vr.fText.join(",p")}`);
     if (vr.memLeak) diffs.push("memory leak");
+    if (vr.renderCrashed) diffs.push("render crashed");
+    if (vr.textCrashed) diffs.push("text crashed");
     const status = diffs.length ? diffs.join(", ") : "same";
     if (diffs.length) {
       failedFiles.set(f, diffs);

@@ -7,6 +7,7 @@
  * Used to verify against DjVuLibre's ddjvu / djvutxt. */
 #include "djvu.h"
 #include "djvu_internal.h"
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1048,6 +1049,69 @@ static void verify_page_finish(void)
     fflush(stdout);
 }
 
+/* Crash breadcrumbs for -verify-render: which page and which side (ours or the
+   in-process ddjvu oracle) was running when the process died. tests.ts reads
+   the stderr line; without it a CI crash is just "exited 9" (Bun keeps only
+   the low byte of 0xC0000409). __fastfail / /GS failures bypass every handler,
+   but the page lines on stdout are flushed per page, so the runner still knows
+   the last completed page. */
+static volatile int g_verify_page;
+static const char *volatile g_verify_phase = "startup";
+
+static void verify_crash_note(const char *what, unsigned long code)
+{
+    fprintf(stderr, "crash\t%d\t%s\t%s\t0x%08lx\n", g_verify_page,
+            g_verify_phase, what, code);
+    fflush(stderr);
+}
+
+static void verify_on_sigabrt(int sig)
+{
+    (void)sig;
+    verify_crash_note("abort", 0);
+}
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define DJVU_TEST_ASAN 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__)
+#define DJVU_TEST_ASAN 1
+#endif
+
+#if defined(_WIN32) && !defined(DJVU_TEST_ASAN)
+static LONG WINAPI verify_on_seh(EXCEPTION_POINTERS *ep)
+{
+    verify_crash_note("exception", ep && ep->ExceptionRecord
+                                       ? (unsigned long)ep->ExceptionRecord->ExceptionCode
+                                       : 0);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
+#if defined(_WIN32)
+static void verify_on_invalid_param(const wchar_t *expr, const wchar_t *func,
+                                    const wchar_t *file, unsigned line,
+                                    uintptr_t reserved)
+{
+    (void)expr; (void)func; (void)file; (void)line; (void)reserved;
+    verify_crash_note("crt-invalid-parameter", 0);
+    abort();
+}
+#endif
+
+static void verify_install_crash_handlers(void)
+{
+    signal(SIGABRT, verify_on_sigabrt);
+#if defined(_WIN32)
+#if !defined(DJVU_TEST_ASAN) /* ASan owns the exception filter and reports with the stack */
+    SetUnhandledExceptionFilter(verify_on_seh);
+#endif
+    _set_invalid_parameter_handler(verify_on_invalid_param);
+#endif
+}
+
 /* In-memory render verify vs ddjvuapi; write PNMs to diffdir only on mismatch. */
 static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdir)
 {
@@ -1073,7 +1137,10 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         if (verify_mem_checkpoint(doc, lo, "chunk_start") < 0)
             goto mem_limit;
         for (i = lo - 1; i < hi; i++) {
-        page_kind_t kind = page_kind(doc, i);
+        page_kind_t kind;
+        g_verify_page = i + 1;
+        g_verify_phase = "ours";
+        kind = page_kind(doc, i);
         if (kind == PK_OTHER) {
             skip++;
             printf("render\t%d\tskip\n", i + 1);
@@ -1107,6 +1174,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
                 verify_page_finish();
                 continue;
             }
+            g_verify_phase = "ddjvu";
             if (!mine || bench_ddjvu_render_page(path, i, want_rgb, &ref) != 0) {
                 if (mine) djvu_image_destroy(ctx, mine);
                 bench_render_free(&ref);
@@ -1118,6 +1186,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             }
             if (verify_mem_checkpoint(doc, i + 1, "after_ddjvu_render") < 0)
                 goto mem_limit;
+            g_verify_phase = "compare";
             if (image_equal(mine, &ref)) {
                 m++;
                 printf("render\t%d\tok\n", i + 1);
@@ -1280,8 +1349,10 @@ int main(int argc, char **argv)
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
 
     /* Verify: lazy decode per chunk (tests.ts sets DJVU_VERIFY_LO/HI); cold ddjvu oracle. */
-    if (do_verify_render)
+    if (do_verify_render) {
         djvu_test_ddjvu_cold = 1;
+        verify_install_crash_handlers();
+    }
 
     djvu_init();
     /* -verify-render installs the accounting allocator (per-file memory report,
