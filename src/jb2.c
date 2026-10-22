@@ -314,7 +314,10 @@ static void code_bitmap_directly(jb2_codec *c, djvu_bitmap *bm)
     uint8_t *DJVU_RESTRICT bd;
     uint32_t a, fence;
 
-    djvu_bm_set_min_border(c->ctx, bm, 3);
+    if (c->error || djvu_bm_set_min_border(c->ctx, bm, 3) != 0) {
+        c->error = 1;
+        return;
+    }
     dw = bm->width;
     h = bm->height;
     dy = h - 1;
@@ -424,9 +427,12 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
     uint8_t *DJVU_RESTRICT bd;
     uint32_t a, fence;
 
-    djvu_bm_set_min_border(c->ctx, bm, 2);
-    djvu_bm_set_min_border(c->ctx, cbm, 2 - xd2c);
-    djvu_bm_set_min_border(c->ctx, cbm, (2 + dw + xd2c) - cw);
+    if (c->error || djvu_bm_set_min_border(c->ctx, bm, 2) != 0 ||
+        djvu_bm_set_min_border(c->ctx, cbm, 2 - xd2c) != 0 ||
+        djvu_bm_set_min_border(c->ctx, cbm, (2 + dw + xd2c) - cw) != 0) {
+        c->error = 1;
+        return;
+    }
 
     bm_bpr = bm->bytes_per_row;
     cbm_bpr = cbm->bytes_per_row;
@@ -589,7 +595,8 @@ static int code_abs_mark_size(jb2_codec *c, djvu_bitmap *bm, int border)
     int xsize = code_num(c, 0, BIGPOSITIVE, &c->abs_size_x);
     int ysize = code_num(c, 0, BIGPOSITIVE, &c->abs_size_y);
     if (xsize != (0xffff & xsize) || ysize != (0xffff & ysize)) { c->error = 1; return -1; }
-    return djvu_bm_init(c->ctx, bm, ysize, xsize, border);
+    if (djvu_bm_init(c->ctx, bm, ysize, xsize, border) != 0) { c->error = 1; return -1; }
+    return 0;
 }
 
 static int code_rel_mark_size(jb2_codec *c, djvu_bitmap *bm, int cw, int ch, int border)
@@ -598,7 +605,8 @@ static int code_rel_mark_size(jb2_codec *c, djvu_bitmap *bm, int cw, int ch, int
     int ydiff = code_num(c, BIGNEGATIVE, BIGPOSITIVE, &c->rel_size_y);
     int xsize = cw + xdiff, ysize = ch + ydiff;
     if (xsize != (0xffff & xsize) || ysize != (0xffff & ysize)) { c->error = 1; return -1; }
-    return djvu_bm_init(c->ctx, bm, ysize, xsize, border);
+    if (djvu_bm_init(c->ctx, bm, ysize, xsize, border) != 0) { c->error = 1; return -1; }
+    return 0;
 }
 
 static void code_image_size_image(jb2_codec *c, jb2_image *jim)

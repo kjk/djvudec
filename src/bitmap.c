@@ -1,11 +1,23 @@
 /* bitmap.c -- GBitmap port (DjvuNet Graphics/Bitmap.cs + DjVuLibre RLE). */
 #include "djvu_internal.h"
+#include <limits.h>
 #include <string.h>
 
 enum {
     DJVU_BM_RUN_OVERFLOW = 0xc0,
     DJVU_BM_MAX_RUN = 0x3fff
 };
+
+/* Byte size of a height x width bitmap with the given border, or -1 if it
+   doesn't fit in int (offsets into data are int). */
+static int bm_byte_size(int height, int width, int border)
+{
+    long long n;
+    if (height < 0 || width < 0 || border < 0)
+        return -1;
+    n = (long long)height * ((long long)width + border) + border;
+    return n > INT_MAX ? -1 : (int)n;
+}
 
 static int djvu_bm_alloc_guard(djvu_ctx *ctx, djvu_bitmap *bm)
 {
@@ -162,7 +174,7 @@ static size_t bm_encode_rle(djvu_ctx *ctx, const djvu_bitmap *bm,
 
 int djvu_bm_init(djvu_ctx *ctx, djvu_bitmap *bm, int height, int width, int border)
 {
-    long max;
+    int max = bm_byte_size(height, width, border);
     djvu_free(ctx, bm->data);
     djvu_free(ctx, bm->guard);
     djvu_free(ctx, bm->rle);
@@ -170,12 +182,15 @@ int djvu_bm_init(djvu_ctx *ctx, djvu_bitmap *bm, int height, int width, int bord
     bm->guard = NULL;
     bm->rle = NULL;
     bm->rle_len = 0;
+    if (max < 0) {
+        memset(bm, 0, sizeof(*bm));
+        return -1;
+    }
     bm->width = width;
     bm->height = height;
     bm->border = border;
     bm->bytes_per_row = width + border;
-    max = (long)height * bm->bytes_per_row + border;
-    bm->max_offset = (int)max;
+    bm->max_offset = max;
     if (max > 0) {
         bm->data = (uint8_t *)djvu_alloc(ctx, (size_t)max);
         if (!bm->data) return -1;
@@ -218,11 +233,14 @@ static void bm_decode_rle_rows(djvu_bitmap *bm, const uint8_t *runs)
 
 void djvu_bm_uncompress(djvu_ctx *ctx, djvu_bitmap *bm)
 {
+    int max;
     if (!bm || bm->data || !bm->rle || bm->width <= 0 || bm->height <= 0)
         return;
 
+    max = bm_byte_size(bm->height, bm->width, bm->border);
+    if (max < 0) return;
     bm->bytes_per_row = bm->width + bm->border;
-    bm->max_offset = bm->height * bm->bytes_per_row + bm->border;
+    bm->max_offset = max;
     bm->data = (uint8_t *)djvu_alloc(ctx, (size_t)bm->max_offset);
     if (!bm->data) return;
     memset(bm->data, 0, (size_t)bm->max_offset);
@@ -245,15 +263,19 @@ void djvu_bm_uncompress(djvu_ctx *ctx, djvu_bitmap *bm)
    src->rle in place). Free the copy with djvu_bm_free. Returns 0 on success. */
 int djvu_bm_uncompress_copy(djvu_ctx *ctx, const djvu_bitmap *src, djvu_bitmap *dst)
 {
+    int max;
     memset(dst, 0, sizeof(*dst));
     if (!src || !src->rle || src->width <= 0 || src->height <= 0)
+        return -1;
+    max = bm_byte_size(src->height, src->width, src->border);
+    if (max < 0)
         return -1;
 
     dst->width = src->width;
     dst->height = src->height;
     dst->border = src->border;
     dst->bytes_per_row = src->width + src->border;
-    dst->max_offset = src->height * dst->bytes_per_row + dst->border;
+    dst->max_offset = max;
     dst->data = (uint8_t *)djvu_alloc(ctx, (size_t)dst->max_offset);
     if (!dst->data) return -1;
     memset(dst->data, 0, (size_t)dst->max_offset);
@@ -293,15 +315,17 @@ void djvu_bm_compress(djvu_ctx *ctx, djvu_bitmap *bm)
 
 int djvu_bm_set_min_border(djvu_ctx *ctx, djvu_bitmap *bm, int value)
 {
-    int new_bpr, r;
-    long new_max;
+    int new_bpr, new_max, r;
     uint8_t *nd;
 
-    if (!bm->data && bm->rle)
+    if (!bm->data && bm->rle) {
         djvu_bm_uncompress(ctx, bm);
+        if (!bm->data) return -1;
+    }
     if (bm->border >= value) return 0;
     new_bpr = bm->width + value;
-    new_max = (long)bm->height * new_bpr + value;
+    new_max = bm_byte_size(bm->height, bm->width, value);
+    if (new_max < 0) return -1;
     nd = (uint8_t *)djvu_alloc(ctx, (size_t)(new_max > 0 ? new_max : 1));
     if (!nd) return -1;
     memset(nd, 0, (size_t)(new_max > 0 ? new_max : 1));
@@ -316,7 +340,7 @@ int djvu_bm_set_min_border(djvu_ctx *ctx, djvu_bitmap *bm, int value)
     bm->data = nd;
     bm->border = value;
     bm->bytes_per_row = new_bpr;
-    bm->max_offset = (int)new_max;
+    bm->max_offset = new_max;
     return djvu_bm_alloc_guard(ctx, bm);
 }
 
