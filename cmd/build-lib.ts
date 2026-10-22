@@ -273,6 +273,12 @@ export const STRESS_TARGET: LibToolTarget = {
   testSrc: `${ROOT}/test/djvudec_stress.c`,
 };
 
+export const OVERSIZE_IW44_TARGET: LibToolTarget = {
+  outRoot: `${ROOT}/out`,
+  exeBase: "oversize_iw44",
+  testSrc: `${ROOT}/test/oversize_iw44.c`,
+};
+
 export function benchTarget(variant: "before" | "after"): LibToolTarget {
   return {
     outRoot: `${ROOT}/out/bench_${variant}`,

@@ -2,6 +2,7 @@
  * {InterWaveCodec,InterWaveDecoder,InterWaveMap,InterWaveBlock,
  *  InterWavePixelMap,InterWavePixelMapDecoder,InterWaveTransform}.cs */
 #include "djvu_internal.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,16 +80,33 @@ struct iw_pixmap {
 
 /* ---------- map / block ---------- */
 
+/* Padded macroblock area bw*bh, or -1 if it doesn't fit in int. IW44 indexes
+   the coeff plane (build_unified's pidx) and block array with int, so oversize
+   dimensions must be rejected, not truncated to a wrapped block count. */
+static int iw_padded_area(int bw, int bh)
+{
+    long long n;
+    if (bw < 0 || bh < 0)
+        return -1;
+    n = (long long)bw * bh;
+    return n > INT_MAX ? -1 : (int)n;
+}
+
 static iw_map *map_new(djvu_ctx *ctx, int w, int h)
 {
-    iw_map *m = (iw_map *)djvu_alloc(ctx, sizeof(iw_map));
+    iw_map *m;
     size_t blocks_bytes;
+    int area;
+    if (w < 0 || h < 0) return NULL;
+    m = (iw_map *)djvu_alloc(ctx, sizeof(iw_map));
     if (!m) return NULL;
     memset(m, 0, sizeof(*m));
     m->w = w; m->h = h;
     m->bw = (w + 0x20 - 1) & ~0x1f;
     m->bh = (h + 0x20 - 1) & ~0x1f;
-    m->nb = (m->bw * m->bh) / 1024;
+    area = iw_padded_area(m->bw, m->bh);
+    if (area < 0) { djvu_free(ctx, m); return NULL; }
+    m->nb = area / 1024;
     blocks_bytes = sizeof(iw_block) * (size_t)m->nb;
     m->blocks = (iw_block *)djvu_alloc(ctx, blocks_bytes);
     if (!m->blocks) { djvu_free(ctx, m); return NULL; }
