@@ -37,7 +37,9 @@ void djvu_ctx_free(djvu_ctx *ctx);
 void djvu_ctx_set_cache_per_page(djvu_ctx *ctx, int enable);
 
 void djvu_ctx_set_lazy_iw44(djvu_ctx *ctx, int enable);
+
 void djvu_ctx_set_no_compose(djvu_ctx *ctx, int enable);
+
 void djvu_ctx_set_iw_max_chunks(djvu_ctx *ctx, int max_chunks);
 
 void djvu_ctx_set_bgr(djvu_ctx *ctx, int enable);
