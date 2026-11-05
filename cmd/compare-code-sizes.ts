@@ -92,8 +92,9 @@ async function runCmd(cmd: string, cwd?: string): Promise<void> {
 }
 
 function formatBytes(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MiB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  const a = Math.abs(n);
+  if (a >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MiB`;
+  if (a >= 1024) return `${(n / 1024).toFixed(1)} KiB`;
   return `${n} B`;
 }
 
@@ -240,7 +241,9 @@ async function buildReleaseLibDjvu(dir: string, useClang: boolean): Promise<stri
       `cl ${RELEASE_MSVC_CXX} ${DJVU_DEFINES} -Fo${objdir}/ ${msvcFd(objdir)} -c libdjvu/*.cpp`,
       DJVULIBRE,
     );
-    await runCmd(`llvm-lib /out:${lib} ${objdir}/*.obj`, ROOT);
+    // -GL objects hold MSVC's LTCG intermediate code, not COFF, so llvm-lib
+    // rejects them ("not a COFF object"); MSVC's own lib.exe archives them.
+    await runCmd(`lib -nologo -LTCG /out:${lib} *.obj`, objdir);
   }
   await Bun.write(stamp, "");
   console.log(`built ${lib}`);

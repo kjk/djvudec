@@ -1,7 +1,7 @@
 # djvudec — a plain-C DjVu decoder
 
 This is a [DjVu](https://fileformats.dev/djvu) format decoder, like [libdjvu](https://github.com/barak/djvulibre), but better:
-* smaller: `bun cmd/compare-code-sizes.ts -clang` shows a 293 KiB stripped probe executable (us) vs. 1.86 MiB for the same probe linked against libdjvu (clang -O3, Windows x64; `.text` 221 KiB vs. 1.21 MiB)
+* smaller: `bun cmd/compare-code-sizes.ts -clang` shows a 293 KiB stripped probe executable (us) vs. 1.86 MiB for the same probe linked against libdjvu (clang -O3, Windows x64; `.text` 221 KiB vs. 1.21 MiB). With MSVC (`bun cmd/compare-code-sizes.ts`, -O2 -Ob3 -GL/-LTCG): 685 KiB vs. 2.41 MiB (`.text` 546 KiB vs. 1.84 MiB)
 * plain C, no dependencies (vs. C++)
 * simpler API
 * simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite
