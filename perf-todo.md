@@ -119,14 +119,17 @@ near zero) vs cache off.
 
 Does **not** help cold first paint.
 
-### 2. Cold JB2 first-decode (bitonal; closes gap vs DjVuLibre)
+### 2. Cold JB2 first-decode (bitonal)
 
-Still the hard case on NM/MR-heavy Sjbz (`djvu3spec` p61–64 historically
-~2× DjVuLibre). SIMD cannot help ZP arithmetic coding.
+**Historical gap, now closed:** `djvu3spec` p61–64 used to be ~2× DjVuLibre.
+After the sparse-JB2 pass and the fair-bench fixes (see PROGRESS.md change
+log), p61–p64 benchmark faster than libdjvu. The ideas below are optional
+further work, not a known regression. SIMD cannot help ZP arithmetic coding.
 
-- **`add_library` / `djvu_bm_bbox`**: four-pass full-bitmap scan after every new
-  shape. Prefer single-pass, per-row incremental bbox after decode row, or
-  defer bbox until after batch RLE (`bm_bbox_rle`).
+- **`add_library` / `djvu_bm_bbox`**: the bbox is now computed once per shape
+  and cached (`jb2_shape.bbox_valid`), so inherited dict shapes are no longer
+  rescanned per page. A new shape still gets one full `djvu_bm_bbox` scan;
+  a per-row incremental bbox during decode could remove that.
 - **Dict parent bytes during one Sjbz**: avoid RLE↔bytes thrash on shared
   shapes mid-stream; pin bytes for the decode duration.
 - **Codegen**: clang release on Windows vs MSVC; **PGO**
@@ -158,7 +161,9 @@ Profile **test043C p5**:
 
 - **FG44** stamping: FGbz solid runs already ~30% faster composite on
   `test008C`; FG44 still samples often — tile by FG cell when mask is dense.  
-- **`compose_finalize` / BGR flip**: easy bandwidth win (`pshufb`-style).  
+- **`compose_finalize` / BGR flip**: BGR order is already folded into the
+  final copy (`djvu_ctx_set_bgr`); what is left is a SIMD (`pshufb`-style)
+  version of that copy.  
 - Bitonal stamp is already run-based — do not over-invest.
 
 ### 6. Allocation / arena
@@ -184,7 +189,13 @@ changing codecs.
 
 ---
 
-## Known slow case: `djvu3spec.djvu` pages 61–64 (JB2)
+## Formerly slow case: `djvu3spec.djvu` pages 61–64 (JB2) — historical
+
+**Historical; no longer slower.** Everything in this section predates the
+sparse-JB2 render pass and the `-bench` fairness fixes (ddjvu cache clear,
+interleaved sessions, lazy dict decode) recorded in PROGRESS.md. After those,
+p61 measured 17.6 ms libdjvu vs 7.2 ms ours. Kept for context; re-measure
+before acting on it.
 
 Bitonal 2550×3300. Historically DjVuLibre ~4.5–5.2 ms/page vs us ~9–13 ms
 (+105–185%) on cold full render. Page 65 ~2 ms (faster than DjVuLibre) — not a
@@ -242,7 +253,8 @@ Probe: `djvudec_dump -cache-probe -page 1 file.djvu`
 Shared Djbz remains doc-wide (not in page cache size).
 
 **Not done:** host-side LRU policy; eager full-doc Sjbz at open (avoid — open
-latency). Optional: `preload_jb2_masks_range` for nearby pages only.
+latency). Internal `djvu_doc_preload_jb2_masks_range` already exists (not
+public); exposing it, or using it for nearby pages, is the remaining option.
 
 ---
 

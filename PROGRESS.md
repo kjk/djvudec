@@ -10,27 +10,26 @@ We are given the whole file up-front (no incremental fetch). Decode only — no 
 ## References (checked out locally)
 - C# source being ported:   `deps/DjvuNet/DjvuNet`            (DjvuNet repo)
 - Verification oracle:      `deps/DjVuLibre`                  (DjVuLibre repo)
-- Test files (11 .djvu):    `testfiles/djvunet/*.djvu` (copied from DjvuNet/Specs; gitignored)
+- Test corpus: the `.djvu` files in the `deps/` checkouts (DjVuLibre/doc,
+  DjvuNet/Specs, DjvuNet/DjvuNetTest/TestFiles, artifacts{,/data,/wikimedia};
+  ~115 files, enumerated by `cmd/corpus.ts`; `DJVU_SPECS=<dir>` overrides).
+  There is no `testfiles/` mirror any more (see AGENTS.md).
 - Spec: https://www.sndjvu.org/spec.html  (code is the more definitive reference)
 
-## Reference tools (built from DjVuLibre, see cmd/build.ts `build_ref()`)
+## Reference tools (built from DjVuLibre, see cmd/build.ts `buildRef()`)
 Built into `ref_build/`:
 - `ddjvu.exe`    — `ddjvu -format=pgm -page=N in.djvu out.pgm`  (bitmap oracle)
 - `djvutxt.exe`  — `djvutxt --page=N in.djvu`                   (text oracle)
+- `djvused.exe`, `bzz.exe` — outline/annotation oracles, BZZ round-trip
 (djvudump crashes in this build; not used.)
 
-## Test corpus survey (via ddjvu/djvutxt)
-All 11 files are DJVM (multi-page bundled, BZZ-compressed DIRM directory).
-- bitonal (P4 / JB2): 9 files
-- color   (P6 / IW44): 1998_compression.djvu, 1998_lossy_masked.djvu
-- 7 files have hidden text (BZZ + Txta/Txtz)
-
 ## C API (src/djvu.h) — jbig2dec flavor
-Opaque ctx/doc/page; caller-supplied alloc/free/error callbacks. See header.
+Opaque `djvu_ctx` / `djvu_doc`; caller-supplied alloc/free/error (and optional
+lock/unlock) callbacks. See header.
 
 Internal headers are consolidated into a single `src/djvu_internal.h` (one
-labeled section per module: core, zpcodec, bitmap, bzz, jb2, iw44). Every `.c`
-file includes just that one header.
+labeled section per module: core, zpcodec, bitmap, bzz, jb2, iw44, scaler,
+compose, debug). Every `.c` file includes just that one header.
 
 ## Architecture / port map
 | C module            | from C# (DjvuNet)                       | status |
@@ -48,10 +47,13 @@ file includes just that one header.
 | render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
 
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
-`bun cmd/tests.ts` (every .djvu under testfiles/, recursively):
-  render (mask=pgm, bg/color=ppm): MATCH=398 MISMATCH=1; text: MATCH=353.
-`DJVU_SPECS=<dir> bun cmd/tests.ts` (point at any directory of .djvu) on
-real-world sets (tests.ts replaced the old Python verify_dir.py):
+`bun cmd/tests.ts -all` over the deps/ corpus: the most recent full MSVC runs
+recorded in the change log below had 2489 matching renders; the only failures
+are the two known DjVuLibre oracle quirks (see AGENTS.md).
+(Historical, from the old 11-file `testfiles/` corpus: render MATCH=398
+MISMATCH=1; text MATCH=353.)
+`DJVU_SPECS=<dir> bun cmd/tests.ts -all` (point at any directory of .djvu) on
+real-world sets (historical numbers; tests.ts replaced the old Python verify_dir.py):
   - Z:\sumtest (36 files, up to 1177 pages): render 138/3 (the 3 = fg-stencil
     ddjvu quirk, GPU Gems ~2-9px), text 141/141.
   - Z:\backup\books (1396 files; two 30-file random samples): render 300/300,
@@ -68,10 +70,11 @@ whose INFO gamma != 2.2.
   It is a ddjvu three-layer-stencil quirk: for a few shapes in one text line,
   ddjvu paints the FG color ~1px offset from the actual JB2 mask (it inks a
   mask-background pixel and skips a mask-ink one). Our compositor aligns FG
-  exactly with the mask. (debug hooks: DJVU_NOCOMPOSE, DJVU_JB2_BLITS,
+  exactly with the mask. (debug hooks: `djvu_ctx_set_no_compose`, DJVU_JB2_BLITS,
   DJVU_JB2_SHAPE=N; reference tools test/jb2ref.cpp, test/iw44ref.cpp.)
-- Color pages composite only at subsample==1 (full res); subsample>1 on a
-  color page currently falls back to the gray mask. TODO: scale composite.
+- Color (compound/photo) pages composite at any subsample (see the
+  "subsampled color composite" change-log entry); subsample==1 is byte-exact,
+  subsample>1 is checked statistically by `cmd/verify-subsample.ts`.
 
 ## Milestones
 1. **Page info** (no codecs): DJVM/DIRM + INFO → page count + dims. ✅ DONE
@@ -91,30 +94,21 @@ whose INFO gamma != 2.2.
    (FGbz palette two-layer, or FG44 three-layer nearest-upsample) stenciled
    through the JB2 mask. ✅ DONE — full color pages match `ddjvu -format=ppm`
    byte-for-byte (background alone matches `ddjvu -mode=background`).
-6. Page scaling / subsample to requested dimensions (basic box subsample done).
-
-## Notes for next session (IW44)
-- Dict resolution: in-page `Djbz` takes precedence; else `INCL` id -> external
-  DJVI component (djvu_doc_component_offset) -> its `Djbz`. (render.c)
-- Pages needing IW44: have `BG44` chunks (background, possibly multiple = IW44
-  refinement chunks to be decoded in sequence) and `FGbz` (FG color palette);
-  composite = background pixmap, then foreground colors through the JB2 mask.
-- `ddjvu -format=pgm` gives the gray composite; `-format=ppm` gives color.
-  Color test files (P6): 1998_compression, 1998_lossy_masked.
-- C# source: Wavelet/InterWave*Decoder.cs (IW44Image / InterWavePixelMap).
-- JB2 codec entry: djvu_jb2_decode (Sjbz/image), djvu_jb2_decode_dict (Djbz).
-- DJVU_JB2_DEBUG=1 env prints a per-stream record-type histogram.
+6. **Subsampled rendering** at any integer subsample: bitonal via O(ink)
+   coverage, color via a reduced-size composite. ✅ DONE
 
 ## Build / test
-`bun cmd/get-deps.ts` — clones DjvuNet + DjVuLibre into deps/, assembles testfiles/djvu.
-`bun cmd/build.ts` — builds ref tools (once), the C library + test harness with clang.
-`bun cmd/tests.ts` — the test driver: ensures deps, builds, then verifies over
-every .djvu under testfiles/ (recursively).
+`bun cmd/get-deps.ts` — clones DjvuNet, DjVuLibre and DjvuNet/artifacts into deps/.
+`bun cmd/build.ts` — builds ref tools (once), the C library + test harness
+(MSVC by default on Windows, `-clang` for clang; clang elsewhere).
+`bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — the test driver: ensures
+deps, builds, then verifies the selected corpus files. See AGENTS.md for flags.
 
 ## Known unported chunks / decode gaps
 Decode-path features present in DjvuNet (C#) that this port does NOT handle yet.
 Verified against `src/*.c` chunk dispatch. We DO handle: INFO, DIRM, NAVM, INCL,
-Sjbz, Djbz, BG44, FG44, FGbz, PM44, TXTz, TXTa, ANTa, ANTz.
+Sjbz, Djbz, BG44, FG44, FGbz, PM44, BM44, TXTz, TXTa, ANTa, ANTz (including
+standalone FORM:PM44 / FORM:BM44 files).
 
 - **`BGjp` / `FGjp` — JPEG-coded bg/fg layers.** No JPEG decoder in the C port;
   a page whose background/foreground is JPEG (instead of IW44) renders blank.
@@ -124,19 +118,18 @@ Sjbz, Djbz, BG44, FG44, FGbz, PM44, TXTz, TXTa, ANTa, ANTz.
 - **`TH44` / `FORM:THUM` — embedded thumbnails.** Not decoded or exposed (no
   thumbnail API). Pure convenience: full-page render already works. C# exposes
   `DjvuPage.Thumbnail`.
-- **`BM44` — standalone grayscale wavelet form.** Only relevant to raw
-  standalone wavelet files, not normal pages (page bg uses BG44). Not handled.
 - **`Wmrm` (watermark-removal), `CIDA` (obsolete).** Not handled; negligible,
   normally ignored even by DjVuLibre.
 - **Annotation richness (partial).** We extract hyperlink mapareas
-  (rect/oval/text/poly/line + url + comment); we do NOT model highlight color,
+  (rect/oval/text + url + comment; poly/line mapareas are skipped because they
+  have no axis-aligned box, matching SumatraPDF); we do NOT model highlight color,
   border styles, pushpins, etc. that C#'s `Annotation` carries.
 
 Deliberately OUT of scope (not gaps): all encoders/writers (no DjVu writing),
 external image-format I/O (ImageConverter, PBM/PGM/RLE serialization), and
 progressive/incremental decoding (we decode the whole buffer up-front). SIMD
 wavelet paths, caching, and multithreading are impl details, not features.
-NB: we render INFO rotation (compose.c); the C# port does not.
+NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
 - red=3 background-expansion speed pass on `deps/artifacts/test041C.djvu`

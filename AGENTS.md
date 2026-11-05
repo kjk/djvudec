@@ -155,8 +155,9 @@ bun cmd/build-prof.ts
   2. Edit `src/` (or regenerate `dist/djvu.c` if benchmarking the amalgamation)
   3. `bun cmd/build-bench.ts after -clean` — build `out/bench_after/…/bench_after.exe`
   4. `bun cmd/bench-perf.ts path/to/file.djvu` — runs both binaries with
-     `-bench-render` (3 timed renders per page) and prints a per-page summary
-     using the fastest of the three runs: `pN t_before => t_after, Δ ms, Δ%`
+     `-bench-render` (2 timed renders per page, the `djvudec_dump` default) and
+     prints a per-page summary using the faster of the two runs:
+     `pN t_before => t_after, Δ ms, Δ%`
      (`+` = slower after). Optional capture/compare:
      `bun cmd/bench-perf.ts run before file.djvu > before.txt`,
      `bun cmd/bench-perf.ts run after file.djvu > after.txt`,
@@ -166,10 +167,12 @@ bun cmd/build-prof.ts
   `bun cmd/bench-perf.ts -warm 1 deps/DjVuLibre/doc/djvu3spec.djvu`.
   **Layer breakdown:** `-layers` adds per-stage timings (JB2 decode, IW44,
   composite, rotate) via `djvu_page_render_timed`. Raw lines:
-  `pN t1 t2 t3` (total ms) and
-  `layer pN jb2 t1 t2 t3 iw44 t1 t2 t3 composite t1 t2 t3 rotate t1 t2 t3`.
+  `pN t1 t2` (total ms) and
+  `layer pN jb2 t1 t2 iw44 t1 t2 composite t1 t2 rotate t1 t2`.
   `bench-perf.ts` forwards `-warm`/`-layers` to the exe and, with `-layers`,
-  prints a before/after breakdown per stage (fastest of 3 per stage).
+  prints a before/after breakdown per stage (faster of 2 per stage).
+  (`djvudec_dump -reps N` changes the rep count, but `bench-perf.ts` parses
+  exactly two.)
   Same flags on `djvudec_dump`: `bun cmd/build-dump.ts` /
   `djvudec_dump -bench-render -warm 1 -layers file.djvu`.
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ... | -failures path>
@@ -199,8 +202,9 @@ bun cmd/build-prof.ts
   captures stderr, and surfaces any detected error as a file failure with the
   ASan report. (This is how the JB2 cross-coding heap over-read on
   size-mismatched reference shapes was found.)
-- IMPORTANT: run these from the `djvu` dir. The ref-tool build
-  `cd`s into the DjVuLibre dir; if cwd is left there you get "Module not found".
+- The scripts resolve paths from their own location (`import.meta.dir`), but
+  run them from the repo root anyway: the docs give corpus paths
+  (`deps/...`) relative to it.
 - Reference tools are built static from `libdjvu/*.cpp` with
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT -ladvapi32`.
   `djvudump` crashes in this clang build and is not used; `ddjvu`, `djvutxt`,
@@ -422,18 +426,25 @@ Notes:
 - **Pure-photo pages** (BG44-only, no mask): composite with NULL mask
   (background only).
 
-## Debug hooks (env vars)
-- `DJVU_NOCOMPOSE` — bypass the color composite.
+## Debug hooks
+Env vars (read by the library):
 - `DJVU_JB2_DEBUG` — per-stream JB2 record-type histogram.
 - `DJVU_JB2_BLITS` — dump blit positions/sizes.
 - `DJVU_JB2_SHAPE=N` — ASCII dump of shape N.
-- `DJVU_IW_DEBUG`, `DJVU_IW_MAXCHUNKS` — IW44 tracing / chunk limiting.
+- `DJVU_IW_DEBUG` — IW44 chunk tracing.
+
+Per-context setters (no env var; call before `djvu_doc_open`):
+- `djvu_ctx_set_no_compose(ctx, 1)` — bypass the color composite.
+- `djvu_ctx_set_iw_max_chunks(ctx, N)` — decode at most N IW44 chunks per layer.
+
+(The former `DJVU_NOCOMPOSE` / `DJVU_IW_MAXCHUNKS` env vars no longer exist.)
 
 ## Per-layer reference tools (distinguish my-bug vs ddjvu-quirk)
 - `test/iw44ref.cpp` — decode raw IW44 (PM44) via DjVuLibre IW44Image internals.
 - `test/jb2ref.cpp` — decode raw Sjbz, dump blits/mask via DjVuLibre internals.
-- `djvu_test.exe` flags: `-info -page N -out f [-sub N] -text -bzzdec -comps
-  -bench -bench-sum -verify-into`,
+- `djvu_test` flags (`-page N` is 1-based): `-info -page N -out f [-sub N] -text
+  -type -zones -outline -links -bzzdec -comps -bench -bench-sum -profile-sum
+  -verify-into -verify-render -verify-text -diffdir -dump-features`,
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
   `-bench` times our render vs DjVuLibre `ddjvu_page_render` per page (see
   `bun cmd/bench.ts`); `-bench-sum` does the same for the SumatraPDF engine
