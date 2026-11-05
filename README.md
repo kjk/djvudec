@@ -1,6 +1,6 @@
 # djvudec — a plain-C DjVu decoder
 
-This is a djvu format decoder, like [libdjvu](https://github.com/barak/djvulibre), but better:
+This is a [DjVu](https://fileformats.dev/djvu) format decoder, like [libdjvu](https://github.com/barak/djvulibre), but better:
 * smaller `bun cmd/compare-code-sizes.ts` shows 100 kB (us) vs. 720 kB of libdjvue
 * plain C, no dependencies (vs. C++)
 * simpler API
