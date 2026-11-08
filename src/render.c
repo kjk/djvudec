@@ -126,22 +126,41 @@ typedef struct {
     int sub;        /* subsample factor */
 } bitonal_acc_ctx;
 
-/* Accumulate one ink pixel into its subsampled output cell. Cells group
-   bottom-up rows (py/sub, matching DjVuLibre, whose reduced masks put the
-   partial cell at the top when height % sub != 0); the cell row is then
-   flipped for the top-down output. */
-static void bitonal_accum_ink(void *user, int px, int py)
+static void acc_add(uint8_t *cell, int n)
+{
+    int v = *cell + n;
+    *cell = (uint8_t)(v > 255 ? 255 : v);
+}
+
+/* Accumulate one ink run [x0, x1) into its subsampled output cells. Cells
+   group bottom-up rows (py/sub, matching DjVuLibre, whose reduced masks put
+   the partial cell at the top when height % sub != 0); the cell row is then
+   flipped for the top-down output. Same counts as adding each pixel, at a
+   fraction of the divisions. */
+static void bitonal_accum_run(void *user, int x0, int x1, int py)
 {
     bitonal_acc_ctx *c = (bitonal_acc_ctx *)user;
-    int cx, cy;
-    size_t cell;
+    int cy, cx0, cx1, xmax;
+    uint8_t *row;
 
-    if (px < 0 || py < 0 || py >= c->h) return;
-    cx = px / c->sub;
+    if (py < 0 || py >= c->h) return;
     cy = c->sh - 1 - py / c->sub;
-    if (cx >= c->sw || cy < 0) return;
-    cell = (size_t)cy * c->sw + cx;
-    if (c->acc[cell] < 255) c->acc[cell]++;
+    if (cy < 0) return;
+    if (x0 < 0) x0 = 0;
+    xmax = c->sw * c->sub;
+    if (x1 > xmax) x1 = xmax;
+    if (x0 >= x1) return;
+    row = c->acc + (size_t)cy * c->sw;
+    cx0 = x0 / c->sub;
+    cx1 = (x1 - 1) / c->sub;
+    if (cx0 == cx1) {
+        acc_add(row + cx0, x1 - x0);
+        return;
+    }
+    acc_add(row + cx0, (cx0 + 1) * c->sub - x0);
+    for (cx0++; cx0 < cx1; cx0++)
+        acc_add(row + cx0, c->sub);
+    acc_add(row + cx1, x1 - cx1 * c->sub);
 }
 
 /* Rasterize a decoded JB2 mask to top-down gray8 (ink=0, paper=255). */
@@ -179,7 +198,7 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
         return out;
     }
 
-    /* subsample > 1: visit only ink pixels (paper is skipped) and accumulate
+    /* subsample > 1: visit only ink runs (paper is skipped) and accumulate
        coverage per output cell, then map coverage -> gray via a LUT. O(ink)
        instead of O(full-res): the old path built and box-filtered a full-res
        bitmap, which was ~5x slower than the subsample==1 stamp. */
@@ -209,8 +228,8 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
                 return NULL;
             }
             if (s && djvu_bm_has_pixels(&s->bm))
-                djvu_bm_visit_ink(&s->bm, b->left, b->bottom,
-                                  bitonal_accum_ink, &c);
+                djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
+                                        bitonal_accum_run, &c);
         }
         for (k = 0; k < n; k++) out->data[k] = lut[acc[k]];
         djvu_free(ctx, acc);
