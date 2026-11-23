@@ -15,7 +15,7 @@
 // rebuilds when src/ is newer than dist/wasm/.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -104,6 +104,20 @@ function bootstrapEmsdk() {
   sh(`${emsdk} activate latest`, { cwd: EMSDK });
 }
 
+// emcc strips sections with llvm-objcopy after linking, but some emsdk
+// Windows packages ship only llvm-strip.exe. They are one multi-call binary
+// that picks its behaviour from its file name, so a copy under the other name
+// is a real llvm-objcopy. Only touches our own deps/emsdk checkout.
+function ensureObjcopy() {
+  const bin = path.join(EMSDK, "upstream", "bin");
+  const ext = isWin ? ".exe" : "";
+  const objcopy = path.join(bin, `llvm-objcopy${ext}`);
+  const strip = path.join(bin, `llvm-strip${ext}`);
+  if (existsSync(objcopy) || !existsSync(strip)) return;
+  console.log("• emsdk has no llvm-objcopy — copying llvm-strip under that name");
+  copyFileSync(strip, objcopy);
+}
+
 function ensureEmcc(): string {
   let prefix = findEmcc();
   if (prefix === null) {
@@ -111,6 +125,7 @@ function ensureEmcc(): string {
     prefix = findEmcc();
     if (prefix === null) throw new Error("emsdk bootstrap did not produce a working emcc");
   }
+  ensureObjcopy();
   const v = sh(`${prefix}emcc --version`, { quiet: true });
   console.log("• using " + (v.stdout ?? "").split("\n")[0]);
   return prefix;
