@@ -6,7 +6,7 @@ This is a [DjVu](https://fileformats.dev/djvu) format decoder, like [libdjvu](ht
 * simpler API
 * simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite
 * mostly faster, according to benchmarks (`bun cmd/bench.ts -all`)
-* tested on thousands of .djvu files for bit-by-bit correctness to libdjvu (the one tolerated difference: a few foreground-edge pixels on some color pages, where ddjvu's own stencil is off by a pixel)
+* tested on thousands of .djvu files for bit-by-bit correctness to libdjvu (the one accepted difference: where foreground shapes of different colors overlap, DjVuLibre adds the two colors together and we paint one of them)
 
 ## API
 See [`src/djvu.h`](src/djvu.h). Sketch:

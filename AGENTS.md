@@ -206,12 +206,22 @@ bun cmd/build-prof.ts
   the new one is written. A file that cannot be opened or read is a
   **failure** (`FAILED: cannot open …`), not a 0-page pass; a leak (harness
   exit 4) is reported as `memory leak`; any failed file makes the script exit 1.
-  **Cosmetic tolerance:** the render verifier is byte-exact except that an RGB
-  page differing from ddjvu in at most 2000 pixels and at most 0.01% of pixels
-  (`image_equal_cosmetic` in `test/djvu_test.c`) is accepted and reported as
-  `ok cosmetic`; the summary shows `MATCH=N (cosmetic=K)`. These are the ddjvu
-  fg-stencil quirk pages (e.g. 56 of 127 pages of `test061C.djvu`). A change
-  that makes K grow needs a look.
+  **Palette-overlap rule (the one accepted difference):** the render verifier
+  is byte-exact except on palette (FGbz) pages, where DjVuLibre's compositor
+  (`DjVuImage::stencil`, two-layer model) zeroes the mask pixels and then
+  blends each colour group in by *adding* its colour, clipped at 255
+  (`GPixmap::blit`). Where blits of two or three colour groups overlap, ddjvu
+  paints the clipped sum of their colours; we paint one blit's colour (ddjvu's
+  sum is a lighter speck in dark text -- do not copy it). A page is accepted
+  only if **every** differing pixel is ours = palette colour A and ddjvu =
+  clip(A + C1 [+ C2]) for palette colours C1, C2 (`image_compare` in
+  `test/djvu_test.c`); it is reported as `ok palette-overlap <n>` and the
+  summary shows `MATCH=N (palette-overlap=K)`. Any other difference is a
+  mismatch. On the corpus that is 62 pages (56 in `test061C.djvu`; also
+  `test002C`, `test004C`, `test071C`, `test072C`); on every one our JB2 mask
+  equals DjVuLibre's and no paper pixel differs. A change that makes K grow
+  needs a look. (This replaced a blanket "<= 2000 pixels and <= 0.01%"
+  tolerance; a one-level colour error on a single blit now fails.)
   **Memory accounting:** `-verify-render` installs tracking `djvu_alloc_cb` /
   `djvu_free_cb` hooks (per `djvu_ctx`, via the callbacks' `ctx` arg) that tally
   total allocations and peak live bytes per file, emit a `memstat` line on
@@ -286,8 +296,7 @@ bun cmd/build-prof.ts
   `tests.ts -all` skips known DjVuLibre oracle quirks that are not decoder
   bugs: `1998_compression.djvu` (ddjvu fg-stencil quirk on p19) and
   `nasa001C.orig.png.djvu` (ddjvu "Cannot decode page 1" on this standalone
-  PM44; our decoder renders it). A local `-all` reports the second as a
-  mismatch and the first as `ok cosmetic`.
+  PM44; our decoder renders it). A local `-all` still reports both.
 
 ### Verification scripts
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier
@@ -322,8 +331,8 @@ Known oracle-only differences (not decode bugs; CI skips both files under `CI=tr
 - `1998_compression.djvu` p19 — ddjvu three-layer-stencil quirk (ddjvu paints
   a few FG pixels ~1px off from the JB2 mask; 680 px / 0.008%). Verified our
   mask/bg/fg are byte-exact vs DjVuLibre internals. Our output is arguably
-  more correct. Do not "fix" it. It falls inside the verifier's cosmetic
-  tolerance, so it shows as `ok cosmetic`, not as a mismatch.
+  more correct. Do not "fix" it. (A three-layer FG44 page, so the
+  palette-overlap rule does not apply; it reports as a mismatch.)
 - `nasa001C.orig.png.djvu` (399-byte standalone PM44) — ddjvu fails with
   "Cannot decode page 1"; our decoder renders a full 1200×400 color page.
   Do not "fix" it.
@@ -508,7 +517,11 @@ Per-context setters (no env var; call before `djvu_doc_open`):
   `bun cmd/bench.ts`); `-bench-sum` does the same for the SumatraPDF engine
   render path (`bun cmd/bench.ts -like-sumatra`). `-sub N` renders `-out` at subsample
   N (for inspecting the subsampled raster). `-verify-into` checks
-  `djvu_page_render_into` is byte-identical to `djvu_page_render`;
+  `djvu_page_render_into` is byte-identical to `djvu_page_render`, and that
+  every colour page renders identically (R/B swapped) on an RGB and a BGR
+  context -- the RGB subsample-1 direct stencil is a different code path from
+  the BGR composite that `-verify-render` checks against ddjvu, so this is
+  what ties it to the oracle;
   `-verify-abort` is the abort-API test (see `bun cmd/test-abort.ts`).
   Unknown flags are rejected (usage, exit 2); run with no args for the full
   grouped usage.
@@ -532,5 +545,7 @@ user reviews diffs and decides when to commit.) Never commit `dist/djvu.c` or
 after `bun cmd/build-dist.ts`.
 
 ## Status
-Feature-complete; verified byte-for-byte vs DjVuLibre. All remaining
-non-matches are the cosmetic ddjvu fg-stencil quirk on a handful of pages.
+Feature-complete; verified byte-for-byte vs DjVuLibre. The only accepted
+difference is the palette-overlap rule above (62 corpus pages); the only
+mismatches are the two known oracle quirks (1998_compression p19,
+nasa001C.orig.png).

@@ -23,9 +23,10 @@
 // `-failout path` writes failing file paths (default: failures.txt in repo root);
 // each failure is appended as soon as it is found.
 // A file our decoder cannot open (or that cannot be read) is a FAILURE; a file
-// that opens with 0 pages is not. Pages the harness reports as `ok cosmetic`
-// (equal to the oracle within its small pixel tolerance) count as matches and
-// are shown separately: `MATCH=N (cosmetic=K)`. An empty verify_diffs/<name>/
+// that opens with 0 pages is not. Pages the harness reports as
+// `ok palette-overlap` (differ from ddjvu only where DjVuLibre adds the colours
+// of overlapping palette blits; see image_compare in test/djvu_test.c) count as
+// matches and are shown separately: `MATCH=N (palette-overlap=K)`. An empty verify_diffs/<name>/
 // is removed again when a file produced no mismatch dumps.
 // `-clean` deletes out/ before building, forcing a full harness rebuild.
 // After each djvu_test_* subprocess exits, Windows FFI enumerates processes; if
@@ -174,8 +175,8 @@ async function run(cmd: string[], file: string): Promise<Buffer> {
 type VerifyResult = {
   fRender: number[];
   fText: number[];
-  m: number; // pages that match the oracle (includes the cosmetic ones)
-  cosmetic: number; // of m: matched only within the harness's pixel tolerance
+  m: number; // pages that match the oracle (includes the overlap ones)
+  overlap: number; // of m: differ from ddjvu only by its additive palette blend
   mm: number;
   skip: number;
   tm: number;
@@ -195,7 +196,7 @@ type VerifyResult = {
 // The render-verify fields of a VerifyResult.
 type RenderResult = Pick<
   VerifyResult,
-  | "fRender" | "m" | "cosmetic" | "mm" | "skip" | "bad"
+  | "fRender" | "m" | "overlap" | "mm" | "skip" | "bad"
   | "memTotal" | "memPeak" | "memAllocs" | "memLeak"
   | "renderCrashed" | "renderNoResult"
 >;
@@ -204,7 +205,7 @@ type RenderResult = Pick<
 // mismatch carrying the message, no per-page data.
 function renderFailure(msg: string, flag: "renderCrashed" | "renderNoResult"): RenderResult {
   return {
-    fRender: [], m: 0, cosmetic: 0, mm: 1, skip: 0, bad: [msg],
+    fRender: [], m: 0, overlap: 0, mm: 1, skip: 0, bad: [msg],
     memTotal: 0, memPeak: 0, memAllocs: 0, memLeak: false, [flag]: true,
   };
 }
@@ -260,10 +261,10 @@ function safeDirName(name: string): string {
 //   render <page> <status> [extra...]     one per page
 //   memstat <total> <peak> <allocs> <frees> <live>
 //   summary 0 0 0 <match> <mismatch> <skip>   always last when the doc opened
-// A page matches when its status is `ok`, or any status starting with `ok`
-// (e.g. `ok-cosmetic`), or `ok` with a trailing `cosmetic` field. The latter
-// two mean "equal within the harness's small pixel tolerance" and are counted
-// in `cosmetic` as well as in `m`. Counts come from the per-page lines; the
+// A page matches when its status is `ok` (optionally followed by extra
+// fields). `ok palette-overlap <n>` means "differs from ddjvu only by
+// DjVuLibre's additive blend at overlapping palette blits"; such pages are
+// counted in `overlap` as well as in `m`. Counts come from the per-page lines; the
 // summary line is only used as a fallback (and as proof the run completed).
 function parseVerifyRender(
   name: string,
@@ -272,7 +273,7 @@ function parseVerifyRender(
   const fRender: number[] = [];
   const bad: string[] = [];
   let m = 0,
-    cosmetic = 0,
+    overlap = 0,
     mm = 0,
     skip = 0,
     memTotal = 0,
@@ -298,7 +299,7 @@ function parseVerifyRender(
       pageLines++;
       if (status.startsWith("ok")) {
         m++;
-        if (status !== "ok" || parts.slice(3).includes("cosmetic")) cosmetic++;
+        if (parts.slice(3).includes("palette-overlap")) overlap++;
       } else if (status === "skip") skip++;
       else {
         mm++;
@@ -320,7 +321,7 @@ function parseVerifyRender(
       }
     }
   }
-  return { fRender, m, cosmetic, mm, skip, bad, memTotal, memPeak, memAllocs, memLeak, sawSummary };
+  return { fRender, m, overlap, mm, skip, bad, memTotal, memPeak, memAllocs, memLeak, sawSummary };
 }
 
 // Per-page djvutxt packed for -verify-text: u32-BE len + bytes per page.
@@ -402,7 +403,7 @@ async function verifyRenderChunks(
   const merged: RenderResult = {
     fRender: [],
     m: 0,
-    cosmetic: 0,
+    overlap: 0,
     mm: 0,
     skip: 0,
     bad: [],
@@ -476,7 +477,7 @@ async function verifyRenderChunks(
       );
     }
     merged.m += part.m;
-    merged.cosmetic += part.cosmetic;
+    merged.overlap += part.overlap;
     merged.mm += part.mm;
     merged.skip += part.skip;
     merged.fRender.push(...part.fRender);
@@ -646,7 +647,7 @@ async function main(): Promise<number> {
   if (ASAN) console.log("running under AddressSanitizer (out/clang_asan)");
 
   let m = 0,
-    cosmetic = 0,
+    overlap = 0,
     mm = 0,
     skip = 0;
   let tm = 0,
@@ -703,7 +704,7 @@ async function main(): Promise<number> {
     if (hasText) feats.push("text");
     const vr = await verifyFile(f, nPages, hasText);
     m += vr.m;
-    cosmetic += vr.cosmetic;
+    overlap += vr.overlap;
     mm += vr.mm;
     skip += vr.skip;
     tm += vr.tm;
@@ -744,11 +745,11 @@ async function main(): Promise<number> {
   // No mismatch dumps were written at all -> don't leave an empty verify_diffs/.
   removeIfEmpty(VERIFY_DIFFS);
 
-  // cosmetic: pages counted in MATCH that equal the oracle only within the
-  // harness's small pixel tolerance (shown only when there are any).
-  const cosmeticNote = cosmetic ? ` (cosmetic=${cosmetic})` : "";
+  // overlap: pages counted in MATCH that differ from ddjvu only by its additive
+  // palette blend at overlapping blits (shown only when there are any).
+  const overlapNote = overlap ? ` (palette-overlap=${overlap})` : "";
   console.log(
-    `render (mask=pgm, bg/color=ppm): MATCH=${m}${cosmeticNote} MISMATCH=${mm}; skipped=${skip}`,
+    `render (mask=pgm, bg/color=ppm): MATCH=${m}${overlapNote} MISMATCH=${mm}; skipped=${skip}`,
   );
   for (const x of bad.slice(0, 50)) console.log("  render MISMATCH", x);
   console.log(`text: MATCH=${tm} MISMATCH=${tmm}; both-empty=${te}`);

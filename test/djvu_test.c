@@ -8,6 +8,7 @@
  * for the full flag list (usage() below). */
 #include "harness_util.h"
 #include "djvu_internal.h"
+#include <math.h>
 #include <signal.h>
 #include <stdarg.h>
 #if defined(_WIN32)
@@ -608,14 +609,46 @@ static void bench_mem_report(const uint8_t *data, size_t len, int sum)
            na, human_bytes(total, tb), human_bytes(peak, pb));
 }
 
+/* Is `rgb` (R,G,B) the same image as `bgr` (B,G,R) with channels swapped? */
+static int images_equal_rgb_bgr(const djvu_image *rgb, const djvu_image *bgr)
+{
+    int x, y;
+    if (rgb->width != bgr->width || rgb->height != bgr->height ||
+        rgb->format != DJVU_FORMAT_RGB24 || bgr->format != DJVU_FORMAT_RGB24)
+        return 0;
+    for (y = 0; y < rgb->height; y++) {
+        const uint8_t *a = rgb->data + (size_t)y * (size_t)rgb->stride;
+        const uint8_t *b = bgr->data + (size_t)y * (size_t)bgr->stride;
+        for (x = 0; x < rgb->width; x++, a += 3, b += 3)
+            if (a[0] != b[2] || a[1] != b[1] || a[2] != b[0]) return 0;
+    }
+    return 1;
+}
+
 /* Verify djvu_page_render_into is byte-identical to djvu_page_render (+ matching
    djvu_page_render_info geometry) for every page at subsamples 1, 2 and 3 (the
-   reduced subsamples also exercise the subsampled color composite). */
+   reduced subsamples also exercise the subsampled color composite).
+   Color pages are also rendered on a second, BGR context (djvu_ctx_set_bgr)
+   and must equal the RGB render with R and B swapped. The compositor takes
+   different code paths for the two (RGB at subsample 1 is the direct top-down
+   stencil; BGR always goes through the pixmap composite), and -verify-render
+   compares against ddjvu in BGR only -- so this is what ties the RGB direct
+   path, the one most callers get, to the oracle. */
 static int run_verify_into(djvu_doc *doc)
 {
     djvu_ctx *ctx = doc->ctx;
-    int n = djvu_doc_page_count(doc), i, si, mism = 0, checked = 0;
+    int n = djvu_doc_page_count(doc), i, si, mism = 0, checked = 0, bgr_checked = 0;
     static const int subs[] = { 1, 2, 3 };
+    djvu_ctx *bctx = djvu_ctx_new(NULL, NULL, NULL, NULL, hu_on_error, NULL);
+    djvu_doc *bdoc = NULL;
+    if (bctx) {
+        djvu_ctx_set_bgr(bctx, 1);
+        bdoc = djvu_doc_open(bctx, doc->data, doc->len);
+    }
+    if (!bdoc) {
+        printf("verify-into: cannot open the document on a BGR context\n");
+        mism++;
+    }
     for (i = 0; i < n; i++) {
         for (si = 0; si < (int)(sizeof(subs) / sizeof(subs[0])); si++) {
             int sub = subs[si];
@@ -647,11 +680,23 @@ static int run_verify_into(djvu_doc *doc)
                         bad = 1;
                 if (bad) { printf("page %d sub %d: render_into bytes differ\n", i + 1, sub); mism++; }
             }
+            if (bdoc && img->format == DJVU_FORMAT_RGB24) {
+                djvu_image *bimg = djvu_page_render(bdoc, i, sub);
+                bgr_checked++;
+                if (!bimg || !images_equal_rgb_bgr(img, bimg)) {
+                    printf("page %d sub %d: RGB render differs from the BGR render\n", i + 1, sub);
+                    mism++;
+                }
+                djvu_image_destroy(bctx, bimg);
+            }
             free(dst);
             djvu_image_destroy(ctx, img);
         }
     }
-    printf("verify-into: %d/%d page renders checked, %d mismatch\n", checked, n * 3, mism);
+    djvu_doc_close(bdoc);
+    djvu_ctx_free(bctx);
+    printf("verify-into: %d/%d page renders checked (%d also RGB vs BGR), %d mismatch\n",
+           checked, n * 3, bgr_checked, mism);
     return mism ? 1 : 0;
 }
 
@@ -1212,7 +1257,7 @@ static int run_verify_abort(const uint8_t *data, size_t len, int page1)
 }
 
 /* Result of comparing our render with the oracle's. */
-enum { IMG_DIFF = 0, IMG_SAME = 1, IMG_COSMETIC = 2 };
+enum { IMG_DIFF = 0, IMG_SAME = 1, IMG_OVERLAP = 2 };
 
 /* Number of differing pixels between two same-size RGB images. */
 static size_t image_rgb_diff_pixels(const djvu_image *mine, const bench_render *ref)
@@ -1231,16 +1276,104 @@ static size_t image_rgb_diff_pixels(const djvu_image *mine, const bench_render *
     return diffs;
 }
 
-/* IMG_SAME: byte-identical. IMG_COSMETIC: an RGB page with a tiny number of
-   differing pixels (<= 2000 and <= 0.01% of the page; *ndiff receives the
-   count) -- tolerated because of ddjvu's FG44 stencil quirk (mask/bg/fg layers
-   are byte-exact; only composite FG placement drifts ~1px on rare text lines).
-   The caller reports it distinctly so the tolerance is never silent.
-   IMG_DIFF: anything else. */
-static int image_compare(const djvu_image *mine, const bench_render *ref, size_t *ndiff)
+/* Palette (FGbz) colours of a page as the compositor paints them, passed
+   through the same gamma correction (target 2.2 / INFO gamma) as compose.c.
+   Kept in the chunk's B,G,R byte order: -verify-render compares BGR images
+   (djvu_ctx_set_bgr + ddjvu BGR24), and the overlap rule is per channel.
+   Returns the colour count (0 if the page has no FGbz palette); *out is
+   malloc'd, caller frees. */
+static int page_palette_rgb(djvu_doc *doc, int page0, uint8_t **out)
 {
-    int y, same = 1;
-    size_t row, total, diffs;
+    uint32_t form_off = doc->pages[page0].form_off, sz, isz;
+    const uint8_t *fg = djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL);
+    const uint8_t *info = djvu_form_find_chunk(doc, form_off, "INFO", &isz, NULL);
+    unsigned char lut[256];
+    double corr = 1.0;
+    int n, i;
+    uint8_t *pal;
+
+    *out = NULL;
+    if (!fg || sz < 3) return 0;
+    n = (fg[1] << 8) | fg[2];
+    if (n <= 0 || 3 + (size_t)n * 3 > sz) return 0;
+    if (info && isz >= 9 && info[8] != 0) corr = 2.2 / ((double)info[8] / 10.0);
+    if (corr < 0.1) corr = 0.1; else if (corr > 10.0) corr = 10.0;
+    for (i = 0; i < 256; i++) {
+        int v = i;
+        if (!(corr > 0.999 && corr < 1.001))
+            v = (int)floor(255.0 * pow((double)i / 255.0, 1.0 / corr) + 0.5);
+        lut[i] = (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
+    }
+    lut[0] = 0; lut[255] = 255;
+    pal = (uint8_t *)malloc((size_t)n * 3);
+    if (!pal) return 0;
+    for (i = 0; i < n; i++) {
+        pal[i * 3 + 0] = lut[fg[3 + i * 3 + 0]];   /* B */
+        pal[i * 3 + 1] = lut[fg[3 + i * 3 + 1]];   /* G */
+        pal[i * 3 + 2] = lut[fg[3 + i * 3 + 2]];   /* R */
+    }
+    *out = pal;
+    return n;
+}
+
+static int pal_has(const uint8_t *pal, int n, const uint8_t *px)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        if (pal[i * 3] == px[0] && pal[i * 3 + 1] == px[1] && pal[i * 3 + 2] == px[2])
+            return 1;
+    return 0;
+}
+
+/* clip(a + c1 [+ c2]) == r on every channel? (c2 may be NULL) */
+static int clip_sum_eq(const uint8_t *a, const uint8_t *c1, const uint8_t *c2,
+                       const uint8_t *r)
+{
+    int k;
+    for (k = 0; k < 3; k++) {
+        int s = a[k] + c1[k] + (c2 ? c2[k] : 0);
+        if ((s > 255 ? 255 : s) != r[k]) return 0;
+    }
+    return 1;
+}
+
+/* Palettes up to this size get the three-group (pairwise) check; real FGbz
+   palettes have tens to a few hundred colours. */
+#define OVERLAP_PAIR_MAX_PAL 1024
+
+/* DjVuLibre's palette compositor (DjVuImage::stencil, two-layer model) zeroes
+   every mask pixel, then blends each colour group in by ADDING its colour,
+   clipped at 255 (GPixmap::blit). Where blits of two or three colour groups
+   overlap, a pixel gets the clipped sum of their colours; we paint one blit's
+   colour. So on a palette page a differing pixel is explained when ours is a
+   palette colour A and the oracle's is clip(A + C1) or clip(A + C1 + C2) for
+   palette colours C1, C2. */
+static int pixel_is_palette_overlap(const uint8_t *a, const uint8_t *r,
+                                    const uint8_t *pal, int n)
+{
+    int i, j;
+    if (!pal_has(pal, n, a)) return 0;
+    for (i = 0; i < n; i++)
+        if (clip_sum_eq(a, pal + i * 3, NULL, r)) return 1;
+    if (n > OVERLAP_PAIR_MAX_PAL) return 0;
+    for (i = 0; i < n; i++)
+        for (j = i; j < n; j++)
+            if (clip_sum_eq(a, pal + i * 3, pal + j * 3, r)) return 1;
+    return 0;
+}
+
+/* IMG_SAME: byte-identical. IMG_OVERLAP: a color palette (FGbz) page where
+   every differing pixel is explained by DjVuLibre's additive blend at
+   overlapping blits of two or three colour groups (pixel_is_palette_overlap; *ndiff
+   receives the count). Our mask, background and colours are unaffected;
+   the caller reports these pages distinctly. IMG_DIFF: anything else,
+   including any pixel the rule does not explain. */
+static int image_compare(djvu_doc *doc, int page0, const djvu_image *mine,
+                         const bench_render *ref, size_t *ndiff)
+{
+    int x, y, same = 1, npal, verdict = IMG_OVERLAP;
+    size_t row, diffs = 0, total;
+    uint8_t *pal = NULL;
 
     *ndiff = 0;
     if (!mine || !ref || !ref->data) return IMG_DIFF;
@@ -1254,12 +1387,30 @@ static int image_compare(const djvu_image *mine, const bench_render *ref, size_t
     if (same) return IMG_SAME;
     if (mine->format != DJVU_FORMAT_RGB24) return IMG_DIFF;
 
+    npal = page_palette_rgb(doc, page0, &pal);
+    if (npal == 0) return IMG_DIFF;
     total = (size_t)mine->width * (size_t)mine->height;
-    diffs = image_rgb_diff_pixels(mine, ref);
+    for (y = 0; y < mine->height && verdict == IMG_OVERLAP; y++) {
+        const uint8_t *a = mine->data + (size_t)y * (size_t)mine->stride;
+        const uint8_t *r = ref->data + (size_t)y * (size_t)ref->rowsize;
+        for (x = 0; x < mine->width; x++, a += 3, r += 3) {
+            if (a[0] == r[0] && a[1] == r[1] && a[2] == r[2]) continue;
+            diffs++;
+            /* overlaps are rare specks; a page-wide difference is a real
+               mismatch, so don't spend time explaining it pixel by pixel */
+            if (diffs * 100 > total || !pixel_is_palette_overlap(a, r, pal, npal)) {
+                verdict = IMG_DIFF;
+                break;
+            }
+        }
+    }
+    free(pal);
+    if (verdict == IMG_DIFF) {
+        *ndiff = image_rgb_diff_pixels(mine, ref);
+        return IMG_DIFF;
+    }
     *ndiff = diffs;
-    if (diffs > 0 && diffs <= 2000 && diffs * 1000000 / total <= 100) /* <= 0.01% */
-        return IMG_COSMETIC;
-    return IMG_DIFF;
+    return IMG_OVERLAP;
 }
 
 static void ensure_dir(const char *dir)
@@ -1402,7 +1553,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
 {
     djvu_ctx *ctx = doc->ctx;
     int npages = djvu_doc_page_count(doc);
-    int m = 0, mm = 0, skip = 0, cosmetic = 0;
+    int m = 0, mm = 0, skip = 0, overlap = 0;
     int i;
 
     /* Compare in BGR: DjVuLibre's pixmap is natively B,G,R, so asking ddjvu for
@@ -1475,18 +1626,18 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             g_verify_phase = "compare";
             {
                 size_t ndiff = 0;
-                cmp = image_compare(mine, &ref, &ndiff);
+                cmp = image_compare(doc, i, mine, &ref, &ndiff);
                 if (cmp == IMG_SAME) {
                     m++;
                     printf("render\t%d\tok\n", i + 1);
-                } else if (cmp == IMG_COSMETIC) {
-                    /* Within the oracle-quirk tolerance (see image_compare):
-                       counted as ok, but flagged with two extra fields so the
-                       runner can count / show it: "cosmetic" + differing
-                       pixel count. */
+                } else if (cmp == IMG_OVERLAP) {
+                    /* Differs only by DjVuLibre's additive palette blend at
+                       overlapping blits (see image_compare): counted as ok,
+                       flagged with two extra fields so the runner can count /
+                       show it: "palette-overlap" + differing pixel count. */
                     m++;
-                    cosmetic++;
-                    printf("render\t%d\tok\tcosmetic\t%zu\n", i + 1, ndiff);
+                    overlap++;
+                    printf("render\t%d\tok\tpalette-overlap\t%zu\n", i + 1, ndiff);
                 }
             }
             if (cmp == IMG_DIFF) {
@@ -1522,14 +1673,15 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         }
         }
     }
-    /* summary <0> <0> <0> <ok> <mismatch> <skip> <cosmetic>: cosmetic is the
-       subset of <ok> pages accepted under the image_compare tolerance. */
+    /* summary <0> <0> <0> <ok> <mismatch> <skip> <overlap>: overlap is the
+       subset of <ok> pages that differ only by DjVuLibre's additive palette
+       blend (IMG_OVERLAP in image_compare). */
     bench_ddjvu_purge();
-    printf("summary\t0\t0\t0\t%d\t%d\t%d\t%d\n", m, mm, skip, cosmetic);
+    printf("summary\t0\t0\t0\t%d\t%d\t%d\t%d\n", m, mm, skip, overlap);
     return mm ? 1 : 0;
 mem_limit:
     bench_ddjvu_purge();
-    printf("summary\t0\t0\t0\t%d\t%d\t%d\t%d\n", m, mm, skip, cosmetic);
+    printf("summary\t0\t0\t0\t%d\t%d\t%d\t%d\n", m, mm, skip, overlap);
     return 3;
 }
 

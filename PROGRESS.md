@@ -137,6 +137,26 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- the 62 "cosmetic" corpus pages, investigated: not decoder bugs, and NOT the
+  1998_compression fg-stencil quirk the docs had blamed. All are palette
+  (FGbz) pages; on each, our JB2 mask equals DjVuLibre's (ddjvu -mode=mask, 0
+  px) and no paper pixel differs. DjVuLibre's two-layer compositor zeroes the
+  mask and *adds* each colour group's colour (clipped at 255), so where blits
+  of 2-3 colour groups overlap ddjvu paints the clipped sum; we paint one
+  blit's colour. The blanket verifier tolerance (<= 2000 px, <= 0.01%) is
+  replaced by that exact rule (`image_compare`: ours = palette A, ddjvu =
+  clip(A + C1 [+ C2])), reported as `ok palette-overlap`. Corpus: MATCH=2488
+  (palette-overlap=62) MISMATCH=2 (1998_compression p19, which is FG44 and
+  now reports as a mismatch again, and nasa001C). Mutation test: bumping one
+  blit's red channel by one level now fails 10 of 12 test061C pages (the old
+  tolerance passed it).
+  Coverage gap found and closed: -verify-render compares in BGR, which
+  always uses the pixmap composite, so the RGB subsample-1 direct stencil
+  (`compose_page_direct_rgb`, what most API users get) was never checked
+  against anything independent -- -verify-into compared it only with
+  render_into, which uses the same path. -verify-into now also renders every
+  colour page on a BGR context and requires equality with R/B swapped
+  (same mutation on the direct path: 117 page renders flagged).
 - ThreadSanitizer build: `-tsan` on `stress-test.ts`, `thread.ts`,
   `test-cache-race.ts` (`out/clang_tsan/`, Linux/macOS only); CI runs all
   three on Linux. Local run in WSL (clang 21) on djvu3spec, djvu2spec,
@@ -189,8 +209,9 @@ NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
     no partial image, no leak, next render identical; cache off and on). No
     decoder bug found. Noted: IW44 decode has no abort checkpoint, so a photo
     page (or the IW44 phase of a compound page) runs to completion once started.
-  - the verifier's cosmetic tolerance (RGB page within 2000 px / 0.01% of
-    ddjvu) is now reported (`ok cosmetic`, `MATCH=N (cosmetic=K)`) instead of
+  - (superseded by the palette-overlap rule above) the verifier's cosmetic
+    tolerance (RGB page within 2000 px / 0.01% of ddjvu) is now reported
+    (`ok cosmetic`, `MATCH=N (cosmetic=K)`) instead of
     silent; it covers the fg-stencil quirk pages incl. 1998_compression p19.
   - `tests.ts`: unopenable/unreadable files fail instead of passing as
     "0 pages"; selection via `selectFiles`.
