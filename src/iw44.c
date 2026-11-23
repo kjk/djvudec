@@ -240,7 +240,7 @@ static void filter_bv_lift_interior_s1(int16_t *q, int w, int s, int s3)
     for (; i < w; i++) {
         int a = (int)q[i - s] + (int)q[i + s];
         int b = (int)q[i - s3] + (int)q[i + s3];
-        q[i] = (int16_t)(q[i] - (((a << 3) + a - b + 16) >> 5));
+        q[i] = (int16_t)(q[i] - ((9 * a - b + 16) >> 5));
     }
 }
 
@@ -257,7 +257,7 @@ static void filter_bv_interp_interior_s1(int16_t *q, int w, int s, int s3)
     for (; i < w; i++) {
         int a = (int)q[i - s] + (int)q[i + s];
         int b = (int)q[i - s3] + (int)q[i + s3];
-        q[i] = (int16_t)(q[i] + (((a << 3) + a - b + 8) >> 4));
+        q[i] = (int16_t)(q[i] + ((9 * a - b + 8) >> 4));
     }
 }
 #endif /* DJVU_IW44_SSE2 */
@@ -307,7 +307,7 @@ static void filter_bv_lift_interior_s1(int16_t *q, int w, int s, int s3)
     for (; i < w; i++) {
         int a = (int)q[i - s] + (int)q[i + s];
         int b = (int)q[i - s3] + (int)q[i + s3];
-        q[i] = (int16_t)(q[i] - (((a << 3) + a - b + 16) >> 5));
+        q[i] = (int16_t)(q[i] - ((9 * a - b + 16) >> 5));
     }
 }
 
@@ -323,11 +323,14 @@ static void filter_bv_interp_interior_s1(int16_t *q, int w, int s, int s3)
     for (; i < w; i++) {
         int a = (int)q[i - s] + (int)q[i + s];
         int b = (int)q[i - s3] + (int)q[i + s3];
-        q[i] = (int16_t)(q[i] + (((a << 3) + a - b + 8) >> 4));
+        q[i] = (int16_t)(q[i] + ((9 * a - b + 8) >> 4));
     }
 }
 #endif /* DJVU_IW44_NEON */
 
+/* The lifting steps compute 9*a - b. Written as a multiply, not
+   (a << 3) + a: a is often negative and left-shifting a negative int is
+   undefined behaviour (UBSan flags it); compilers emit the same code. */
 static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
 {
     int y = 0;
@@ -349,7 +352,7 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
                     while (q < e) {
                         int a = (int)q[-s] + (int)q[s];
                         int b = (int)q[-s3] + (int)q[s3];
-                        *q = (int16_t)(*q - (((a << 3) + a - b + 16) >> 5));
+                        *q = (int16_t)(*q - ((9 * a - b + 16) >> 5));
                         q += scale;
                     }
                 }
@@ -360,21 +363,21 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
                     while (q < e) {
                         int a = (int)q[-s] + (q1 ? (int)*q1 : 0);
                         int b = (int)q[-s3] + (q3 ? (int)*q3 : 0);
-                        *q = (int16_t)(*q - (((a << 3) + a - b + 16) >> 5));
+                        *q = (int16_t)(*q - ((9 * a - b + 16) >> 5));
                         q += scale; if (q1) q1 += scale; if (q3) q3 += scale;
                     }
                 } else if (y >= 1) {
                     while (q < e) {
                         int a = (int)q[-s] + (q1 ? (int)*q1 : 0);
                         int b = (q3 ? (int)*q3 : 0);
-                        *q = (int16_t)(*q - (((a << 3) + a - b + 16) >> 5));
+                        *q = (int16_t)(*q - ((9 * a - b + 16) >> 5));
                         q += scale; if (q1) q1 += scale; if (q3) q3 += scale;
                     }
                 } else {
                     while (q < e) {
                         int a = (q1 ? (int)*q1 : 0);
                         int b = (q3 ? (int)*q3 : 0);
-                        *q = (int16_t)(*q - (((a << 3) + a - b + 16) >> 5));
+                        *q = (int16_t)(*q - ((9 * a - b + 16) >> 5));
                         q += scale; if (q1) q1 += scale; if (q3) q3 += scale;
                     }
                 }
@@ -394,7 +397,7 @@ static void filter_bv(int16_t *p, int w, int h, int rowsize, int scale)
                     while (q < e) {
                         int a = (int)q[-s] + (int)q[s];
                         int b = (int)q[-s3] + (int)q[s3];
-                        *q = (int16_t)(*q + (((a << 3) + a - b + 8) >> 4));
+                        *q = (int16_t)(*q + ((9 * a - b + 8) >> 4));
                         q += scale;
                     }
                 }
@@ -424,21 +427,21 @@ static void filter_bh_row(int16_t *p, int w, int s, int s3)
     if (q < e) {                         /* x = 0 */
         if (q + s < e) a2 = q[s];
         if (q + s3 < e) a3 = q[s3];
-        b2 = b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        b2 = b3 = q[0] - ((9 * (a1 + a2) - a0 - a3 + 16) >> 5);
         q[0] = (int16_t)b3;
         q += s + s;
     }
     if (q < e) {                         /* x = 2 */
         a0 = a1; a1 = a2; a2 = a3;
         if (q + s3 < e) a3 = q[s3];
-        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        b3 = q[0] - ((9 * (a1 + a2) - a0 - a3 + 16) >> 5);
         q[0] = (int16_t)b3;
         q += s + s;
     }
     if (q < e) {                         /* x = 4 */
         b1 = b2; b2 = b3; a0 = a1; a1 = a2; a2 = a3;
         if (q + s3 < e) a3 = q[s3];
-        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        b3 = q[0] - ((9 * (a1 + a2) - a0 - a3 + 16) >> 5);
         q[0] = (int16_t)b3;
         q[-s3] = (int16_t)(q[-s3] + ((b1 + b2 + 1) >> 1));
         q += s + s;
@@ -446,17 +449,17 @@ static void filter_bh_row(int16_t *p, int w, int s, int s3)
     while (q + s3 < e) {                  /* generic */
         a0 = a1; a1 = a2; a2 = a3; a3 = q[s3];
         b0 = b1; b1 = b2; b2 = b3;
-        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        b3 = q[0] - ((9 * (a1 + a2) - a0 - a3 + 16) >> 5);
         q[0] = (int16_t)b3;
-        q[-s3] = (int16_t)(q[-s3] + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 8) >> 4));
+        q[-s3] = (int16_t)(q[-s3] + ((9 * (b1 + b2) - b0 - b3 + 8) >> 4));
         q += s + s;
     }
     while (q < e) {                       /* w-3 <= x < w */
         a0 = a1; a1 = a2; a2 = a3; a3 = 0;
         b0 = b1; b1 = b2; b2 = b3;
-        b3 = q[0] - ((((a1 + a2) << 3) + (a1 + a2) - a0 - a3 + 16) >> 5);
+        b3 = q[0] - ((9 * (a1 + a2) - a0 - a3 + 16) >> 5);
         q[0] = (int16_t)b3;
-        q[-s3] = (int16_t)(q[-s3] + ((((b1 + b2) << 3) + (b1 + b2) - b0 - b3 + 8) >> 4));
+        q[-s3] = (int16_t)(q[-s3] + ((9 * (b1 + b2) - b0 - b3 + 8) >> 4));
         q += s + s;
     }
     while (q - s3 < e) {                   /* w <= x < w+3 */
@@ -484,8 +487,8 @@ static void filter_bh_two_rows_s1(int16_t *p0, int16_t *p1, int w)
     if (q0 < e0) {
         if (q0 + s < e0) { a2_0 = q0[s]; a2_1 = q1[s]; }
         if (q0 + s3 < e0) { a3_0 = q0[s3]; a3_1 = q1[s3]; }
-        b2_0 = b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
-        b2_1 = b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        b2_0 = b3_0 = q0[0] - ((9 * (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b2_1 = b3_1 = q1[0] - ((9 * (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
         q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
         q0 += 2; q1 += 2;
     }
@@ -494,8 +497,8 @@ static void filter_bh_two_rows_s1(int16_t *p0, int16_t *p1, int w)
         a0_0 = a1_0; a1_0 = a2_0; a2_0 = a3_0;
         a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1;
         if (q0 + s3 < e0) { a3_0 = q0[s3]; a3_1 = q1[s3]; }
-        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
-        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        b3_0 = q0[0] - ((9 * (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((9 * (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
         q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
         q0 += 2; q1 += 2;
     }
@@ -504,8 +507,8 @@ static void filter_bh_two_rows_s1(int16_t *p0, int16_t *p1, int w)
         b1_0 = b2_0; b2_0 = b3_0; a0_0 = a1_0; a1_0 = a2_0; a2_0 = a3_0;
         b1_1 = b2_1; b2_1 = b3_1; a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1;
         if (q0 + s3 < e0) { a3_0 = q0[s3]; a3_1 = q1[s3]; }
-        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
-        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        b3_0 = q0[0] - ((9 * (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((9 * (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
         q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
         q0[-s3] = (int16_t)(q0[-s3] + ((b1_0 + b2_0 + 1) >> 1));
         q1[-s3] = (int16_t)(q1[-s3] + ((b1_1 + b2_1 + 1) >> 1));
@@ -516,11 +519,11 @@ static void filter_bh_two_rows_s1(int16_t *p0, int16_t *p1, int w)
         a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1; a3_1 = q1[s3];
         b0_0 = b1_0; b1_0 = b2_0; b2_0 = b3_0;
         b0_1 = b1_1; b1_1 = b2_1; b2_1 = b3_1;
-        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
-        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        b3_0 = q0[0] - ((9 * (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((9 * (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
         q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
-        q0[-s3] = (int16_t)(q0[-s3] + ((((b1_0 + b2_0) << 3) + (b1_0 + b2_0) - b0_0 - b3_0 + 8) >> 4));
-        q1[-s3] = (int16_t)(q1[-s3] + ((((b1_1 + b2_1) << 3) + (b1_1 + b2_1) - b0_1 - b3_1 + 8) >> 4));
+        q0[-s3] = (int16_t)(q0[-s3] + ((9 * (b1_0 + b2_0) - b0_0 - b3_0 + 8) >> 4));
+        q1[-s3] = (int16_t)(q1[-s3] + ((9 * (b1_1 + b2_1) - b0_1 - b3_1 + 8) >> 4));
         q0 += 2; q1 += 2;
     }
     while (q0 < e0) {
@@ -528,11 +531,11 @@ static void filter_bh_two_rows_s1(int16_t *p0, int16_t *p1, int w)
         a0_1 = a1_1; a1_1 = a2_1; a2_1 = a3_1; a3_1 = 0;
         b0_0 = b1_0; b1_0 = b2_0; b2_0 = b3_0;
         b0_1 = b1_1; b1_1 = b2_1; b2_1 = b3_1;
-        b3_0 = q0[0] - ((((a1_0 + a2_0) << 3) + (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
-        b3_1 = q1[0] - ((((a1_1 + a2_1) << 3) + (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
+        b3_0 = q0[0] - ((9 * (a1_0 + a2_0) - a0_0 - a3_0 + 16) >> 5);
+        b3_1 = q1[0] - ((9 * (a1_1 + a2_1) - a0_1 - a3_1 + 16) >> 5);
         q0[0] = (int16_t)b3_0; q1[0] = (int16_t)b3_1;
-        q0[-s3] = (int16_t)(q0[-s3] + ((((b1_0 + b2_0) << 3) + (b1_0 + b2_0) - b0_0 - b3_0 + 8) >> 4));
-        q1[-s3] = (int16_t)(q1[-s3] + ((((b1_1 + b2_1) << 3) + (b1_1 + b2_1) - b0_1 - b3_1 + 8) >> 4));
+        q0[-s3] = (int16_t)(q0[-s3] + ((9 * (b1_0 + b2_0) - b0_0 - b3_0 + 8) >> 4));
+        q1[-s3] = (int16_t)(q1[-s3] + ((9 * (b1_1 + b2_1) - b0_1 - b3_1 + 8) >> 4));
         q0 += 2; q1 += 2;
     }
     while (q0 - s3 < e0) {
@@ -1266,7 +1269,7 @@ static void ycbcr_row_to_rgb(const int8_t *y, const int8_t *b, const int8_t *r,
         int t3 = yv + 128 - t1;
         int tr = yv + 128 + t2;
         int tg = t3 - (t2 >> 1);
-        int tb = t3 + (bv << 1);
+        int tb = t3 + bv * 2;
         dst[0] = (uint8_t)clamp255(tr);
         dst[1] = (uint8_t)clamp255(tg);
         dst[2] = (uint8_t)clamp255(tb);

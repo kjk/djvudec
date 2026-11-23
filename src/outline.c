@@ -62,7 +62,9 @@ static int parse_item(nparse *np, djvu_doc *doc, djvu_outline_item *out,
         memset(out->children, 0, sizeof(djvu_outline_item) * (size_t)nkids);
         for (i = 0; i < nkids; i++) {
             if (parse_item(np, doc, &out->children[i], depth + 1) != 0) {
-                out->nchildren = i;
+                /* count the failed child too: it may own a title/url and
+                   partial children (unfilled slots are zeroed) */
+                out->nchildren = i + 1;
                 return -1;
             }
         }

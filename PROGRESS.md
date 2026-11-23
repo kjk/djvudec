@@ -137,6 +137,18 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- CI fixes (runs 45212217901 / 45238626650). Windows: the runner's clang is
+  older than its MSVC STL accepts (STL1000 "expected Clang 22 or newer")
+  when building the DjVuLibre reference; the Windows DjVuLibre flags now
+  define `_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH`. Linux fuzz-crash job:
+  LeakSanitizer caught a real leak on the new `crash-deep-navm-outline` seed
+  -- when a nested bookmark failed to parse, `parse_item` set
+  `nchildren = i`, excluding the failed child, which already owned a
+  title/url and partial children. Now `i + 1` (slots are zeroed); same fix
+  in `parse_zone` (text.c). The fuzz target now aborts if any allocation is
+  still live after close, so leaks fail on Windows too (Windows ASan has no
+  leak checker). UBSan: the IW44 lifting steps wrote 9*a as `(a << 3) + a`
+  with a negative `a`; now a multiply (same output).
 - JB2 abort checkpoint: `jb2_decode_into` polls `djvu_aborted` once per
   record, covering the page mask and shared dictionaries decoded lazily
   inside a render (lock hooks). An aborted decode returns NULL, is not

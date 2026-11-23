@@ -93,5 +93,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     djvu_doc_close(doc);
     djvu_ctx_free(ctx);
+    /* Leak check on every platform (LeakSanitizer only exists on Linux/macOS,
+       so a leak would otherwise pass the Windows runs). */
+    if (fuzz_live != 0) {
+        fprintf(stderr, "fuzz_target: leaked %zu bytes\n", fuzz_live);
+        abort();
+    }
     return 0;
 }

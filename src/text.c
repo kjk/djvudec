@@ -159,7 +159,9 @@ static int parse_zone(zparse *z, djvu_text_zone *out,
             int kt = 0, kl = 0;
             if (parse_zone(z, &out->children[i], out, prev,
                            toff, prev_toff, prev_tlen, &kt, &kl, depth + 1) != 0) {
-                out->nchildren = i;   /* free what we built */
+                /* free what we built, the failed child included: it may
+                   own text and partial children (unfilled slots are zeroed) */
+                out->nchildren = i + 1;
                 return -1;
             }
             prev = &out->children[i];

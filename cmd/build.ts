@@ -52,8 +52,12 @@ const OBJDIR = `${REF}/djvuobj`;
 const LIBDJVU = `${REF}/${isWindows ? "libdjvu.lib" : "libdjvu.a"}`;
 
 // DjVuLibre include + define flags (oracle only — NOT our code).
+// _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH: the MSVC STL refuses (STL1000) a
+// clang older than the one its VS release ships; the clang on PATH on CI
+// runners can lag the STL by a version.
 const DJVU_DEFINES_WIN =
   `-DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
+  `-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH ` +
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
