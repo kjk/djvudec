@@ -13,6 +13,15 @@
  * the fuzzer's throughput. */
 enum { FUZZ_MAX_PAGES = 20 };
 
+/* Full-resolution pixel budget per input. Unmutated corpus seeds alone were
+ * enough to trip libFuzzer's slow-unit report: test041C (14 x 9094x5630) and
+ * test076C (18 x 4960x7015) are ~700 Mpixels of full-res composite each,
+ * 10-12 s under ASan on a 2-core box (slow-unit-321bf8... / slow-unit-2e9c53...
+ * were exactly those seeds, byte for byte). Once the budget is spent, later
+ * pages still get the subsampled render, text, zones and links -- every codec
+ * is still exercised; only the redundant full-res composite is skipped. */
+#define FUZZ_MAX_FULLRES_PIXELS ((unsigned long long)128 << 20)
+
 /* Budgeted allocator: a crafted INFO chunk can declare a ~1-gigapixel page
  * and the decoder faithfully allocates what the header says (mask bitmap +
  * render buffers = multi-GB for one input; oom-9e1907... was this, not a
@@ -46,6 +55,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     djvu_doc *doc;
     djvu_outline_item *outline;
     int npages, i;
+    unsigned long long fullres_pixels = 0;
 
     djvu_init();
 
@@ -69,10 +79,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         djvu_page_text_zones *zones;
         djvu_page_links *links;
 
-        djvu_doc_page_info(doc, i, &info);
-
-        img = djvu_page_render(doc, i, 1);
-        if (img) djvu_image_destroy(ctx, img);
+        /* page_info failure: render anyway (fuzzes that error path) */
+        if (djvu_doc_page_info(doc, i, &info) == 0 && info.width > 0 &&
+            info.height > 0)
+            fullres_pixels += (unsigned long long)info.width * info.height;
+        if (fullres_pixels <= FUZZ_MAX_FULLRES_PIXELS) {
+            img = djvu_page_render(doc, i, 1);
+            if (img) djvu_image_destroy(ctx, img);
+        }
 
         img = djvu_page_render(doc, i, 4);
         if (img) djvu_image_destroy(ctx, img);
