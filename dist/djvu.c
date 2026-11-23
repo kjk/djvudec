@@ -831,11 +831,7 @@ int djvu_iw44_is_color(iw_pixmap *pm);
 
 size_t djvu_iw44_mem_size(const iw_pixmap *pm);
 
-int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb);
-
 int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb);
-
-int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray);
 
 int  djvu_cpix_init(djvu_ctx *ctx, djvu_cpix *p, int w, int h);
 void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);
@@ -874,14 +870,6 @@ int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
 
 djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
                                    djvu_render_timings *t);
-
-void djvu_debug_dump_comps(djvu_doc *doc);
-djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind);
-djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane);
-djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no);
-int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);
-
-void djvu_debug_verify_mem(djvu_doc *doc, int page_no, const char *stage, FILE *out);
 
 #endif
 
@@ -4229,30 +4217,9 @@ static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
     return 0;
 }
 
-int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
-{
-    return iw44_render_rgb_impl(pm, rgb, 1);
-}
 int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb)
 {
     return iw44_render_rgb_impl(pm, rgb, 0);
-}
-
-int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray)
-{
-    djvu_ctx *ctx; int w, h, i; int8_t *bytes; iw_map *m; int fast;
-    if (!pm) return -1;
-    ctx = pm->ctx; w = pm->w; h = pm->h;
-    m = plane == 1 ? pm->cbmap : plane == 2 ? pm->crmap : pm->ymap;
-    fast = plane == 0 ? 0 : pm->crcbhalf;
-    if (!m) return -1;
-    bytes = (int8_t *)djvu_alloc(ctx, (size_t)w * h);
-    if (!bytes) return -1;
-    memset(bytes, 0, (size_t)w * h);
-    if (map_image(ctx, m, 0, bytes, w, 1, fast) != 0) { djvu_free(ctx, bytes); return -1; }
-    for (i = 0; i < w * h; i++) gray[i] = (uint8_t)clamp255(bytes[i] + 128);
-    djvu_free(ctx, bytes);
-    return 0;
 }
 
 #include <string.h>
@@ -4566,7 +4533,12 @@ static int scaler_scale_red3_into(scaler *s, const djvu_cpix *in,
                        scaler_dest_row(dst0, stride, s->outh, topdown, 0));
     for (y = 0; y < h - 1; y++) {
         const uint8_t *lower = in->d + (size_t)y * row;
-        const uint8_t *upper = lower + row;
+        const uint8_t *upper;
+        if ((y & 31) == 0 && djvu_aborted(ctx)) {
+            djvu_free(ctx, tmp);
+            return -1;
+        }
+        upper = lower + row;
 
         scaler_expand_row3(lower, w, outw,
                            scaler_dest_row(dst0, stride, s->outh, topdown,
@@ -4781,7 +4753,15 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
     }
 
     for (y = 0; y < s->outh; y++) {
-        int fy = s->vcoord[y];
+        int fy;
+
+        if ((y & 63) == 0 && djvu_aborted(ctx)) {
+            djvu_free(ctx, hinfo16);
+            djvu_free(ctx, hinfo32);
+            djvu_free(ctx, lbuf); djvu_free(ctx, p1); djvu_free(ctx, p2);
+            return -1;
+        }
+        fy = s->vcoord[y];
         int fy1 = fy >> FRACBITS, fy2 = fy1 + 1;
         const uint8_t *lower, *upper;
         uint8_t *dest;
@@ -4917,7 +4897,12 @@ int djvu_cpix_scale_ratio(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
     s.outh = outh;
     if (scaler_set_h(&s, numer, denom) != 0 ||
         scaler_set_v(&s, numer, denom) != 0 ||
-        scaler_scale(&s, in, out) != 0) { scaler_free(&s); return -1; }
+        scaler_scale(&s, in, out) != 0) {
+
+        djvu_cpix_free(ctx, out);
+        scaler_free(&s);
+        return -1;
+    }
     scaler_free(&s);
     return 0;
 }
@@ -5027,7 +5012,9 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
     h = pg->info.height;
     if (!pg->bg_scaled.d &&
         compose_background_from_native(ctx, &pg->bg_native, w, h, 1, &pg->bg_scaled) != 0) {
+
         djvu_cpix_free(ctx, &pg->bg_native);
+        djvu_cpix_free(ctx, &pg->bg_scaled);
         return -1;
     }
     return 0;
@@ -5227,6 +5214,10 @@ static int compose_stencil_sub(djvu_ctx *ctx, djvu_cpix *bg, jb2_image *mask,
         jb2_blit *b = &mask->blits[i];
         jb2_shape *s = djvu_jb2_get_shape(mask, b->shapeno);
         compose_acc_ctx c;
+        if ((i & 63) == 0 && djvu_aborted(ctx)) {
+            djvu_free(ctx, acc);
+            return -1;
+        }
         int bx0, by0, bx1, by1, cx0, cy0, tw, th, tx, ty;
         int has_pal = 0, palr = 0, palg = 0, palb = 0;
 
@@ -5691,9 +5682,13 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
                      djvu_iw44_render_rgb_raw(fgpm, fgnat.d) == 0;
         }
         if (t) t->iw44_ms += djvu_bench_now_ms() - tfg;
+
+        if (djvu_aborted(ctx)) stencil_rc = -1;
     }
 
-    if (subsample > 1) {
+    if (stencil_rc != 0) {
+
+    } else if (subsample > 1) {
         stencil_rc = compose_stencil_sub(ctx, &bg, mask, width, height, subsample,
                                          pal, palsize, colordata, ncolor,
                                          &fgnat, fgred, has_fg);
@@ -7236,6 +7231,15 @@ static djvu_image *apply_page_rotation(djvu_ctx *ctx, djvu_doc *doc, int page_no
     return img;
 }
 
+static djvu_image *render_discard_if_aborted(djvu_ctx *ctx, djvu_image *img)
+{
+    if (img && djvu_aborted(ctx)) {
+        djvu_image_destroy(ctx, img);
+        return NULL;
+    }
+    return img;
+}
+
 static djvu_image *page_render_timed_impl(djvu_doc *doc, int page_no, int subsample,
                                           djvu_render_timings *t)
 {
@@ -7300,6 +7304,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     if (!doc) return NULL;
     djvu_render_begin(doc->ctx, NULL);
     out = page_render_timed_impl(doc, page_no, subsample, t);
+    out = render_discard_if_aborted(doc->ctx, out);
     djvu_render_end();
     return out;
 }
@@ -7317,6 +7322,7 @@ djvu_image *djvu_page_render_abortable(djvu_doc *doc, int page_no, int subsample
     if (!doc) return NULL;
     djvu_render_begin(doc->ctx, ab);
     out = page_render_timed_impl(doc, page_no, subsample, NULL);
+    out = render_discard_if_aborted(doc->ctx, out);
     djvu_render_end();
     return out;
 }
@@ -7439,6 +7445,7 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
     if (!dst || !doc || !doc->ctx) return -1;
     djvu_render_begin(doc->ctx, NULL);
     rc = page_render_into_impl(doc, page_no, subsample, dst, stride);
+    if (rc == 0 && djvu_aborted(doc->ctx)) rc = -1;
     djvu_render_end();
     return rc;
 }
@@ -7452,6 +7459,7 @@ int djvu_page_render_into_abortable(djvu_doc *doc, int page_no, int subsample,
     if (!dst || !doc || !doc->ctx) return -1;
     djvu_render_begin(doc->ctx, ab);
     rc = page_render_into_impl(doc, page_no, subsample, dst, stride);
+    if (rc == 0 && djvu_aborted(doc->ctx)) rc = -1;
     djvu_render_end();
     return rc;
 }
