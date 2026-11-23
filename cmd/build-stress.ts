@@ -4,8 +4,8 @@
 //   bun cmd/build-stress.ts -clang
 //   bun cmd/build-stress.ts -asan
 //   bun cmd/build-stress.ts -clean    rebuild the stress objs + exe from scratch
-import { defaultUseClang } from "./build";
 import { buildLibTool, STRESS_TARGET } from "./build-lib";
+import { defaultUseClang } from "./util";
 
 export async function buildStress(
   useClang = defaultUseClang,

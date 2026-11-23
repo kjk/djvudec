@@ -1357,20 +1357,3 @@ int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray)
     return 0;
 }
 
-int djvu_iw44_render_gray(iw_pixmap *pm, uint8_t *gray)
-{
-    djvu_ctx *ctx;
-    int w, h, i;
-    int8_t *bytes;
-    if (!pm || !pm->ymap) return -1;
-    ctx = pm->ctx;
-    w = pm->w; h = pm->h;
-    bytes = (int8_t *)djvu_alloc(ctx, (size_t)w * h);
-    if (!bytes) return -1;
-    memset(bytes, 0, (size_t)w * h);
-    if (map_image(ctx, pm->ymap, 0, bytes, w, 1, 0) != 0) { djvu_free(ctx, bytes); return -1; }
-    for (i = 0; i < w * h; i++)  /* flip bottom-up -> top-down */
-        gray[(h - 1 - i / w) * w + (i % w)] = (uint8_t)clamp255(bytes[i] + 128);
-    djvu_free(ctx, bytes);
-    return 0;
-}

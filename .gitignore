@@ -1,4 +1,4 @@
-# build outputs (harness objects + exes)
+# build outputs (harness objects + exes, bench snapshots, out/amalg, fuzz build)
 out/
 # render mismatch dumps (verify_diffs/ from -verify-render)
 verify_diffs/
@@ -7,15 +7,12 @@ verify_diffs/
 *.pdb
 # reference tools are rebuilt from DjVuLibre by build.ts
 ref_build/
-# upstream reference checkouts (cloned by cmd/get-deps.ts)
+# upstream reference checkouts (cloned by cmd/get-deps.ts); also deps/emsdk
 deps/
-# local test corpora (copied in, not part of the repo)
-testfiles/
 # verifier failure list (written by cmd/tests.ts)
 failures.txt
-# feature scan output (cmd/dump_features.ts)
-features.jsonl
-features_summary.txt
+# default output of cmd/gen-oversize-mark.ts (crafted regression input)
+/oversize-mark.djvu
 # scratch render/text outputs
 *.pnm
 *.pgm
@@ -24,7 +21,7 @@ features_summary.txt
 *.ilk
 /terminals
 # fuzzing: corpus + per-job logs are generated/large (cmd/fuzz.ts).
-# fuzz/crashes/ IS tracked (regression seeds); see the negation below.
+# fuzz/crashes/ is NOT ignored: its artifacts are tracked as regression seeds.
 fuzz/corpus/
 fuzz/corpus.min/
 fuzz/*.log

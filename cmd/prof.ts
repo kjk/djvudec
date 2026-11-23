@@ -16,7 +16,7 @@
 //   git clone https://github.com/kjk/winperf ..\winperf
 import { existsSync, mkdirSync } from "fs";
 import { dirname, resolve } from "path";
-import { isWindows } from "./build";
+import { isWindows } from "./util";
 import { buildProf, PROF_WORKLOADS } from "./build-prof";
 
 const ROOT = dirname(import.meta.dir);

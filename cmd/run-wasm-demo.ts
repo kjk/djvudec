@@ -13,7 +13,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { getDeps } from "./get-deps";
-import { corpusFiles, fmtBytesHuman } from "./corpus";
+import { corpusFiles } from "./corpus";
+import { fmtBytesHuman } from "./util";
 import { ensureWasm, WASM_DIR, WASM_JS, WASM_BIN } from "./build-wasm";
 
 const ROOT = path.resolve(import.meta.dir, "..");

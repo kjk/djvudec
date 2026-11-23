@@ -4,50 +4,62 @@
 //   bun cmd/build.ts -clang   build the harness with clang instead of MSVC
 //   bun cmd/build.ts -clean   delete out/ before building (full rebuild)
 //   bun cmd/build.ts ref      (re)build the DjVuLibre reference tools
+//   bun cmd/build.ts asan     build the clang + AddressSanitizer harness
 //
-// Harness objects and exes land in out/msvc/ or out/clang/. The build is
-// incremental: a source is recompiled only when newer than its object, and the
-// exe is relinked only when an object or libdjvu.lib is newer than the exe.
-// build() returns the exe path. Verification lives in tests.ts.
-import { $ } from "bun";
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "fs";
+// Three flavours of the djvu_test harness, each in its own directory so they
+// never share (or clobber) objects or exes:
+//   build()      out/msvc/djvu_test_msvc.exe | out/clang/djvu_test_clang[.exe]
+//                src/*.c compiled per file -- the verifier (tests.ts)
+//   buildBench() out/msvc_bench/djvu_bench_msvc.exe |
+//                out/clang_bench/djvu_bench_clang[.exe]
+//                the single-file amalgamation, generated into out/amalg/ (NOT
+//                dist/) -- the benchmark (bench.ts)
+//   buildAsan()  out/clang_asan/djvu_test_clang_asan[.exe] -- tests.ts -asan
+//
+// The build is incremental: a source is recompiled only when it (or a shared
+// header) is newer than its object, and the exe is relinked whenever any linked
+// object or libdjvu is newer than the exe. Each function returns the exe path.
+// Verification lives in tests.ts.
+import { copyFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { resolve as resolvePath } from "path";
-import { DIST_C, DIST_H, ensureDist } from "./build-dist";
+import { ensureAmalgamation } from "./build-dist";
 import { DJVULIBRE_DIR, getDeps } from "./get-deps";
+import {
+  binName,
+  clangCFlags,
+  defaultUseClang,
+  DJVUDEC_MSVC_CL_C,
+  headerDeps,
+  isMac,
+  isWindows,
+  LIB_HEADERS,
+  LIB_SRCS,
+  MSVC_CL_CXX,
+  MSVC_LINK,
+  msvcFd,
+  needsRebuild,
+  objBase,
+  ROOT,
+  runCmd,
+} from "./util";
 
-// Forward slashes: Bun's shell treats backslashes as escapes, which breaks the
-// *.cpp / *.o globs below (import.meta.dir is backslashed on Windows).
-const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/"); // deps/ checkout (see get-deps.ts)
 const OUT_ROOT = `${ROOT}/out`;
 const REF = `${ROOT}/ref_build`;
 const OBJDIR = `${REF}/djvuobj`;
 
-export const isWindows = process.platform === "win32";
-export const isMac = process.platform === "darwin";
-/** Non-Windows POSIX (macOS, Linux, …) — shared ref-tool / clang paths. */
-export const isUnix = !isWindows;
-
 // Windows: libdjvu.lib + llvm-lib; Unix: libdjvu.a + ar.
 const LIBDJVU = `${REF}/${isWindows ? "libdjvu.lib" : "libdjvu.a"}`;
 
-const outDir = (useClang: boolean) =>
-  `${OUT_ROOT}/${useClang ? "clang" : "msvc"}`;
-
-function binName(base: string): string {
-  return isWindows ? `${base}.exe` : base;
-}
-
-// DjVuLibre C++ compile flags (oracle only — NOT our code; keep -w, no -Werror).
-// -O3: both sides are built at max optimization so `-bench` is a fair compare.
-const DJVU_CXXFLAGS_WIN =
-  `-std=c++14 -w -O3 -DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
+// DjVuLibre include + define flags (oracle only — NOT our code).
+const DJVU_DEFINES_WIN =
+  `-DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
 // macOS + Linux: same AUTOCONF/UNIX defines DjVuLibre expects without config.h.
-const DJVU_CXXFLAGS_UNIX =
-  `-std=c++14 -w -O3 -DAUTOCONF -DHAVE_STDINCLUDES ` +
+const DJVU_DEFINES_UNIX =
+  `-DAUTOCONF -DHAVE_STDINCLUDES ` +
   `-DHAVE_NAMESPACES -DHAVE_PTHREAD -DHAVE_STDINT_H -DHAVE_WCHAR_H ` +
   `-DHAVE_STRERROR -DHAVE_DIRENT_H -DHAVE_SYS_TIME_H ` +
   `-DHAS_WCHAR=1 -DHAS_WCTYPE=1 -DHAS_MBSTATE=1 -DUNIX ` +
@@ -55,57 +67,20 @@ const DJVU_CXXFLAGS_UNIX =
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
-/** @deprecated alias — prefer DJVU_CXXFLAGS_UNIX */
-const DJVU_CXXFLAGS_MAC = DJVU_CXXFLAGS_UNIX;
+// clang++ compile flags for DjVuLibre and the bench shim (keep -w, no -Werror).
+// -O3: both sides are built at max optimization so `-bench` is a fair compare.
+const DJVU_CXXFLAGS =
+  `-std=c++14 -w -O3 ${isWindows ? DJVU_DEFINES_WIN : DJVU_DEFINES_UNIX}`;
 
-// Windows: advapi32. Unix: pthread; Linux also needs libm for libdjvu.
-const djvuLinkLibs = () => {
-  if (isWindows) return "-ladvapi32";
-  // macOS libSystem already provides libm; Linux needs -lm explicitly.
-  return isMac ? "-lpthread" : "-lpthread -lm";
-};
-const INTERNAL_H = `${ROOT}/src/djvu_internal.h`;
-const PUBLIC_H = `${ROOT}/src/djvu.h`;
+// Windows: advapi32. Unix: pthread; Linux also needs libm (macOS libSystem
+// already provides it).
+const DJVU_LINK_LIBS = isWindows
+  ? "-ladvapi32"
+  : isMac
+    ? "-lpthread"
+    : "-lpthread -lm";
 
-const SRCS = [
-  "src/zptable.c",
-  "src/zpcodec.c",
-  "src/bzz.c",
-  "src/bitmap.c",
-  "src/jb2.c",
-  "src/iw44_zigzag.c",
-  "src/iw44.c",
-  "src/scaler.c",
-  "src/compose.c",
-  "src/document.c",
-  "src/bufread.c",
-  "src/render.c",
-  "src/text.c",
-  "src/outline.c",
-  "src/annot.c",
-  "src/debug.c",
-];
-
-const objBase = (src: string) => src.replace(/^src\//, "").replace(/\.c$/, "");
-
-function needsRebuild(output: string, ...inputs: string[]): boolean {
-  if (!existsSync(output)) return true;
-  const outMtime = statSync(output).mtimeMs;
-  for (const input of inputs) {
-    if (!existsSync(input)) return true;
-    if (statSync(input).mtimeMs > outMtime) return true;
-  }
-  return false;
-}
-
-/** Echo a compiler/link command, then run it (stdout progress tracking). */
-async function runCmd(cmd: string, cwd?: string): Promise<void> {
-  console.log(cwd ? `+ cd ${cwd} && ${cmd}` : `+ ${cmd}`);
-  const shell = $`${{ raw: cmd }}`;
-  if (cwd) await shell.cwd(cwd);
-  else await shell;
-}
-
+/** Delete ALL of out/ (every toolchain, bench snapshots, fuzz + prof builds). */
 export function cleanBuildOutput(): void {
   rmSync(OUT_ROOT, { recursive: true, force: true });
 }
@@ -114,490 +89,218 @@ export function refToolPath(tool: string): string {
   return `${REF}/${binName(tool)}`;
 }
 
-// Build ddjvu.exe / djvutxt.exe from DjVuLibre (static, decode oracle).
-async function buildRefWindows() {
+// Build the DjVuLibre reference tools (static, decode oracle): ddjvu, djvutxt,
+// bzz, djvused from tools/, plus our per-layer probes from test/. Each is built
+// once and then left alone (delete ref_build/ to force a rebuild).
+export async function buildRef(): Promise<void> {
   mkdirSync(REF, { recursive: true });
-  const common = DJVU_CXXFLAGS_WIN;
   const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
-  for (const tool of ["ddjvu", "djvutxt", "bzz", "djvused"]) {
-    const exe = `${REF}/${tool}.exe`;
+  const tools = [
+    ...["ddjvu", "djvutxt", "bzz", "djvused"].map((t) => ({
+      name: t,
+      src: `${DJVULIBRE}/tools/${t}.cpp`,
+    })),
+    ...["iw44ref", "jb2ref", "jb2prof"].map((t) => ({
+      name: t,
+      src: `${ROOT}/test/${t}.cpp`,
+    })),
+  ];
+  for (const { name, src } of tools) {
+    const exe = refToolPath(name);
     if (existsSync(exe)) continue;
     await runCmd(
-      `clang++ ${common} ${libsrc} ${DJVULIBRE}/tools/${tool}.cpp -ladvapi32 -o ${exe}`,
-    );
-  }
-  if (!existsSync(`${REF}/iw44ref.exe`)) {
-    await runCmd(
-      `clang++ ${common} ${libsrc} ${ROOT}/test/iw44ref.cpp -ladvapi32 -o ${REF}/iw44ref.exe`,
-    );
-  }
-  if (!existsSync(`${REF}/jb2ref.exe`)) {
-    await runCmd(
-      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2ref.cpp -ladvapi32 -o ${REF}/jb2ref.exe`,
-    );
-  }
-  if (!existsSync(`${REF}/jb2prof.exe`)) {
-    await runCmd(
-      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2prof.cpp -ladvapi32 -o ${REF}/jb2prof.exe`,
+      `clang++ ${DJVU_CXXFLAGS} ${libsrc} ${src} ${DJVU_LINK_LIBS} -o ${exe}`,
     );
   }
   console.log("ref tools ready");
-}
-
-async function buildRefMac() {
-  mkdirSync(REF, { recursive: true });
-  const common = DJVU_CXXFLAGS_MAC;
-  const link = djvuLinkLibs();
-  const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
-  for (const tool of ["ddjvu", "djvutxt", "bzz", "djvused"]) {
-    const exe = refToolPath(tool);
-    if (existsSync(exe)) continue;
-    await runCmd(
-      `clang++ ${common} ${libsrc} ${DJVULIBRE}/tools/${tool}.cpp ${link} -o ${exe}`,
-    );
-  }
-  if (!existsSync(refToolPath("iw44ref"))) {
-    await runCmd(
-      `clang++ ${common} ${libsrc} ${ROOT}/test/iw44ref.cpp ${link} -o ${refToolPath("iw44ref")}`,
-    );
-  }
-  if (!existsSync(refToolPath("jb2ref"))) {
-    await runCmd(
-      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2ref.cpp ${link} -o ${refToolPath("jb2ref")}`,
-    );
-  }
-  if (!existsSync(refToolPath("jb2prof"))) {
-    await runCmd(
-      `clang++ ${common} ${libsrc} ${ROOT}/test/jb2prof.cpp ${link} -o ${refToolPath("jb2prof")}`,
-    );
-  }
-  console.log("ref tools ready");
-}
-
-export async function buildRef() {
-  if (isWindows) return buildRefWindows();
-  if (isUnix) return buildRefMac();
-  throw new Error(`unsupported platform: ${process.platform}`);
 }
 
 // Compile all of libdjvu into a cached static lib (one-time, slow) so djvu_test
 // can link DjVuLibre's decoder for `-bench` without recompiling it every build.
-async function buildLibDjvuWindows() {
+export async function buildLibDjvu(): Promise<void> {
   if (existsSync(LIBDJVU)) return;
-  console.log("building libdjvu.lib (one-time, slow)...");
+  const name = isWindows ? "libdjvu.lib" : "libdjvu.a";
+  console.log(`building ${name} (one-time, slow)...`);
   mkdirSync(OBJDIR, { recursive: true });
-  await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c ${DJVULIBRE}/libdjvu/*.cpp`, OBJDIR);
-  await runCmd(`llvm-lib /out:${LIBDJVU} *.o`, OBJDIR);
-  console.log("built libdjvu.lib");
-}
-
-async function buildLibDjvuMac() {
-  if (existsSync(LIBDJVU)) return;
-  console.log("building libdjvu.a (one-time, slow)...");
-  mkdirSync(OBJDIR, { recursive: true });
-  await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c ${DJVULIBRE}/libdjvu/*.cpp`, OBJDIR);
-  await runCmd(`ar rcs ${LIBDJVU} *.o`, OBJDIR);
-  console.log("built libdjvu.a");
-}
-
-export async function buildLibDjvu() {
-  if (isWindows) return buildLibDjvuWindows();
-  if (isUnix) return buildLibDjvuMac();
-  throw new Error(`unsupported platform: ${process.platform}`);
-}
-
-// DjVuLibre include + define flags shared by the clang and cl shim builds.
-const DJVU_DEFINES =
-  `-DHAVE_NAMESPACES -DWIN32 -D_CRT_SECURE_NO_WARNINGS ` +
-  `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
-  `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
-
-// On Windows the default toolchain is MSVC; -clang forces clang. Elsewhere only
-// clang is available.
-export const defaultUseClang = !isWindows;
-
-// MSVC cl.exe / link.exe flags (use '-' not '/' — Bun's shell treats backslashes
-// as escapes). Always emit PDBs so WPR/VTune/VS can map stacks on any build.
-//
-// Compile: -Zi (debug info) + -Fd<dir>/ at each use site (compiler PDB next to
-// objects; without -Fd, cl drops vc*.pdb in cwd). -GL is whole-program for LTCG.
-// Link: -DEBUG writes the final .pdb next to the .exe; works with -LTCG.
-// -Ob3: inline any suitable function (aggressive inlining with /O2).
-// Link-only / bench-shim base: no elevated warnings (libdjvu headers, bench_ddjvu.cpp).
-export const MSVC_CL_COMMON = `-nologo -O2 -Ob3 -GL -Zi -MT`;
-export const MSVC_CL_CXX = `${MSVC_CL_COMMON} -EHsc -std:c++14`;
-
-// Strict warnings for djvudec C sources only (src/*.c, test/*.c, dist/djvu.c).
-// -W4 -WX: high warning level + warnings as errors (C4700/C4701 uninitialized use).
-export const DJVUDEC_MSVC_CL_C =
-  `${MSVC_CL_COMMON} -W4 -WX -std:c11 -D_CRT_SECURE_NO_WARNINGS`;
-
-/** link.exe flags for MSVC exes: LTCG + full PDB next to the image. */
-export const MSVC_LINK = `-LTCG -DEBUG -INCREMENTAL:NO`;
-
-/** Compiler intermediate PDB location (-Fd). Pass the object output directory. */
-/* Bun's shell mangles `\`; always emit forward slashes for -Fd. */
-export const msvcFd = (dir: string) => `-Fd${dir.replaceAll("\\", "/")}/`;
-
-export const DJVUDEC_CLANG_C_WARN =
-  "-Wall -Wextra -Wuninitialized -Wconditional-uninitialized -Winit-self -Werror";
-const DJVUDEC_CLANG_C_STD = "-std=c11";
-const DJVUDEC_CLANG_C_DEFINES_WIN = "-D_CRT_SECURE_NO_WARNINGS";
-
-/** clang flags for djvudec C sources only (not libdjvu). */
-export function clangCFlags(opt = "-g -O3", win = isWindows): string {
-  // _DEFAULT_SOURCE: glibc exposes clock_gettime under -std=c11.
-  const crt = win
-    ? ` ${DJVUDEC_CLANG_C_DEFINES_WIN}`
-    : " -D_DEFAULT_SOURCE";
-  return `${DJVUDEC_CLANG_C_STD} ${opt} ${DJVUDEC_CLANG_C_WARN}${crt}`;
-}
-const harnessExeName = (useClang: boolean) =>
-  binName(`djvu_test_${useClang ? "clang" : "msvc"}`);
-
-type CompileUnit = { src: string; obj: string; label: string };
-
-function cUnits(dir: string, ext: string): CompileUnit[] {
-  return [
-    ...SRCS.map((s) => {
-      const base = objBase(s);
-      return {
-        src: `${ROOT}/${s}`,
-        obj: `${dir}/${base}.${ext}`,
-        label: s,
-      };
-    }),
-    {
-      src: `${ROOT}/test/djvu_test.c`,
-      obj: `${dir}/djvu_test.${ext}`,
-      label: "test/djvu_test.c",
-    },
-  ];
-}
-
-// Build the harness with clang -> out/clang/djvu_test_clang[.exe].
-async function buildClangWindows(): Promise<string> {
-  const dir = outDir(true);
-  const exe = harnessExeName(true);
-  const exePath = `${dir}/${exe}`;
-  mkdirSync(dir, { recursive: true });
-
-  const units = cUnits(dir, "o");
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${dir}/bench_ddjvu_clang.o`,
-    label: "test/bench_ddjvu.cpp",
-  };
-
-  for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
-    await runCmd(`clang ${clangCFlags()} -I${ROOT}/src -c -o ${u.obj} ${u.src}`);
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c -o ${bench.obj} ${bench.src}`);
-  }
-
-  const objs = [...units.map((u) => u.obj), bench.obj];
-  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${exePath}`);
-  }
-  return exePath;
-}
-
-async function buildClangMac(): Promise<string> {
-  const dir = outDir(true);
-  const exe = harnessExeName(true);
-  const exePath = `${dir}/${exe}`;
-  mkdirSync(dir, { recursive: true });
-
-  const units = cUnits(dir, "o");
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${dir}/bench_ddjvu_clang.o`,
-    label: "test/bench_ddjvu.cpp",
-  };
-
-  for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
-    await runCmd(`clang ${clangCFlags()} -I${ROOT}/src -c -o ${u.obj} ${u.src}`);
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c -o ${bench.obj} ${bench.src}`);
-  }
-
-  const objs = [...units.map((u) => u.obj), bench.obj];
-  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} ${djvuLinkLibs()} -o ${exePath}`);
-  }
-  return exePath;
-}
-
-async function buildClang(): Promise<string> {
-  if (isWindows) return buildClangWindows();
-  if (isUnix) return buildClangMac();
-  throw new Error(`unsupported platform: ${process.platform}`);
-}
-
-// Build the harness with MSVC cl -> out/msvc/djvu_test_msvc.exe.
-// cl flags use '-' (a synonym for '/') so Bun's shell doesn't treat them as paths.
-async function buildMsvc(): Promise<string> {
-  if (!isWindows) throw new Error("MSVC build requires Windows");
-  const dir = outDir(false);
-  const exe = harnessExeName(false);
-  const exePath = `${dir}/${exe}`;
-  mkdirSync(dir, { recursive: true });
-
-  const units = cUnits(dir, "obj");
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${dir}/bench_ddjvu_msvc.obj`,
-    label: "test/bench_ddjvu.cpp",
-  };
-
-  const clC = `${DJVUDEC_MSVC_CL_C} -Isrc -Fo${dir}/ ${msvcFd(dir)} -c`;
-  for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
-    const rel = u.src.startsWith(`${ROOT}/`) ? u.src.slice(ROOT.length + 1) : u.src;
-    await runCmd(`cl ${clC} ${rel}`, ROOT);
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    await runCmd(
-      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} ${msvcFd(dir)} -c test/bench_ddjvu.cpp`,
-      ROOT,
-    );
-  }
-
-  const objs = [...units.map((u) => u.obj), bench.obj];
-  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await runCmd(
-      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link ${MSVC_LINK}`,
-      ROOT,
-    );
-  }
-  return exePath;
-}
-
-// Build djvu_test from dist/djvu.c (amalgamation) for -bench. Regenerates dist/
-// when src/ is newer. tests.ts uses build() (src/*.c) instead.
-async function buildBenchClangWindows(): Promise<string> {
-  const dir = outDir(true);
-  const exe = harnessExeName(true);
-  const exePath = `${dir}/${exe}`;
-  mkdirSync(dir, { recursive: true });
-
-  const internalH = `${ROOT}/src/djvu_internal.h`;
-  const lib = { src: DIST_C, obj: `${dir}/djvu.o`, label: "dist/djvu.c" };
-  const test = {
-    src: `${ROOT}/test/djvu_test.c`,
-    obj: `${dir}/djvu_test.o`,
-    label: "test/djvu_test.c",
-  };
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${dir}/bench_ddjvu_clang.o`,
-    label: "test/bench_ddjvu.cpp",
-  };
-
-  if (needsRebuild(lib.obj, lib.src, DIST_H)) {
-    await runCmd(`clang ${clangCFlags()} -I${ROOT}/dist -c -o ${lib.obj} ${lib.src}`);
-  }
-  if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
-    await runCmd(
-      `clang ${clangCFlags()} -I${ROOT}/dist -I${ROOT}/src -c -o ${test.obj} ${test.src}`,
-    );
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c -o ${bench.obj} ${bench.src}`);
-  }
-
-  const objs = [lib.obj, test.obj, bench.obj];
-  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${exePath}`);
-  }
-  return exePath;
-}
-
-async function buildBenchClangMac(): Promise<string> {
-  const dir = outDir(true);
-  const exe = harnessExeName(true);
-  const exePath = `${dir}/${exe}`;
-  mkdirSync(dir, { recursive: true });
-
-  const internalH = `${ROOT}/src/djvu_internal.h`;
-  const lib = { src: DIST_C, obj: `${dir}/djvu.o`, label: "dist/djvu.c" };
-  const test = {
-    src: `${ROOT}/test/djvu_test.c`,
-    obj: `${dir}/djvu_test.o`,
-    label: "test/djvu_test.c",
-  };
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${dir}/bench_ddjvu_clang.o`,
-    label: "test/bench_ddjvu.cpp",
-  };
-
-  if (needsRebuild(lib.obj, lib.src, DIST_H)) {
-    await runCmd(`clang ${clangCFlags()} -I${ROOT}/dist -c -o ${lib.obj} ${lib.src}`);
-  }
-  if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
-    await runCmd(
-      `clang ${clangCFlags()} -I${ROOT}/dist -I${ROOT}/src -c -o ${test.obj} ${test.src}`,
-    );
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c -o ${bench.obj} ${bench.src}`);
-  }
-
-  const objs = [lib.obj, test.obj, bench.obj];
-  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await runCmd(`clang++ ${objs.join(" ")} ${LIBDJVU} ${djvuLinkLibs()} -o ${exePath}`);
-  }
-  return exePath;
-}
-
-async function buildBenchClang(): Promise<string> {
-  if (isWindows) return buildBenchClangWindows();
-  if (isUnix) return buildBenchClangMac();
-  throw new Error(`unsupported platform: ${process.platform}`);
-}
-
-async function buildBenchMsvc(): Promise<string> {
-  if (!isWindows) throw new Error("MSVC build requires Windows");
-  const dir = outDir(false);
-  const exe = harnessExeName(false);
-  const exePath = `${dir}/${exe}`;
-  mkdirSync(dir, { recursive: true });
-
-  const internalH = `${ROOT}/src/djvu_internal.h`;
-  const lib = { src: DIST_C, obj: `${dir}/djvu.obj`, label: "dist/djvu.c" };
-  const test = {
-    src: `${ROOT}/test/djvu_test.c`,
-    obj: `${dir}/djvu_test.obj`,
-    label: "test/djvu_test.c",
-  };
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${dir}/bench_ddjvu_msvc.obj`,
-    label: "test/bench_ddjvu.cpp",
-  };
-
-  const clLib = `${DJVUDEC_MSVC_CL_C} -Idist -Fo${dir}/ ${msvcFd(dir)} -c`;
-  const clTest = `${DJVUDEC_MSVC_CL_C} -Idist -Isrc -Fo${dir}/ ${msvcFd(dir)} -c`;
-  if (needsRebuild(lib.obj, lib.src, DIST_H)) {
-    await runCmd(`cl ${clLib} dist/djvu.c`, ROOT);
-  }
-  if (needsRebuild(test.obj, test.src, DIST_H, internalH)) {
-    await runCmd(`cl ${clTest} test/djvu_test.c`, ROOT);
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    await runCmd(
-      `cl ${MSVC_CL_CXX} ${DJVU_DEFINES} -Fo${bench.obj} ${msvcFd(dir)} -c test/bench_ddjvu.cpp`,
-      ROOT,
-    );
-  }
-
-  const objs = [lib.obj, test.obj, bench.obj];
-  if (needsRebuild(exePath, ...objs, LIBDJVU)) {
-    await runCmd(
-      `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exePath} -link ${MSVC_LINK}`,
-      ROOT,
-    );
-  }
-  return exePath;
-}
-
-export async function buildBench(useClang = defaultUseClang): Promise<string> {
-  await ensureDist();
-  await buildLibDjvu();
-  const name = harnessExeName(useClang);
-  const exePath = `${outDir(useClang)}/${name}`;
-  const internalH = `${ROOT}/src/djvu_internal.h`;
-  const ext = useClang ? "o" : "obj";
-  const libObj = `${outDir(useClang)}/djvu.${ext}`;
-  const testObj = `${outDir(useClang)}/djvu_test.${ext}`;
-  const benchObj = `${outDir(useClang)}/bench_ddjvu_${useClang ? "clang.o" : "msvc.obj"}`;
-
-  const stale =
-    needsRebuild(libObj, DIST_C, DIST_H) ||
-    needsRebuild(testObj, `${ROOT}/test/djvu_test.c`, DIST_H, internalH) ||
-    needsRebuild(benchObj, `${ROOT}/test/bench_ddjvu.cpp`) ||
-    needsRebuild(exePath, LIBDJVU);
-
-  if (!stale && existsSync(exePath)) {
-    console.log(`${name} up to date (dist amalgamation)`);
-    return exePath;
-  }
-
-  console.log(`building ${name} from dist/ (${useClang ? "clang" : "msvc"})...`);
-  const exe = useClang ? await buildBenchClang() : await buildBenchMsvc();
+  await runCmd(`clang++ ${DJVU_CXXFLAGS} -c ${DJVULIBRE}/libdjvu/*.cpp`, OBJDIR);
+  await runCmd(
+    isWindows ? `llvm-lib /out:${LIBDJVU} *.o` : `ar rcs ${LIBDJVU} *.o`,
+    OBJDIR,
+  );
   console.log(`built ${name}`);
-  return exe;
 }
 
-// Build the C library + test harness. djvu_test links the DjVuLibre timing shim
-// (bench_ddjvu.cpp) + libdjvu.lib so `djvu_test -bench` can compare decode speed.
-// Returns the path to the built executable.
-export async function build(useClang = defaultUseClang): Promise<string> {
+// ---------------------------------------------------------------------------
+// djvu_test harness (test/djvu_test.c + the decoder + the DjVuLibre timing shim
+// test/bench_ddjvu.cpp + libdjvu), in three flavours -- see the header comment.
+
+type Flavour = "test" | "bench" | "asan";
+
+// One incremental build step: run cmd when out is missing or older than an input.
+type Step = { out: string; inputs: string[]; cmd: string; cwd?: string };
+
+const stepStale = (s: Step) => needsRebuild(s.out, ...s.inputs);
+
+type Harness = { name: string; dir: string; exe: string; steps: Step[] };
+
+const AMALG_DIR = `${OUT_ROOT}/amalg`;
+const TEST_C = `${ROOT}/test/djvu_test.c`;
+const SHIM_CPP = `${ROOT}/test/bench_ddjvu.cpp`;
+
+/** Path relative to the repo root (cl runs with cwd=ROOT and relative paths). */
+const rootRel = (p: string) =>
+  p.startsWith(`${ROOT}/`) ? p.slice(ROOT.length + 1) : p;
+
+function harnessDir(flavour: Flavour, useClang: boolean): string {
+  if (flavour === "asan") return `${OUT_ROOT}/clang_asan`;
+  const tc = useClang ? "clang" : "msvc";
+  return `${OUT_ROOT}/${flavour === "bench" ? `${tc}_bench` : tc}`;
+}
+
+function harnessName(flavour: Flavour, useClang: boolean): string {
+  if (flavour === "asan") return binName("djvu_test_clang_asan");
+  const tc = useClang ? "clang" : "msvc";
+  return binName(`${flavour === "bench" ? "djvu_bench" : "djvu_test"}_${tc}`);
+}
+
+// The compile + link steps for one harness flavour. The last step is the link;
+// its inputs are every linked object plus libdjvu, so the exe is stale whenever
+// any of them is newer (e.g. after a link that failed because the exe was
+// locked, or after an object was recompiled by an interrupted earlier run).
+function harnessPlan(flavour: Flavour, useClang: boolean): Harness {
+  const dir = harnessDir(flavour, useClang);
+  const name = harnessName(flavour, useClang);
+  const exe = `${dir}/${name}`;
+  const ext = useClang ? "o" : "obj";
+  const steps: Step[] = [];
+
+  // clang: per-file -c -o. ASan: -O1 for readable traces.
+  const san = flavour === "asan" ? "-fsanitize=address " : "";
+  const cflags = `${san}${clangCFlags(flavour === "asan" ? "-g -O1" : "-g -O3")}`;
+  // cl: flags use '-' (a synonym for '/') and repo-relative paths with
+  // cwd=ROOT, so Bun's shell doesn't mangle them.
+  const compileC = (src: string, obj: string, incs: string[], inputs: string[]) => {
+    if (useClang) {
+      steps.push({
+        out: obj,
+        inputs: [src, ...inputs],
+        cmd: `clang ${cflags} ${incs.map((i) => `-I${i}`).join(" ")} -c -o ${obj} ${src}`,
+      });
+    } else {
+      const inc = incs.map((i) => `-I${rootRel(i)}`).join(" ");
+      steps.push({
+        out: obj,
+        inputs: [src, ...inputs],
+        cmd: `cl ${DJVUDEC_MSVC_CL_C} ${inc} -Fo${dir}/ ${msvcFd(dir)} -c ${rootRel(src)}`,
+        cwd: ROOT,
+      });
+    }
+  };
+
+  // The decoder: src/*.c one object each, or the amalgamation as one object.
+  // djvu_test.c also includes djvu_internal.h (debug + BZZ hooks), from src/.
+  if (flavour === "bench") {
+    const a = { h: `${AMALG_DIR}/djvu.h`, c: `${AMALG_DIR}/djvu.c` };
+    compileC(a.c, `${dir}/djvu.${ext}`, [AMALG_DIR], [a.h]);
+    compileC(TEST_C, `${dir}/djvu_test.${ext}`, [AMALG_DIR, `${ROOT}/src`], [a.h, ...headerDeps(TEST_C)]);
+  } else {
+    for (const s of LIB_SRCS) {
+      compileC(`${ROOT}/${s}`, `${dir}/${objBase(s)}.${ext}`, [`${ROOT}/src`], LIB_HEADERS);
+    }
+    compileC(TEST_C, `${dir}/djvu_test.${ext}`, [`${ROOT}/src`], headerDeps(TEST_C));
+  }
+
+  // The DjVuLibre timing shim (C++, uninstrumented even under ASan: with the
+  // prebuilt libdjvu it is the oracle, not the code under test).
+  const shim = `${dir}/bench_ddjvu_${useClang ? "clang.o" : "msvc.obj"}`;
+  steps.push(
+    useClang
+      ? {
+          out: shim,
+          inputs: [SHIM_CPP],
+          cmd: `clang++ ${DJVU_CXXFLAGS} -c -o ${shim} ${SHIM_CPP}`,
+        }
+      : {
+          out: shim,
+          inputs: [SHIM_CPP],
+          cmd: `cl ${MSVC_CL_CXX} ${DJVU_DEFINES_WIN} -Fo${shim} ${msvcFd(dir)} -c ${rootRel(SHIM_CPP)}`,
+          cwd: ROOT,
+        },
+  );
+
+  // libdjvu.lib uses the static CRT (/MT); MSVC_CL_COMMON has -MT to match.
+  const objs = steps.map((s) => s.out);
+  steps.push(
+    useClang
+      ? {
+          out: exe,
+          inputs: [...objs, LIBDJVU],
+          cmd: `clang++ ${san}${objs.join(" ")} ${LIBDJVU} ${DJVU_LINK_LIBS} -o ${exe}`,
+        }
+      : {
+          out: exe,
+          inputs: [...objs, LIBDJVU],
+          cmd: `cl -nologo ${objs.join(" ")} ${LIBDJVU} advapi32.lib -Fe:${exe} -link ${MSVC_LINK}`,
+          cwd: ROOT,
+        },
+  );
+  return { name, dir, exe, steps };
+}
+
+async function buildHarness(flavour: Flavour, useClang: boolean): Promise<string> {
   if (!useClang && !isWindows) {
     throw new Error("MSVC build requires Windows; use clang on Unix");
   }
   await buildLibDjvu();
-  const name = harnessExeName(useClang);
-  const exePath = `${outDir(useClang)}/${name}`;
-  const stale = needsRebuild(exePath, LIBDJVU); // quick check before logging
-  const anyUnit = cUnits(outDir(useClang), useClang ? "o" : "obj").some((u) =>
-    needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H),
-  );
-  const benchObj = `${outDir(useClang)}/bench_ddjvu_${useClang ? "clang.o" : "msvc.obj"}`;
-  const benchStale = needsRebuild(benchObj, `${ROOT}/test/bench_ddjvu.cpp`);
+  if (flavour === "bench") ensureAmalgamation(AMALG_DIR);
+  const h = harnessPlan(flavour, useClang);
+  mkdirSync(h.dir, { recursive: true });
 
-  if (!stale && !anyUnit && !benchStale && existsSync(exePath)) {
-    console.log(`${name} up to date`);
-    return exePath;
+  if (!h.steps.some(stepStale)) {
+    console.log(`${h.name} up to date`);
+  } else {
+    const what = flavour === "asan" ? "clang+asan" : useClang ? "clang" : "msvc";
+    const from = flavour === "bench" ? ", out/amalg amalgamation" : "";
+    console.log(`building ${h.name} (${what}${from})...`);
+    // Re-check each step as we reach it: a recompiled object makes the link stale.
+    for (const s of h.steps) {
+      if (stepStale(s)) await runCmd(s.cmd, s.cwd);
+    }
+    console.log(`built ${h.name}`);
   }
+  if (flavour === "asan" && isWindows) await copyAsanRuntimeDll(h.dir);
+  return h.exe;
+}
 
-  console.log(`building ${name} (${useClang ? "clang" : "msvc"})...`);
-  const exe = useClang ? await buildClang() : await buildMsvc();
-  console.log(`built ${name}`);
-  return exe;
+// Build the C library (src/*.c) + test harness. djvu_test links the DjVuLibre
+// timing shim (bench_ddjvu.cpp) + libdjvu so the verifier has its in-process
+// oracle. Returns the path to the built executable.
+export function build(useClang = defaultUseClang): Promise<string> {
+  return buildHarness("test", useClang);
+}
+
+// Build the same harness from the single-file amalgamation, for bench.ts
+// (`-bench` / `-bench-sum`): the amalgamation is what consumers ship, and one
+// translation unit is what the optimizer sees there. The amalgamation is
+// generated into out/amalg/ by the same code as build-dist.ts and refreshed
+// when src/ is newer; the tracked dist/ files are never read or written, and
+// no WASM build is triggered.
+export function buildBench(useClang = defaultUseClang): Promise<string> {
+  return buildHarness("bench", useClang);
+}
+
+/** Remove only the bench build (out/amalg + this toolchain's bench dir). */
+export function cleanBenchOutput(useClang = defaultUseClang): void {
+  rmSync(AMALG_DIR, { recursive: true, force: true });
+  rmSync(harnessDir("bench", useClang), { recursive: true, force: true });
 }
 
 // Build a clang + AddressSanitizer harness -> out/clang_asan/. The decoder
 // units are instrumented (-fsanitize=address -O1 for readable traces); the
-// bench shim + prebuilt libdjvu.lib stay uninstrumented (they're the oracle).
+// bench shim + prebuilt libdjvu stay uninstrumented (they're the oracle).
 // Used by `bun cmd/tests.ts -asan` to run the verifier under ASan.
-const ASAN_DIR = `${OUT_ROOT}/clang_asan`;
-const ASAN_EXE = `${ASAN_DIR}/${binName("djvu_test_clang_asan")}`;
-
-async function buildAsanWindows(): Promise<string> {
-  await buildLibDjvu();
-  mkdirSync(ASAN_DIR, { recursive: true });
-  const units = cUnits(ASAN_DIR, "o");
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${ASAN_DIR}/bench_ddjvu_clang.o`,
-  };
-  const ASAN = "-fsanitize=address";
-  let built = false;
-  for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
-    built = true;
-    await runCmd(
-      `clang ${ASAN} ${clangCFlags("-g -O1")} -I${ROOT}/src -c -o ${u.obj} ${u.src}`,
-    );
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    built = true;
-    await runCmd(`clang++ ${DJVU_CXXFLAGS_WIN} -c -o ${bench.obj} ${bench.src}`);
-  }
-  const objs = [...units.map((u) => u.obj), bench.obj];
-  if (needsRebuild(ASAN_EXE, ...objs, LIBDJVU)) {
-    built = true;
-    await runCmd(`clang++ ${ASAN} ${objs.join(" ")} ${LIBDJVU} -ladvapi32 -o ${ASAN_EXE}`);
-  }
-  await copyAsanRuntimeDll(ASAN_DIR);
-  console.log(built ? `built ${binName("djvu_test_clang_asan")}` : `${binName("djvu_test_clang_asan")} up to date`);
-  return ASAN_EXE;
+export function buildAsan(): Promise<string> {
+  return buildHarness("asan", true);
 }
 
 // The exe links the DYNAMIC asan runtime (clang_rt.asan_dynamic-x86_64.dll),
@@ -618,42 +321,6 @@ export async function copyAsanRuntimeDll(dir: string): Promise<void> {
     return;
   }
   copyFileSync(src, dst);
-}
-
-async function buildAsanMac(): Promise<string> {
-  await buildLibDjvu();
-  mkdirSync(ASAN_DIR, { recursive: true });
-  const units = cUnits(ASAN_DIR, "o");
-  const bench = {
-    src: `${ROOT}/test/bench_ddjvu.cpp`,
-    obj: `${ASAN_DIR}/bench_ddjvu_clang.o`,
-  };
-  const ASAN = "-fsanitize=address";
-  let built = false;
-  for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, INTERNAL_H, PUBLIC_H)) continue;
-    built = true;
-    await runCmd(
-      `clang ${ASAN} ${clangCFlags("-g -O1", false)} -I${ROOT}/src -c -o ${u.obj} ${u.src}`,
-    );
-  }
-  if (needsRebuild(bench.obj, bench.src)) {
-    built = true;
-    await runCmd(`clang++ ${DJVU_CXXFLAGS_MAC} -c -o ${bench.obj} ${bench.src}`);
-  }
-  const objs = [...units.map((u) => u.obj), bench.obj];
-  if (needsRebuild(ASAN_EXE, ...objs, LIBDJVU)) {
-    built = true;
-    await runCmd(`clang++ ${ASAN} ${objs.join(" ")} ${LIBDJVU} ${djvuLinkLibs()} -o ${ASAN_EXE}`);
-  }
-  console.log(built ? `built ${binName("djvu_test_clang_asan")}` : `${binName("djvu_test_clang_asan")} up to date`);
-  return ASAN_EXE;
-}
-
-export async function buildAsan(): Promise<string> {
-  if (isWindows) return buildAsanWindows();
-  if (isUnix) return buildAsanMac();
-  throw new Error(`unsupported platform: ${process.platform}`);
 }
 
 if (import.meta.main) {

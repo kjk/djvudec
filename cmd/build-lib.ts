@@ -1,18 +1,24 @@
-// Shared build for library-only tools (djvudec_dump, bench_before, bench_after).
+// Shared build for library-only tools: src/*.c + one test/*.c driver, no
+// DjVuLibre (djvudec_dump, djvudec_thread, djvudec_stress, oversize_iw44,
+// crash_cache_race, bench_before / bench_after, the libFuzzer target).
 import { $ } from "bun";
-import { existsSync, mkdirSync, rmSync, statSync } from "fs";
+import { existsSync, mkdirSync, rmSync } from "fs";
+import { copyAsanRuntimeDll } from "./build";
 import {
+  CLANG_C_LINK_LIBS,
   clangCFlags,
-  copyAsanRuntimeDll,
   defaultUseClang,
   DJVUDEC_MSVC_CL_C,
   isMac,
   isWindows,
+  headerDeps,
+  LIB_SRCS,
   MSVC_LINK,
   msvcFd,
-} from "./build";
-
-const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
+  needsRebuild,
+  objBase,
+  ROOT,
+} from "./util";
 
 // libFuzzer is not in Apple clang (Xcode). On macOS use Homebrew LLVM
 // (`brew install llvm`); Windows keeps the VS-bundled clang. Override with
@@ -44,25 +50,6 @@ function resolveFuzzClang(): string {
   );
 }
 
-export const LIB_SRCS = [
-  "src/zptable.c",
-  "src/zpcodec.c",
-  "src/bzz.c",
-  "src/bitmap.c",
-  "src/jb2.c",
-  "src/iw44_zigzag.c",
-  "src/iw44.c",
-  "src/scaler.c",
-  "src/compose.c",
-  "src/document.c",
-  "src/bufread.c",
-  "src/render.c",
-  "src/text.c",
-  "src/outline.c",
-  "src/annot.c",
-  "src/debug.c",
-];
-
 export type LibToolTarget = {
   /** e.g. out or out/bench_before */
   outRoot: string;
@@ -71,8 +58,6 @@ export type LibToolTarget = {
   /** test driver .c (default test/djvudec_dump.c) */
   testSrc?: string;
 };
-
-const objBase = (src: string) => src.replace(/^src\//, "").replace(/\.c$/, "");
 
 function exeFile(base: string, useClang: boolean): string {
   return useClang && !isWindows ? base : `${base}.exe`;
@@ -88,25 +73,10 @@ function toolDir(target: LibToolTarget, useClang: boolean, asan = false): string
   return `${target.outRoot}/${asan ? "clang_asan" : useClang ? "clang" : "msvc"}`;
 }
 
-function needsRebuild(output: string, ...inputs: string[]): boolean {
-  if (!existsSync(output)) return true;
-  const outMtime = statSync(output).mtimeMs;
-  for (const input of inputs) {
-    if (!existsSync(input)) return true;
-    if (statSync(input).mtimeMs > outMtime) return true;
-  }
-  return false;
-}
-
-// Every .c includes these; treat them as inputs so a header edit forces a
-// recompile. Without this, changing a struct layout in djvu_internal.h leaves
-// stale objects compiled against the old layout -> ABI mismatch at link time.
-const HEADERS = [`${ROOT}/src/djvu.h`, `${ROOT}/src/djvu_internal.h`];
-
 type CompileUnit = { src: string; obj: string };
 
-// An object is stale if older than its source OR any shared header.
-const objStale = (u: CompileUnit) => needsRebuild(u.obj, u.src, ...HEADERS);
+// An object is stale if older than its source OR any header it may include.
+const objStale = (u: CompileUnit) => needsRebuild(u.obj, u.src, ...headerDeps(u.src));
 
 function cUnits(dir: string, ext: string, testSrc: string): CompileUnit[] {
   const testBase = testSrc.replace(/^.*\//, "").replace(/\.c$/, "");
@@ -140,8 +110,10 @@ async function buildClang(target: LibToolTarget, asan = false): Promise<string> 
 
   const objs = units.map((u) => u.obj);
   if (needsRebuild(exePath, ...objs)) {
+    // Non-Windows/macOS: -lm (compose.c uses pow) + -lpthread (threaded
+    // harnesses), the same libs build.ts links djvu_test with on Linux.
     const link = asan ? "-fsanitize=address " : "";
-    await $`clang ${{ raw: link }}${{ raw: objs.join(" ") }} -o ${exePath}`;
+    await $`clang ${{ raw: link }}${{ raw: objs.join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${exePath}`;
   }
   if (asan && isWindows) await copyAsanRuntimeDll(dir);
   return exePath;
@@ -212,7 +184,7 @@ export async function buildFuzz(clean = false): Promise<string> {
   }
   const objs = units.map((u) => u.obj);
   if (needsRebuild(FUZZ_EXE, ...objs)) {
-    await $`${clang} -fsanitize=${sanitize} ${{ raw: objs.join(" ") }} -o ${FUZZ_EXE}`;
+    await $`${clang} -fsanitize=${sanitize} ${{ raw: objs.join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${FUZZ_EXE}`;
   }
   if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
   console.log("built djvudec_fuzz");
@@ -273,6 +245,14 @@ export const STRESS_TARGET: LibToolTarget = {
   testSrc: `${ROOT}/test/djvudec_stress.c`,
 };
 
+// test/crash_cache_race.c: concurrent render vs djvu_doc_drop_page_cache
+// regression test (run by cmd/test-cache-race.ts).
+export const CACHE_RACE_TARGET: LibToolTarget = {
+  outRoot: `${ROOT}/out`,
+  exeBase: "crash_cache_race",
+  testSrc: `${ROOT}/test/crash_cache_race.c`,
+};
+
 export const OVERSIZE_IW44_TARGET: LibToolTarget = {
   outRoot: `${ROOT}/out`,
   exeBase: "oversize_iw44",
@@ -284,4 +264,29 @@ export function benchTarget(variant: "before" | "after"): LibToolTarget {
     outRoot: `${ROOT}/out/bench_${variant}`,
     exeBase: `bench_${variant}`,
   };
+}
+
+// The exe a before/after comparison should run (bench-perf.ts, profile-render.ts).
+//   after:  built / refreshed from the current sources, as usual.
+//   before: a SNAPSHOT of the sources at the time `bun cmd/build-bench.ts before`
+//           ran. It is never (re)built here: its objects are older than the
+//           edited src/ by design, so an implicit incremental build would
+//           silently recompile it from the edited sources and the comparison
+//           would be after-vs-after. Missing snapshot -> error.
+export async function benchExe(
+  variant: "before" | "after",
+  useClang = defaultUseClang,
+): Promise<string> {
+  if (variant === "after") return buildLibTool(benchTarget("after"), useClang);
+  const exe = libToolExePath(benchTarget("before"), useClang);
+  if (!existsSync(exe)) {
+    const tc = useClang && isWindows ? " -clang" : "";
+    throw new Error(
+      `no "before" snapshot at ${exe}\n` +
+        `Build it from the baseline sources first (before editing src/):\n` +
+        `  bun cmd/build-bench.ts before${tc}\n` +
+        `It is never rebuilt implicitly; only build-bench.ts (re)builds it.`,
+    );
+  }
+  return exe;
 }

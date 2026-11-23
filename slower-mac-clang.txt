@@ -1,5 +1,0 @@
-# Pages where djvudec render is slower than libdjvu (best of 2 runs per page)
-# columns: document<TAB>page<TAB>libdjvu_ms<TAB>djvudec_ms<TAB>diff_ms<TAB>pct
-
-
-# 0 slower page(s) in 0 file(s)

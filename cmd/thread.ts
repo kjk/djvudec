@@ -3,8 +3,7 @@
 //   bun cmd/thread.ts file.djvu
 //   bun cmd/thread.ts -cpu 4 -nops 512 file.djvu
 //   bun cmd/thread.ts -clang deps/DjVuLibre/doc/djvu3spec.djvu
-import { $ } from "bun";
-import { defaultUseClang } from "./build";
+import { defaultUseClang } from "./util";
 import { buildThread } from "./build-thread";
 
 const args = process.argv.slice(2);

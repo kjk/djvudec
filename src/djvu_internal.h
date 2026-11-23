@@ -633,9 +633,10 @@ void djvu_bm_compress(djvu_ctx *ctx, djvu_bitmap *bm);
 void djvu_bm_uncompress(djvu_ctx *ctx, djvu_bitmap *bm);
 /* Uncompress when only RLE is present (no-op if bytes already exist). */
 void djvu_bm_ensure_bytes(djvu_ctx *ctx, djvu_bitmap *bm);
-/* Uncompress into a fresh private copy, leaving src untouched (for shared-dict
-   shapes, which concurrent renders read lock-free). Free with djvu_bm_free. */
-int djvu_bm_uncompress_copy(djvu_ctx *ctx, const djvu_bitmap *src, djvu_bitmap *dst);
+/* Fresh private byte copy of src (RLE or raw), leaving src untouched (for
+   shared-dict shapes, which concurrent renders read lock-free). Free with
+   djvu_bm_free. */
+int djvu_bm_private_copy(djvu_ctx *ctx, const djvu_bitmap *src, djvu_bitmap *dst);
 
 /* Call fn(user, x0, x1, py) for each contiguous ink run [x0,x1) of src
    placed at page offset (left, bottom). */
@@ -736,9 +737,6 @@ int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb);
    GPixmap orientation; used by the compositor. */
 int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb);
 
-/* Render full-resolution gray (1 byte/pixel, 0..255). Returns 0 on success. */
-int djvu_iw44_render_gray(iw_pixmap *pm, uint8_t *gray);
-
 /* debug: render plane 0=Y,1=Cb,2=Cr as gray (value+128). */
 int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray);
 
@@ -805,7 +803,6 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
 
 void djvu_debug_dump_comps(djvu_doc *doc);
 djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind);
-djvu_image *djvu_debug_render_iw_gray(djvu_doc *doc, int page_no, int kind);
 djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane);
 djvu_image *djvu_debug_render_bg(djvu_doc *doc, int page_no);
 int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);

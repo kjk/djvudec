@@ -10,7 +10,8 @@
 import { readFileSync } from "fs";
 import { dirname } from "path";
 import { getDeps } from "./get-deps";
-import { corpusSummary, fileLabel, fmtBytesHuman, selectFiles } from "./corpus";
+import { corpusSummary, fileLabel, selectFiles } from "./corpus";
+import { fmtBytesHuman } from "./util";
 import { parseDjvu, type DjvuInfo, type PageInfo } from "./djvu-parse";
 
 const ROOT = dirname(import.meta.dir);

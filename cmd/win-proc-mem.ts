@@ -1,7 +1,9 @@
 // Windows process memory enumeration via bun:ffi (kernel32 + psapi).
 // Used by tests.ts to detect runaway djvu_test_* processes after each subprocess exits.
 
+import type { Subprocess } from "bun";
 import { dlopen, FFIType, ptr } from "bun:ffi";
+import { fmtBytesHuman } from "./util";
 
 const TH32CS_SNAPPROCESS = 0x00000002;
 const INVALID_HANDLE = BigInt(-1);
@@ -16,9 +18,9 @@ const PE32W_NAME_OFF = 44;
 const PMC_SIZE = 72;
 const PMC_WORKING_SET_OFF = 16;
 
-export const DJVU_TEST_MEM_LIMIT = 8 * 1024 ** 3;
+const DJVU_TEST_MEM_LIMIT = 8 * 1024 ** 3;
 
-export type DjvuTestProc = { pid: number; name: string; workingSetBytes: number };
+type DjvuTestProc = { pid: number; name: string; workingSetBytes: number };
 
 type WinApis = {
   enumDjvuTestProcs(): DjvuTestProc[];
@@ -115,14 +117,6 @@ function winApis(): WinApis | null {
   return apis;
 }
 
-/** Human-readable byte size, e.g. 8.5 GB. */
-export function fmtBytes(n: number): string {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
 /** Record pid → file as soon as djvu_test is spawned (kept for the whole test run). */
 export function trackDjvuTestProc(
   proc: Subprocess,
@@ -136,7 +130,7 @@ export function trackDjvuTestProc(
  * After a djvu_test subprocess exits, scan for any djvu_test_* process over the
  * memory limit. Returns the file path associated with the offender, or null.
  */
-export function checkDjvuTestMemory(
+function checkDjvuTestMemory(
   pidToFile: Map<number, string>,
   limitBytes = DJVU_TEST_MEM_LIMIT,
 ): { file: string; pid: number; name: string; bytes: number } | null {
@@ -161,8 +155,8 @@ export async function awaitDjvuTestProc(
   const hit = checkDjvuTestMemory(pidToFile, DJVU_TEST_MEM_LIMIT);
   if (hit) {
     console.error(
-      `MEMORY LIMIT: ${hit.name} (pid ${hit.pid}) using ${fmtBytes(hit.bytes)} ` +
-        `(limit ${fmtBytes(DJVU_TEST_MEM_LIMIT)})`,
+      `MEMORY LIMIT: ${hit.name} (pid ${hit.pid}) using ${fmtBytesHuman(hit.bytes)} ` +
+        `(limit ${fmtBytesHuman(DJVU_TEST_MEM_LIMIT)})`,
     );
     console.error(`testing file: ${hit.file}`);
     killAllDjvuTestProcs();
@@ -172,6 +166,6 @@ export async function awaitDjvuTestProc(
 }
 
 /** Kill every djvu_test_* process on the system. */
-export function killAllDjvuTestProcs(): void {
+function killAllDjvuTestProcs(): void {
   winApis()?.killDjvuTestProcs();
 }

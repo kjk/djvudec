@@ -4,29 +4,20 @@
  *   djvu_test -page <N> -out <out.pgm|out.ppm> <in.djvu>   (1-based page)
  *   djvu_test -page <N> -text <in.djvu>
  *
- * Used to verify against DjVuLibre's ddjvu / djvutxt. */
-#include "djvu.h"
+ * Used to verify against DjVuLibre's ddjvu / djvutxt. Run with no arguments
+ * for the full flag list (usage() below). */
+#include "harness_util.h"
 #include "djvu_internal.h"
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <stdarg.h>
 #if defined(_WIN32)
 #include <direct.h>
-#include <fcntl.h>
-#include <io.h>
 #include <malloc.h>
-#include <windows.h>
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 #else
-#include <pthread.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #endif
-
-/* Disable DjVuLibre ddjvuapi document cache (-verify-render cold oracle). */
-int djvu_test_ddjvu_cold = 0;
 
 /* timing / oracle helpers from bench_ddjvu.cpp (DjVuLibre, same clock) */
 typedef struct bench_render {
@@ -46,10 +37,6 @@ typedef struct bench_session_timings {
 } bench_session_timings;
 
 int bench_ddjvu_session(const char *path, int sum, bench_session_timings *out);
-double bench_ddjvu_page_ms(const char *path, int page0);
-double bench_ddjvu_doc_ms(const char *path);
-double bench_ddjvu_page_sum_ms(const char *path, int page0);
-double bench_ddjvu_doc_sum_ms(const char *path);
 int bench_ddjvu_render_page(const char *path, int page0, int want_rgb,
                             bench_render *out);
 void bench_render_free(bench_render *img);
@@ -60,10 +47,9 @@ void bench_ddjvu_mem_debug(FILE *out);
 /* ---- per-context memory accounting (djvu_alloc_cb / djvu_free_cb hooks) ----
    Installed by -verify-render so each file's run reports total allocations and
    peak live memory, confirms every allocation was freed, and aborts (exit 3) if
-   a single djvu_ctx's live memory exceeds 4 GB. Each allocation carries a small
-   header storing its size so frees can be attributed. The djvu_ctx arg lets us
-   keep separate tallies per context. Single-threaded (one thread per process). */
-#define MEM_HDR 16  /* preserves malloc's 16-byte alignment; holds the size */
+   a single djvu_ctx's live memory exceeds 4 GB. hu_size_malloc records each
+   block's size so frees can be attributed. The djvu_ctx arg lets us keep
+   separate tallies per context. Single-threaded (one thread per process). */
 #define MEM_LIMIT_BYTES ((size_t)4 * 1024 * 1024 * 1024)
 #define MEM_MAX_CTX 64
 
@@ -106,12 +92,11 @@ static const char *human_bytes(size_t bytes, char *buf)
 
 static void *mem_alloc(void *user, void *ctx, size_t size)
 {
-    uint8_t *p;
+    void *p;
     mem_rec *r;
     (void)user;
-    p = (uint8_t *)malloc(size + MEM_HDR);
+    p = hu_size_malloc(size);
     if (!p) return NULL;
-    *(size_t *)p = size;
     r = mem_find(ctx);
     if (r) {
         r->total += size;
@@ -127,21 +112,18 @@ static void *mem_alloc(void *user, void *ctx, size_t size)
             exit(3);
         }
     }
-    return p + MEM_HDR;
+    return p;
 }
 
 static void mem_free(void *user, void *ctx, void *ptr)
 {
-    uint8_t *p;
     size_t size;
     mem_rec *r;
     (void)user;
     if (!ptr) return;
-    p = (uint8_t *)ptr - MEM_HDR;
-    size = *(size_t *)p;
+    size = hu_size_free(ptr);
     r = mem_find(ctx);
     if (r) { r->live -= size; r->n_free++; }
-    free(p);
 }
 
 /* After a file: human-readable per-context report (stderr) + a machine-readable
@@ -178,81 +160,6 @@ static int mem_finish(int rc)
         return rc ? rc : 4;
     }
     return rc;
-}
-
-static void on_error(void *user, djvu_severity sev, const char *msg)
-{
-    (void)user;
-    const char *s = sev >= DJVU_SEVERITY_ERROR ? "error" :
-                    sev == DJVU_SEVERITY_WARNING ? "warning" : "info";
-    fprintf(stderr, "djvu %s: %s\n", s, msg);
-}
-
-static uint8_t *read_file(const char *path, size_t *out_len)
-{
-    FILE *f = fopen(path, "rb");
-    uint8_t *buf;
-    long n;
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (n < 0) { fclose(f); return NULL; }
-    buf = (uint8_t *)malloc((size_t)n);
-    if (!buf) { fclose(f); return NULL; }
-    if (fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); fclose(f); return NULL; }
-    fclose(f);
-    *out_len = (size_t)n;
-    return buf;
-}
-
-/* Write img as a PNM. PNM color order is RGB; when bgr != 0 the image data is
-   B,G,R (e.g. rendered with djvu_ctx_set_bgr) and each pixel is swapped back to
-   RGB on the way out so the file is still a correct PPM. */
-static int write_pnm_ex(const char *path, djvu_image *img, int bgr)
-{
-    FILE *f;
-    int y;
-    if (path && !strcmp(path, "-")) {
-#if defined(_WIN32)
-        _setmode(_fileno(stdout), _O_BINARY);
-#endif
-        f = stdout;
-    } else {
-        f = fopen(path, "wb");
-        if (!f) return -1;
-    }
-    if (img->format == DJVU_FORMAT_RGB24)
-        fprintf(f, "P6\n%d %d\n255\n", img->width, img->height);
-    else
-        fprintf(f, "P5\n%d %d\n255\n", img->width, img->height);
-    if (bgr && img->format == DJVU_FORMAT_RGB24) {
-        uint8_t *row = (uint8_t *)malloc((size_t)img->width * 3);
-        if (!row) { if (f != stdout) fclose(f); return -1; }
-        for (y = 0; y < img->height; y++) {
-            const uint8_t *src = img->data + (size_t)y * img->stride;
-            int x;
-            for (x = 0; x < img->width; x++) {
-                row[x * 3 + 0] = src[x * 3 + 2];
-                row[x * 3 + 1] = src[x * 3 + 1];
-                row[x * 3 + 2] = src[x * 3 + 0];
-            }
-            fwrite(row, 1, (size_t)img->width * 3, f);
-        }
-        free(row);
-    } else {
-        for (y = 0; y < img->height; y++)
-            fwrite(img->data + (size_t)y * img->stride, 1,
-                   (size_t)img->width * img->format, f);
-    }
-    if (f != stdout)
-        fclose(f);
-    return 0;
-}
-
-static int write_pnm(const char *path, djvu_image *img)
-{
-    return write_pnm_ex(path, img, 0);
 }
 
 /* tests.ts textNorm: strip CR/FF and trailing whitespace. */
@@ -345,19 +252,6 @@ static page_kind_t page_kind(djvu_doc *doc, int page0)
     return PK_OTHER;
 }
 
-static const char *page_type_name(djvu_page_type t)
-{
-    static const char *names[] = {"unknown", "bitonal", "photo", "compound"};
-    return names[(t >= 0 && t <= 3) ? t : 0];
-}
-
-static const char *page_kind_name(page_kind_t k)
-{
-    if (k == PK_MASK) return "mask";
-    if (k == PK_BG) return "bg";
-    return "other";
-}
-
 static double bench_best2(double a, double b)
 {
     if (a < 0.0) return b;
@@ -441,24 +335,32 @@ static void bench_print_compare_table(const bench_cmp_row *rows, int nrows)
     }
 }
 
-static int sum_page_subsample(djvu_doc *doc, int page0, djvu_page_type *ptype);
+static int sum_page_subsample(djvu_doc *doc, int page0);
 static int sum_render_into(djvu_doc *doc, int page0, int subsample, uint8_t *dst);
-static size_t sum_dst_capacity(djvu_doc *doc, int page0);
+static uint8_t *sum_dst_alloc(djvu_doc *doc, int page0, int subsample);
 
-/* Open doc, render each page, close; record open/page/close times. */
+/* Open doc, render each page, close; record open/page/close times.
+   The per-page clock is kept symmetric with bench_ddjvu_session
+   (bench_ddjvu.cpp):
+     sum == 0: djvu_page_render allocates its result inside the timer (libdjvu's
+               side mallocs its output inside the timer too); the image is
+               destroyed after the clock stops, on both sides.
+     sum != 0: the destination buffer (the engine's DIB stand-in) is allocated
+               and touched before the clock starts and freed after it stops, on
+               both sides; the subsample pick is engine load-time work and is
+               outside the timer as well.
+   total_ms is the sum of the timed regions (open + pages + close) on both
+   sides. */
 static int bench_ours_session(djvu_ctx *ctx, const uint8_t *data, size_t len, int sum,
                               bench_session_timings *out)
 {
     djvu_doc *doc;
     int n, i;
-    double t0, t_session;
-    uint8_t *sum_dst = NULL;
-    size_t sum_cap = 0;
+    double t0;
 
     if (!out || !out->page_ms || out->npages <= 0)
         return -1;
 
-    t_session = bench_now_ms();
     t0 = bench_now_ms();
     doc = djvu_doc_open(ctx, data, len);
     out->open_ms = bench_now_ms() - t0;
@@ -470,29 +372,24 @@ static int bench_ours_session(djvu_ctx *ctx, const uint8_t *data, size_t len, in
         n = out->npages;
 
     for (i = 0; i < n; i++) {
-        t0 = bench_now_ms();
         if (sum) {
-            djvu_page_type ptype;
-            int subsample;
-            size_t cap;
-            int ok = 0;
+            int subsample = sum_page_subsample(doc, i);
+            uint8_t *dst = sum_dst_alloc(doc, i, subsample);
+            int ok;
 
-            subsample = sum_page_subsample(doc, i, &ptype);
-            cap = sum_dst_capacity(doc, i);
-            if (cap > sum_cap) {
-                uint8_t *nd = cap ? (uint8_t *)realloc(sum_dst, cap) : NULL;
-                if (cap && !nd) {
-                    out->page_ms[i] = -1.0;
-                    continue;
-                }
-                sum_dst = nd;
-                sum_cap = cap;
+            if (!dst) {
+                out->page_ms[i] = -1.0;
+                continue;
             }
-            if (sum_dst && sum_render_into(doc, i, subsample, sum_dst) == 0)
-                ok = 1;
+            t0 = bench_now_ms();
+            ok = sum_render_into(doc, i, subsample, dst) == 0;
             out->page_ms[i] = ok ? bench_now_ms() - t0 : -1.0;
+            free(dst);
         } else {
-            djvu_image *img = djvu_page_render(doc, i, 1);
+            djvu_image *img;
+
+            t0 = bench_now_ms();
+            img = djvu_page_render(doc, i, 1);
             out->page_ms[i] = bench_now_ms() - t0;
             if (img)
                 djvu_image_destroy(ctx, img);
@@ -502,62 +399,25 @@ static int bench_ours_session(djvu_ctx *ctx, const uint8_t *data, size_t len, in
     }
     for (i = n; i < out->npages; i++)
         out->page_ms[i] = -1.0;
-    free(sum_dst);
 
     t0 = bench_now_ms();
     djvu_doc_close(doc);
     out->close_ms = bench_now_ms() - t0;
-    out->total_ms = bench_now_ms() - t_session;
+    /* total = the timed regions only (open + rendered pages + close), so the
+       untimed destination-buffer handling above cannot leak into it */
+    out->total_ms = out->open_ms + out->close_ms;
+    for (i = 0; i < n; i++)
+        if (out->page_ms[i] >= 0.0)
+            out->total_ms += out->page_ms[i];
     return 0;
 }
 
-#if defined(_WIN32)
-static CRITICAL_SECTION g_bench_cache_lock;
-static int g_bench_cache_lock_inited;
-
-static void bench_cache_lock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    if (!g_bench_cache_lock_inited) {
-        InitializeCriticalSection(&g_bench_cache_lock);
-        g_bench_cache_lock_inited = 1;
-    }
-    EnterCriticalSection(&g_bench_cache_lock);
-}
-
-static void bench_cache_unlock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    LeaveCriticalSection(&g_bench_cache_lock);
-}
-#else
-static pthread_mutex_t g_bench_cache_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static void bench_cache_lock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    pthread_mutex_lock(&g_bench_cache_lock);
-}
-
-static void bench_cache_unlock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    pthread_mutex_unlock(&g_bench_cache_lock);
-}
-#endif
-
-static djvu_ctx *bench_ctx_new(int per_page)
+static djvu_ctx *bench_ctx_new(void)
 {
     /* Always supply the lock hooks: shared JB2 dicts then decode lazily on
        first use (like libdjvu) instead of eagerly at open, so -bench charges
        dict decode to the page that needs it on both sides. */
-    (void)per_page;
-    return djvu_ctx_new(NULL, NULL, bench_cache_lock_cb, bench_cache_unlock_cb,
-                        NULL, NULL);
+    return djvu_ctx_new(NULL, NULL, hu_lock_cb, hu_unlock_cb, NULL, NULL);
 }
 
 static void bench_ctx_configure(djvu_ctx *ctx, int per_page, int sum)
@@ -574,8 +434,8 @@ static void bench_ctx_configure(djvu_ctx *ctx, int per_page, int sum)
  * no separate format-convert/copy pass. The decoder now applies intrinsic page
  * rotation itself (at every subsample, via a tiled transpose), so there is no
  * engine-side rotate either. The GDI StretchBlt/DIB allocation is excluded by
- * design (the dst buffer stands in for the DIB and is allocated outside the
- * timer). */
+ * design (the dst buffer stands in for the DIB; sum_dst_alloc allocates and
+ * touches it outside the timer). */
 
 static volatile uint8_t sum_sink; /* defeat dead-code elimination of the render */
 
@@ -595,10 +455,9 @@ static int sum_normalize_rotation(int r)
    high-dpi pages rendering at full resolution (4x the pixels) at zoom=1.
    Compound (color) pages subsample too now that the library composes color at
    any subsample. */
-static int sum_pick_subsample(djvu_page_type t, int upW, int upH, int tdx, int tdy)
+static int sum_pick_subsample(int upW, int upH, int tdx, int tdy)
 {
     int s;
-    (void)t;
     if (upW <= 0 || upH <= 0 || tdx <= 0 || tdy <= 0)
         return 1;
     s = 1;
@@ -614,12 +473,11 @@ static int sum_pick_subsample(djvu_page_type t, int upW, int upH, int tdx, int t
 /* Compute the engine's subsample for a page (cached at engine load time, so
    done outside the render timer here). Intrinsic rotation is now applied by the
    decoder at every subsample, so the engine no longer rotates separately. */
-static int sum_page_subsample(djvu_doc *doc, int page0, djvu_page_type *ptype)
+static int sum_page_subsample(djvu_doc *doc, int page0)
 {
     djvu_page_info info;
     int dpi, rot, upW, upH, fullW, fullH;
     memset(&info, 0, sizeof info);
-    *ptype = djvu_page_get_type(doc, page0);
     if (djvu_doc_page_info(doc, page0, &info) != 0)
         return 1;
     dpi = info.dpi;
@@ -635,12 +493,12 @@ static int sum_page_subsample(djvu_doc *doc, int page0, djvu_page_type *ptype)
     }
     fullW = (int)(upW * 300.0 / dpi + 0.5);
     fullH = (int)(upH * 300.0 / dpi + 0.5);
-    return sum_pick_subsample(*ptype, upW, upH, fullW, fullH);
+    return sum_pick_subsample(upW, upH, fullW, fullH);
 }
 
 /* Render a page the way the updated EngineDjvuDec does: query geometry, then
    render straight into dst (no convert pass; the decoder also applies intrinsic
-   rotation). dst (>= worst-case size) is provided by the caller. */
+   rotation). dst comes from sum_dst_alloc for the same page + subsample. */
 static int sum_render_into(djvu_doc *doc, int page0, int subsample, uint8_t *dst)
 {
     djvu_render_info ri;
@@ -655,22 +513,30 @@ static int sum_render_into(djvu_doc *doc, int page0, int subsample, uint8_t *dst
     return 0;
 }
 
-/* Worst-case dst size for any page render (full-res, 3 bytes/pixel). */
-static size_t sum_dst_capacity(djvu_doc *doc, int page0)
+/* Allocate the destination buffer for a sum render of this page at this
+   subsample (exact size from djvu_page_render_info) and touch every byte, so
+   neither the allocation nor its first-touch page faults land in a timed
+   region. Returns NULL if the page cannot be rendered. Free with free(). */
+static uint8_t *sum_dst_alloc(djvu_doc *doc, int page0, int subsample)
 {
-    djvu_page_info info;
-    if (djvu_doc_page_info(doc, page0, &info) != 0 || info.width <= 0 || info.height <= 0)
-        return 0;
-    return (size_t)info.width * (size_t)info.height * 3;
+    djvu_render_info ri;
+    size_t n;
+    uint8_t *dst;
+    if (djvu_page_render_info(doc, page0, subsample, &ri) != 0 ||
+        ri.width <= 0 || ri.height <= 0)
+        return NULL;
+    n = (size_t)ri.width * (size_t)ri.height *
+        (size_t)(ri.format == DJVU_FORMAT_GRAY8 ? 1 : 3);
+    dst = (uint8_t *)malloc(n);
+    if (dst) memset(dst, 0xff, n);
+    return dst;
 }
 
 /* Tight loop for macOS `sample` profiling: one doc open, repeated sum renders. */
 static int profile_sum_page(djvu_ctx *ctx, const uint8_t *data, size_t len, int page0)
 {
     djvu_doc *doc;
-    djvu_page_type ptype;
     int subsample, n;
-    size_t cap;
     uint8_t *dst;
 
     doc = djvu_doc_open(ctx, data, len);
@@ -682,9 +548,8 @@ static int profile_sum_page(djvu_ctx *ctx, const uint8_t *data, size_t len, int 
         djvu_doc_close(doc);
         return 1;
     }
-    subsample = sum_page_subsample(doc, page0, &ptype);
-    cap = sum_dst_capacity(doc, page0);
-    dst = cap ? (uint8_t *)malloc(cap) : NULL;
+    subsample = sum_page_subsample(doc, page0);
+    dst = sum_dst_alloc(doc, page0, subsample);
     if (!dst) {
         djvu_doc_close(doc);
         return 1;
@@ -711,7 +576,7 @@ static void bench_mem_report(const uint8_t *data, size_t len, int sum)
     int i;
 
     g_mem_n = 0; /* fresh accounting for this pass */
-    ctx = djvu_ctx_new(mem_alloc, mem_free, NULL, NULL, on_error, NULL);
+    ctx = djvu_ctx_new(mem_alloc, mem_free, NULL, NULL, hu_on_error, NULL);
     if (!ctx) return;
     if (sum) djvu_ctx_set_bgr(ctx, 1);
     doc = djvu_doc_open(ctx, data, len);
@@ -719,10 +584,8 @@ static void bench_mem_report(const uint8_t *data, size_t len, int sum)
         int n = djvu_doc_page_count(doc);
         for (i = 0; i < n; i++) {
             if (sum) {
-                djvu_page_type pt;
-                int ss = sum_page_subsample(doc, i, &pt);
-                size_t cap = sum_dst_capacity(doc, i);
-                uint8_t *dst = cap ? (uint8_t *)malloc(cap) : NULL;
+                int ss = sum_page_subsample(doc, i);
+                uint8_t *dst = sum_dst_alloc(doc, i, ss);
                 if (dst) { sum_render_into(doc, i, ss, dst); free(dst); }
             } else {
                 djvu_image *img = djvu_page_render(doc, i, 1);
@@ -792,189 +655,613 @@ static int run_verify_into(djvu_doc *doc)
     return mism ? 1 : 0;
 }
 
-static int page_has_chunk(djvu_doc *doc, int page0, const char *cid)
+/* ======================================================================
+ * -verify-abort: deterministic, single-threaded test of the abort API
+ * (djvu_request_abort, djvu_abort tokens, the *_abortable render variants).
+ *
+ * Abort is cooperative: the decoder polls djvu_aborted() at a few checkpoints
+ * (render.c after the JB2 mask is acquired and every 64 blits of the bitonal
+ * loops; compose.c at composite entry and every 64 blits of the stencil loop).
+ * So what an abort request may do depends on the page:
+ *   - bitonal / compound (have a mask): a request made before the call, or
+ *     during the mask decode, MUST abort the render;
+ *   - photo (BG44 only): only the composite-entry checkpoint exists, so a
+ *     request made before the call must abort, but one made mid-render (after
+ *     the first allocation) has no later checkpoint and the render completes;
+ *   - blank / INFO-only (type unknown): no checkpoint, always completes.
+ * In every case the invariant is: a render returns either "aborted" (NULL / -1)
+ * or output byte-identical to an undisturbed render -- never a partial image --
+ * and an aborted render leaks nothing and leaves no stale state behind.
+ *
+ * The in-flight case is made deterministic by aborting from the allocation
+ * callback when the render's allocation count reaches N, sweeping N
+ * geometrically (x2 at subsample 1, x4 at subsample 3, to bound the run time)
+ * from 1 up to the number of allocations a full render makes (pages without
+ * an in-flight checkpoint only get the first and the last allocation).
+ * ====================================================================== */
+
+#define VA_MAX_PAGES 4 /* pages sampled when -page is not given */
+
+enum { VA_TOKEN = 0, VA_CTX = 1 };   /* how the allocator requests the abort */
+enum { VA_RENDER = 0, VA_INTO = 1 }; /* which render entry point */
+
+/* Counting allocator state (the ctx's `user` pointer). */
+typedef struct {
+    long n_live;  /* outstanding blocks */
+    size_t live;  /* outstanding bytes */
+    long count;   /* allocations since the trigger was armed */
+    long trig_at; /* request the abort when count reaches this (0 = never) */
+    int trig_mode;
+    int fired;
+    djvu_abort *tok;
+} va_mem;
+
+static void *va_alloc(void *user, void *ctx, size_t size)
 {
-    uint32_t sz;
-    return djvu_form_find_chunk(doc, doc->pages[page0].form_off, cid, &sz, NULL) != NULL;
+    va_mem *m = (va_mem *)user;
+    void *p;
+    m->count++;
+    if (m->trig_at && m->count == m->trig_at) {
+        m->fired = 1;
+        if (m->trig_mode == VA_TOKEN)
+            djvu_abort_request(m->tok);
+        else if (ctx)
+            djvu_request_abort((djvu_ctx *)ctx); /* aborts all in-flight renders */
+    }
+    p = hu_size_malloc(size);
+    if (p) {
+        m->n_live++;
+        m->live += size;
+    }
+    return p;
 }
 
-static int page_has_incl(djvu_doc *doc, int page0)
+static void va_free(void *user, void *ctx, void *ptr)
 {
-    uint32_t sz, start = 0;
-    return djvu_form_find_chunk(doc, doc->pages[page0].form_off, "INCL", &sz, &start) != NULL;
+    va_mem *m = (va_mem *)user;
+    (void)ctx;
+    if (!ptr) return;
+    m->n_live--;
+    m->live -= hu_size_free(ptr);
 }
 
-static const char *container_kind(djvu_doc *doc)
+static void va_arm(va_mem *m, long at, int mode, djvu_abort *tok)
 {
-    const uint8_t *data = doc->data;
-    size_t len = doc->len;
-    uint32_t pos = doc->root_form_off;
+    m->count = 0;
+    m->fired = 0;
+    m->trig_mode = mode;
+    m->tok = tok;
+    m->trig_at = at;
+}
 
-    if (pos + 12 > len) return "unknown";
-    if (djvu_tag_eq(data + pos + 8, "DJVU")) return "single";
-    if (!djvu_tag_eq(data + pos + 8, "DJVM")) return "unknown";
-    {
-        uint32_t form_end = pos + 8 + djvu_rd_u32be(data + pos + 4);
-        uint32_t p = pos + 12;
-        if (form_end > len) form_end = (uint32_t)len;
-        while (p + 8 <= form_end) {
-            uint32_t csz = djvu_rd_u32be(data + p + 4);
-            uint32_t chunk_end = p + 8 + csz;
-            if (chunk_end > form_end) break;
-            if (djvu_tag_eq(data + p, "DIRM") && p + 11 <= chunk_end) {
-                return ((data[p + 8] >> 7) & 1) ? "bundled" : "indirect";
+/* Reference pixels of an undisturbed render (rows packed, no padding). */
+typedef struct {
+    int w, h;
+    djvu_format fmt;
+    size_t n; /* w * h * bytes-per-pixel */
+    uint8_t *px;
+} va_ref;
+
+/* One context under test: per-page caching off (no lock hooks: shared dicts
+   decode eagerly at open) or on (lock hooks: shared dicts decode lazily). */
+typedef struct {
+    const char *name;
+    int cached;
+    djvu_ctx *ctx;
+    djvu_doc *doc;
+    va_mem mem;
+} va_side;
+
+typedef struct {
+    long checks, failures, aborted;
+    int page1, sub;     /* current position, for messages */
+    const char *side;
+} va_stats;
+
+/* Count one check; print a FAIL line when cond is false. Returns cond. */
+static int va_check(va_stats *st, int cond, const char *fmt, ...)
+{
+    st->checks++;
+    if (!cond) {
+        va_list ap;
+        st->failures++;
+        printf("verify-abort: FAIL page %d sub %d (%s): ", st->page1, st->sub, st->side);
+        va_start(ap, fmt);
+        vprintf(fmt, ap);
+        va_end(ap);
+        putchar('\n');
+        fflush(stdout);
+    }
+    return cond;
+}
+
+/* Copy img's pixels into *r and destroy img. Returns 0 on success. */
+static int va_ref_take(djvu_ctx *ctx, djvu_image *img, va_ref *r)
+{
+    size_t rowb = (size_t)img->width * (size_t)img->format;
+    int y;
+    r->w = img->width;
+    r->h = img->height;
+    r->fmt = img->format;
+    r->n = rowb * (size_t)img->height;
+    r->px = (uint8_t *)malloc(r->n ? r->n : 1);
+    if (r->px)
+        for (y = 0; y < img->height; y++)
+            memcpy(r->px + (size_t)y * rowb, img->data + (size_t)y * (size_t)img->stride, rowb);
+    djvu_image_destroy(ctx, img);
+    return r->px ? 0 : -1;
+}
+
+static int va_img_eq(const djvu_image *img, const va_ref *r)
+{
+    size_t rowb = (size_t)r->w * (size_t)r->fmt;
+    int y;
+    if (img->width != r->w || img->height != r->h || img->format != r->fmt) return 0;
+    for (y = 0; y < r->h; y++)
+        if (memcmp(img->data + (size_t)y * (size_t)img->stride, r->px + (size_t)y * rowb,
+                   rowb) != 0)
+            return 0;
+    return 1;
+}
+
+/* One render of `page` through entry point `api`: the *_abortable variant with
+   `tok` when abortable != 0, else the plain variant. Returns -1 if it returned
+   "aborted / failed" (NULL or -1), 1 if it produced output byte-identical to
+   ref, 0 if it produced different output. dst is scratch of ref->n bytes. */
+static int va_render(djvu_ctx *ctx, djvu_doc *doc, int page, int sub, int api,
+                     int abortable, const djvu_abort *tok, const va_ref *ref,
+                     uint8_t *dst)
+{
+    if (api == VA_RENDER) {
+        djvu_image *img = abortable ? djvu_page_render_abortable(doc, page, sub, tok)
+                                    : djvu_page_render(doc, page, sub);
+        int eq;
+        if (!img) return -1;
+        eq = va_img_eq(img, ref);
+        djvu_image_destroy(ctx, img);
+        return eq;
+    } else {
+        int stride = ref->w * (int)ref->fmt;
+        int rc;
+        memset(dst, 0xA5, ref->n);
+        rc = abortable ? djvu_page_render_into_abortable(doc, page, sub, dst, stride, tok)
+                       : djvu_page_render_into(doc, page, sub, dst, stride);
+        if (rc != 0) return -1;
+        return memcmp(dst, ref->px, ref->n) == 0;
+    }
+}
+
+static const char *va_api_name(int api, int abortable)
+{
+    if (api == VA_RENDER)
+        return abortable ? "djvu_page_render_abortable" : "djvu_page_render";
+    return abortable ? "djvu_page_render_into_abortable" : "djvu_page_render_into";
+}
+
+/* (d) in-flight abort sweep on the already-open document. base_n / base_b is
+   the allocator's live state with nothing of this page cached. */
+static void va_sweep(va_side *s, int page, int sub, const va_ref *ref, uint8_t *dst,
+                     long nalloc, int inflight, long base_n, size_t base_b, va_stats *st)
+{
+    long n, aborted = 0;
+    int last = 0, mode, api;
+    int step = sub == 1 ? 2 : 4;
+
+    if (nalloc <= 0) {
+        if (inflight)
+            va_check(st, 0, "a full render made no allocations; cannot sweep");
+        return;
+    }
+    for (n = 1; !last; n *= step) {
+        /* A page with no in-flight checkpoint always completes, at full render
+           cost: just probe the first and the last allocation. */
+        if (n >= nalloc || (!inflight && n > 1)) {
+            n = nalloc;
+            last = 1;
+        }
+        for (mode = VA_TOKEN; mode <= VA_CTX; mode++) {
+            for (api = VA_RENDER; api <= VA_INTO; api++) {
+                const char *via = mode == VA_TOKEN ? "token" : "djvu_request_abort";
+                const char *fn = va_api_name(api, mode == VA_TOKEN);
+                djvu_abort tok;
+                int r;
+
+                djvu_abort_init(&tok);
+                va_arm(&s->mem, n, mode, &tok);
+                r = va_render(s->ctx, s->doc, page, sub, api, mode == VA_TOKEN, &tok, ref, dst);
+                va_arm(&s->mem, 0, mode, NULL);
+                if (r < 0) {
+                    int r2;
+                    aborted++;
+                    st->aborted++;
+                    if (!s->cached)
+                        va_check(st, s->mem.n_live == base_n && s->mem.live == base_b,
+                                 "%s aborted at alloc %ld via %s leaked: %ld blocks / %zu "
+                                 "bytes live, expected %ld / %zu",
+                                 fn, n, via, s->mem.n_live, s->mem.live, base_n, base_b);
+                    /* proves no stale abort state (TLS token / epoch) and an
+                       intact page cache */
+                    r2 = va_render(s->ctx, s->doc, page, sub, VA_RENDER, 0, NULL, ref, dst);
+                    va_check(st, r2 == 1,
+                             "plain render after %s aborted at alloc %ld via %s %s",
+                             fn, n, via, r2 < 0 ? "failed" : "differs from the reference");
+                } else {
+                    va_check(st, r == 1,
+                             "%s with abort at alloc %ld via %s returned a partial / "
+                             "different image", fn, n, via);
+                }
+                djvu_doc_drop_page_cache(s->doc, page);
+                va_check(st, s->mem.n_live == base_n && s->mem.live == base_b,
+                         "after %s with abort at alloc %ld via %s (+ cache drop): %ld blocks "
+                         "/ %zu bytes live, expected %ld / %zu",
+                         fn, n, via, s->mem.n_live, s->mem.live, base_n, base_b);
             }
-            p = chunk_end + (csz & 1);
         }
     }
-    return "djvm";
+    if (inflight)
+        va_check(st, aborted > 0,
+                 "no render in the in-flight sweep (allocs 1..%ld) was aborted", nalloc);
 }
 
-/* Feature dump for cmd/dump-features.ts (tab-separated; one file per invocation). */
-static int run_dump_features(djvu_doc *doc)
+/* (e) cold-document sweep, lock-hook context only: open a fresh document for
+   every N so the abort can land inside the lazy shared-dictionary decode and
+   the first-time page-cache fill, then render again undisturbed on the same
+   document, close it and require the allocator to be back where it started. */
+static void va_cold_sweep(va_side *s, const uint8_t *data, size_t len, int page, int sub,
+                          const va_ref *ref, uint8_t *dst, int inflight, va_stats *st)
 {
-    djvu_ctx *ctx = doc->ctx;
-    int npages = djvu_doc_page_count(doc);
-    int i, ncomp_djvi = 0;
-    int file_incl = 0, file_incl_djbz = 0, file_inline_djbz = 0;
-    int file_outline = 0, file_text = 0, file_annot = 0, file_links = 0;
-    int file_fgbz = 0, file_fg44 = 0, file_bgjp = 0, file_fgjp = 0;
-    int type_bitonal = 0, type_photo = 0, type_compound = 0;
-    int kind_mask = 0, kind_bg = 0, kind_other = 0;
-    int rot_nonzero = 0;
-    double total_ms = 0.0;
-    djvu_outline_item *outline;
+    long base_n = s->mem.n_live, n, nalloc = 0;
+    size_t base_b = s->mem.live;
+    int last = 0;
+    int step = sub == 1 ? 2 : 4;
 
-    if (doc->comps) {
-        for (i = 0; i < doc->ncomp; i++)
-            if (doc->comps[i].type == 0) ncomp_djvi++;
-    }
-    outline = djvu_doc_outline(doc);
-    file_outline = (outline && outline->nchildren > 0) ? 1 : 0;
-    if (outline) djvu_outline_destroy(ctx, outline);
+    for (n = 0; !last; n = n ? n * step : 1) {
+        djvu_doc *doc2;
+        djvu_abort tok;
+        int r;
 
-    for (i = 0; i < npages; i++) {
-        djvu_page_type pt = djvu_page_get_type(doc, i);
-        page_kind_t pk = page_kind(doc, i);
-        djvu_page_info pi;
-        int has_text = 0, has_annot = 0, has_links = 0;
-        int incl = page_has_incl(doc, i);
-        int inline_djbz = page_has_chunk(doc, i, "Djbz");
-        int incl_djbz = djvu_form_find_incl_chunk(doc, doc->pages[i].form_off,
-                                                  "Djbz", NULL) != NULL;
-        double t0, dt;
-        djvu_image *img;
-        djvu_page_links *L;
-
-        if (pt == DJVU_PAGE_BITONAL) type_bitonal = 1;
-        else if (pt == DJVU_PAGE_PHOTO) type_photo = 1;
-        else if (pt == DJVU_PAGE_COMPOUND) type_compound = 1;
-        if (pk == PK_MASK) kind_mask = 1;
-        else if (pk == PK_BG) kind_bg = 1;
-        else kind_other = 1;
-
-        if (page_has_chunk(doc, i, "FGbz")) file_fgbz = 1;
-        if (page_has_chunk(doc, i, "FG44")) file_fg44 = 1;
-        if (page_has_chunk(doc, i, "BGjp")) file_bgjp = 1;
-        if (page_has_chunk(doc, i, "FGjp")) file_fgjp = 1;
-        if (incl) file_incl = 1;
-        if (incl_djbz) file_incl_djbz = 1;
-        if (inline_djbz) file_inline_djbz = 1;
-
-        {
-            char *tx = djvu_page_text(doc, i);
-            has_text = (tx && tx[0]) ? 1 : 0;
-            if (tx) djvu_text_destroy(ctx, tx);
+        if (n > 0 && (n >= nalloc || (!inflight && n > 1))) {
+            n = nalloc;
+            last = 1;
         }
-        if (page_has_chunk(doc, i, "ANTa") || page_has_chunk(doc, i, "ANTz"))
-            has_annot = 1;
-        L = djvu_page_get_links(doc, i);
-        if (L) {
-            has_links = (L->nlinks > 0) ? 1 : 0;
-            djvu_page_links_destroy(ctx, L);
+        doc2 = djvu_doc_open(s->ctx, data, len);
+        if (!va_check(st, doc2 != NULL, "cold sweep: djvu_doc_open failed"))
+            return;
+        djvu_abort_init(&tok);
+        va_arm(&s->mem, n, VA_TOKEN, &tok); /* n == 0: undisturbed control run */
+        r = va_render(s->ctx, doc2, page, sub, VA_RENDER, 1, &tok, ref, dst);
+        if (n == 0) {
+            nalloc = s->mem.count;
+            if (nalloc <= 0) last = 1;
         }
-        if (has_text) file_text = 1;
-        if (has_annot) file_annot = 1;
-        if (has_links) file_links = 1;
-
-        pi.rotation = 0;
-        if (djvu_doc_page_info(doc, i, &pi) == 0 && pi.rotation != 0)
-            rot_nonzero = 1;
-
-        t0 = bench_now_ms();
-        img = djvu_page_render(doc, i, 1);
-        dt = bench_now_ms() - t0;
-        if (img) djvu_image_destroy(ctx, img);
-        total_ms += dt;
-
-        printf("page\t%d\ttype\t%s\tkind\t%s\trot\t%d\ttext\t%d\tannot\t%d\t"
-               "links\t%d\tincl\t%d\tinline_djbz\t%d\tincl_djbz\t%d\t"
-               "fgbz\t%d\tfg44\t%d\tbgjp\t%d\tfgjp\t%d\trender_ms\t%.3f\n",
-               i + 1, page_type_name(pt), page_kind_name(pk),
-               (pi.rotation == 90 || pi.rotation == 180 || pi.rotation == 270)
-                   ? pi.rotation : 0,
-               has_text, has_annot, has_links, incl, inline_djbz, incl_djbz,
-               page_has_chunk(doc, i, "FGbz"), page_has_chunk(doc, i, "FG44"),
-               page_has_chunk(doc, i, "BGjp"), page_has_chunk(doc, i, "FGjp"),
-               dt);
+        va_arm(&s->mem, 0, VA_TOKEN, NULL);
+        if (r < 0) {
+            int r2;
+            if (va_check(st, n > 0, "cold sweep: undisturbed render on a fresh document failed"))
+                st->aborted++;
+            r2 = va_render(s->ctx, doc2, page, sub, VA_RENDER, 0, NULL, ref, dst);
+            va_check(st, r2 == 1,
+                     "cold sweep: plain render after an abort at alloc %ld %s", n,
+                     r2 < 0 ? "failed" : "differs from the reference");
+        } else {
+            va_check(st, r == 1,
+                     "cold sweep: abort at alloc %ld returned a partial / different image", n);
+        }
+        djvu_doc_close(doc2);
+        va_check(st, s->mem.n_live == base_n && s->mem.live == base_b,
+                 "cold sweep: after abort at alloc %ld + djvu_doc_close: %ld blocks / %zu "
+                 "bytes live, expected %ld / %zu",
+                 n, s->mem.n_live, s->mem.live, base_n, base_b);
     }
-
-    printf("summary\tpages\t%d\tcontainer\t%s\tncomp_djvi\t%d\t"
-           "incl\t%d\tincl_djbz\t%d\tinline_djbz\t%d\toutline\t%d\t"
-           "text\t%d\tannot\t%d\tlinks\t%d\t"
-           "type_bitonal\t%d\ttype_photo\t%d\ttype_compound\t%d\t"
-           "kind_mask\t%d\tkind_bg\t%d\tkind_other\t%d\t"
-           "fgbz\t%d\tfg44\t%d\tbgjp\t%d\tfgjp\t%d\trot_nonzero\t%d\t"
-           "total_render_ms\t%.3f\n",
-           npages, container_kind(doc), ncomp_djvi,
-           file_incl, file_incl_djbz, file_inline_djbz, file_outline,
-           file_text, file_annot, file_links,
-           type_bitonal, type_photo, type_compound,
-           kind_mask, kind_bg, kind_other,
-           file_fgbz, file_fg44, file_bgjp, file_fgjp, rot_nonzero,
-           total_ms);
-    return 0;
 }
 
-/* Allow tiny color-page diffs from ddjvu's FG44 stencil quirk (mask/bg/fg layers
-   are byte-exact; only composite FG placement drifts ~1px on rare text lines). */
-static int image_equal_cosmetic(djvu_image *mine, const bench_render *ref)
+/* All abort checks for one page at one subsample on one context. Returns 1 if
+   the page was tested, 0 if its plain render fails (nothing to compare). */
+static int va_page(va_side *s, const uint8_t *data, size_t len, int page, int sub,
+                   va_stats *st)
 {
-    size_t total = 0, diffs = 0;
-    int y, x, bpp;
-    if (!mine || !ref || !ref->data) return 0;
-    if (mine->format != DJVU_FORMAT_RGB24 || ref->bps != 3) return 0;
-    if (mine->width != ref->width || mine->height != ref->height) return 0;
-    bpp = 3;
+    djvu_page_type type = djvu_page_get_type(s->doc, page);
+    /* see the checkpoint list at the top of this section */
+    int must_abort = (type != DJVU_PAGE_UNKNOWN);
+    int inflight = (type == DJVU_PAGE_BITONAL || type == DJVU_PAGE_COMPOUND);
+    djvu_image *img;
+    djvu_render_info ri;
+    djvu_abort tok;
+    va_ref ref;
+    uint8_t *dst;
+    long base_n, nalloc;
+    size_t base_b;
+    int r, api;
+
+    st->page1 = page + 1;
+    st->sub = sub;
+    st->side = s->name;
+
+    img = djvu_page_render(s->doc, page, sub);
+    if (!img) return 0;
+    if (va_ref_take(s->ctx, img, &ref) != 0) {
+        va_check(st, 0, "out of memory");
+        return 0;
+    }
+    dst = (uint8_t *)malloc(ref.n ? ref.n : 1);
+    if (!dst) {
+        va_check(st, 0, "out of memory");
+        free(ref.px);
+        return 0;
+    }
+    djvu_doc_drop_page_cache(s->doc, page);
+    base_n = s->mem.n_live;
+    base_b = s->mem.live;
+
+    /* control: an undisturbed re-render is identical, memory-neutral, and tells
+       us how many allocations a full render makes */
+    va_arm(&s->mem, 0, VA_TOKEN, NULL);
+    r = va_render(s->ctx, s->doc, page, sub, VA_RENDER, 0, NULL, &ref, dst);
+    nalloc = s->mem.count;
+    va_check(st, r == 1, "second plain render %s", r < 0 ? "failed" : "differs from the first");
+    djvu_doc_drop_page_cache(s->doc, page);
+    va_check(st, s->mem.n_live == base_n && s->mem.live == base_b,
+             "plain render is not memory-neutral: %ld blocks / %zu bytes live, expected "
+             "%ld / %zu", s->mem.n_live, s->mem.live, base_n, base_b);
+    va_check(st, djvu_page_render_info(s->doc, page, sub, &ri) == 0 && ri.width == ref.w &&
+                     ri.height == ref.h && ri.format == ref.fmt,
+             "djvu_page_render_info disagrees with the render");
+
+    for (api = VA_RENDER; api <= VA_INTO; api++) {
+        /* (b) a fresh token and a NULL token behave like the plain variants */
+        djvu_abort_init(&tok);
+        r = va_render(s->ctx, s->doc, page, sub, api, 1, &tok, &ref, dst);
+        va_check(st, r == 1, "%s with a fresh token %s", va_api_name(api, 1),
+                 r < 0 ? "failed" : "differs from the plain render");
+        r = va_render(s->ctx, s->doc, page, sub, api, 1, NULL, &ref, dst);
+        va_check(st, r == 1, "%s with a NULL token %s", va_api_name(api, 1),
+                 r < 0 ? "failed" : "differs from the plain render");
+
+        /* (a) a token requested before the call aborts the render; the request
+           is sticky, so a second call with the same token aborts too */
+        djvu_abort_request(&tok);
+        r = va_render(s->ctx, s->doc, page, sub, api, 1, &tok, &ref, dst);
+        if (must_abort) {
+            if (va_check(st, r < 0, "%s with an already-requested token did not abort",
+                         va_api_name(api, 1)))
+                st->aborted++;
+            r = va_render(s->ctx, s->doc, page, sub, api, 1, &tok, &ref, dst);
+            va_check(st, r < 0, "%s: abort request is not sticky", va_api_name(api, 1));
+        } else {
+            va_check(st, r != 0, "%s with an already-requested token returned a partial / "
+                                 "different image", va_api_name(api, 1));
+        }
+        /* ... and leaves nothing behind for the next plain call */
+        r = va_render(s->ctx, s->doc, page, sub, api, 0, NULL, &ref, dst);
+        va_check(st, r == 1, "%s after an aborted call %s", va_api_name(api, 0),
+                 r < 0 ? "failed" : "differs from the reference");
+
+        /* (c) djvu_request_abort with no render in flight does not affect the
+           next render */
+        djvu_request_abort(s->ctx);
+        r = va_render(s->ctx, s->doc, page, sub, api, 0, NULL, &ref, dst);
+        va_check(st, r == 1, "%s after an idle djvu_request_abort %s", va_api_name(api, 0),
+                 r < 0 ? "failed" : "differs from the reference");
+    }
+    djvu_doc_drop_page_cache(s->doc, page);
+    va_check(st, s->mem.n_live == base_n && s->mem.live == base_b,
+             "token / idle-abort checks leaked: %ld blocks / %zu bytes live, expected "
+             "%ld / %zu", s->mem.n_live, s->mem.live, base_n, base_b);
+
+    va_sweep(s, page, sub, &ref, dst, nalloc, inflight, base_n, base_b, st);
+    if (s->cached)
+        va_cold_sweep(s, data, len, page, sub, &ref, dst, inflight, st);
+
+    free(dst);
+    free(ref.px);
+    return 1;
+}
+
+/* Debug setters, on separate contexts (they must be set before djvu_doc_open):
+   djvu_ctx_set_iw_max_chunks(ctx, 1) still renders a color page at the same
+   geometry; djvu_ctx_set_no_compose(ctx, 1) makes a compound page render as
+   the gray mask, a photo page not render at all, and djvu_page_render_info
+   agree with what the render actually does. `plain` is an ordinary document. */
+static void va_debug_setters(const uint8_t *data, size_t len, djvu_doc *plain,
+                             const int *pages, const int *ref_ok, int npick, va_stats *st)
+{
+    int which, k;
+
+    st->sub = 1;
+    for (which = 0; which < 2; which++) {
+        djvu_ctx *ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, NULL, NULL);
+        djvu_doc *doc;
+
+        st->side = which == 0 ? "iw_max_chunks=1" : "no_compose=1";
+        st->page1 = 0;
+        if (!va_check(st, ctx != NULL, "djvu_ctx_new failed")) return;
+        if (which == 0) djvu_ctx_set_iw_max_chunks(ctx, 1);
+        else djvu_ctx_set_no_compose(ctx, 1);
+        doc = djvu_doc_open(ctx, data, len);
+        if (!va_check(st, doc != NULL, "djvu_doc_open failed")) {
+            djvu_ctx_free(ctx);
+            return;
+        }
+        for (k = 0; k < npick; k++) {
+            int page = pages[k];
+            djvu_page_type type = djvu_page_get_type(plain, page);
+            djvu_render_info rp, ri;
+            djvu_image *img;
+            int have_ri;
+
+            if (!ref_ok[k] || djvu_page_render_info(plain, page, 1, &rp) != 0) continue;
+            st->page1 = page + 1;
+            have_ri = djvu_page_render_info(doc, page, 1, &ri) == 0;
+            img = djvu_page_render(doc, page, 1);
+            if (which == 0) {
+                if (rp.format != DJVU_FORMAT_RGB24) {
+                    if (img) djvu_image_destroy(ctx, img);
+                    continue; /* setter only concerns IW44 (color) pages */
+                }
+                va_check(st, img != NULL, "color page failed to render");
+                if (img)
+                    va_check(st, img->width == rp.width && img->height == rp.height &&
+                                     img->format == DJVU_FORMAT_RGB24,
+                             "render is %dx%d fmt %d, expected %dx%d RGB24",
+                             img->width, img->height, (int)img->format, rp.width, rp.height);
+            } else if (type == DJVU_PAGE_PHOTO) {
+                va_check(st, img == NULL && !have_ri,
+                         "photo page: render %s, render_info %s; expected both to fail",
+                         img ? "succeeded" : "failed", have_ri ? "succeeded" : "failed");
+            } else {
+                if (type == DJVU_PAGE_COMPOUND)
+                    va_check(st, img != NULL && img->format == DJVU_FORMAT_GRAY8,
+                             "compound page did not render as GRAY8 (%s)",
+                             img ? "got RGB24" : "render failed");
+                va_check(st, (img != NULL) == have_ri,
+                         "render %s but render_info %s", img ? "succeeded" : "failed",
+                         have_ri ? "succeeded" : "failed");
+                if (img && have_ri)
+                    va_check(st, img->width == ri.width && img->height == ri.height &&
+                                     img->format == ri.format,
+                             "render is %dx%d fmt %d, render_info says %dx%d fmt %d",
+                             img->width, img->height, (int)img->format, ri.width, ri.height,
+                             (int)ri.format);
+            }
+            if (img) djvu_image_destroy(ctx, img);
+        }
+        djvu_doc_close(doc);
+        djvu_ctx_free(ctx);
+    }
+}
+
+/* page1: 1-based page to test, or 0 to sample up to VA_MAX_PAGES pages spread
+   evenly over the document. Returns 0 if every check passed, else 1. */
+static int run_verify_abort(const uint8_t *data, size_t len, int page1)
+{
+    static const int subs[] = { 1, 3 };
+    va_side side[2];
+    va_stats st;
+    int pages[VA_MAX_PAGES], ref_ok[VA_MAX_PAGES];
+    int npages, npick = 0, tested = 0, i, k, si;
+
+    memset(&st, 0, sizeof(st));
+    memset(side, 0, sizeof(side));
+    st.side = "setup";
+    side[0].name = "cache off";
+    side[1].name = "cache on";
+    side[1].cached = 1;
+    for (i = 0; i < 2; i++) {
+        va_side *s = &side[i];
+        s->ctx = djvu_ctx_new(va_alloc, va_free, s->cached ? hu_lock_cb : NULL,
+                              s->cached ? hu_unlock_cb : NULL, NULL, &s->mem);
+        if (s->ctx) {
+            djvu_ctx_set_cache_per_page(s->ctx, s->cached);
+            s->doc = djvu_doc_open(s->ctx, data, len);
+        }
+        if (!s->doc) {
+            printf("verify-abort: cannot open document (%s)\n", s->name);
+            st.failures++;
+        }
+    }
+
+    if (!st.failures) {
+        npages = djvu_doc_page_count(side[0].doc);
+        if (page1 > 0) {
+            if (page1 <= npages) pages[npick++] = page1 - 1;
+            else {
+                printf("verify-abort: page %d out of range (1..%d)\n", page1, npages);
+                st.failures++;
+            }
+        } else {
+            int want = npages < VA_MAX_PAGES ? npages : VA_MAX_PAGES;
+            for (k = 0; k < want; k++)
+                pages[npick++] = (int)((long long)k * npages / want);
+        }
+        for (k = 0; k < npick; k++) {
+            int any = 0;
+            ref_ok[k] = 0;
+            for (si = 0; si < (int)(sizeof(subs) / sizeof(subs[0])); si++) {
+                for (i = 0; i < 2; i++) {
+                    int ok = va_page(&side[i], data, len, pages[k], subs[si], &st);
+                    if (ok) any = 1;
+                    if (ok && i == 0 && subs[si] == 1) ref_ok[k] = 1;
+                }
+            }
+            if (any) tested++;
+            else printf("verify-abort: page %d: plain render fails, not tested\n", pages[k] + 1);
+        }
+        va_debug_setters(data, len, side[0].doc, pages, ref_ok, npick, &st);
+    }
+
+    /* everything a context ever allocated must be gone once it is freed */
+    st.page1 = 0;
+    st.sub = 0;
+    for (i = 0; i < 2; i++) {
+        va_side *s = &side[i];
+        st.side = s->name;
+        if (s->doc) djvu_doc_close(s->doc);
+        if (s->ctx) {
+            djvu_ctx_free(s->ctx);
+            va_check(&st, s->mem.n_live == 0 && s->mem.live == 0,
+                     "leak at djvu_ctx_free: %ld blocks / %zu bytes still live",
+                     s->mem.n_live, s->mem.live);
+        }
+    }
+    if (tested == 0 && !st.failures) {
+        printf("verify-abort: no page could be tested\n");
+        st.failures++;
+    }
+
+    printf("verify-abort: %d pages, %ld checks, %ld aborted, %ld failures\n",
+           tested, st.checks, st.aborted, st.failures);
+    return st.failures ? 1 : 0;
+}
+
+/* Result of comparing our render with the oracle's. */
+enum { IMG_DIFF = 0, IMG_SAME = 1, IMG_COSMETIC = 2 };
+
+/* Number of differing pixels between two same-size RGB images. */
+static size_t image_rgb_diff_pixels(const djvu_image *mine, const bench_render *ref)
+{
+    size_t diffs = 0;
+    int y, x;
     for (y = 0; y < mine->height; y++) {
         const uint8_t *a = mine->data + (size_t)y * (size_t)mine->stride;
         const uint8_t *b = ref->data + (size_t)y * (size_t)ref->rowsize;
         for (x = 0; x < mine->width; x++) {
-            total++;
             if (a[0] != b[0] || a[1] != b[1] || a[2] != b[2]) diffs++;
-            a += bpp;
-            b += bpp;
+            a += 3;
+            b += 3;
         }
     }
-    return diffs > 0 && diffs <= 2000 && diffs * 1000000 / total <= 100; /* <=0.01% */
+    return diffs;
 }
 
-static int image_equal(djvu_image *mine, const bench_render *ref)
+/* IMG_SAME: byte-identical. IMG_COSMETIC: an RGB page with a tiny number of
+   differing pixels (<= 2000 and <= 0.01% of the page; *ndiff receives the
+   count) -- tolerated because of ddjvu's FG44 stencil quirk (mask/bg/fg layers
+   are byte-exact; only composite FG placement drifts ~1px on rare text lines).
+   The caller reports it distinctly so the tolerance is never silent.
+   IMG_DIFF: anything else. */
+static int image_compare(const djvu_image *mine, const bench_render *ref, size_t *ndiff)
 {
-    int y;
-    if (!mine || !ref || !ref->data) return 0;
-    if (mine->width != ref->width || mine->height != ref->height) return 0;
-    if ((int)mine->format != ref->bps) return 0;
-    for (y = 0; y < mine->height; y++) {
-        size_t row = (size_t)mine->width * (size_t)mine->format;
+    int y, same = 1;
+    size_t row, total, diffs;
+
+    *ndiff = 0;
+    if (!mine || !ref || !ref->data) return IMG_DIFF;
+    if (mine->width != ref->width || mine->height != ref->height) return IMG_DIFF;
+    if ((int)mine->format != ref->bps) return IMG_DIFF;
+    row = (size_t)mine->width * (size_t)mine->format;
+    for (y = 0; y < mine->height && same; y++)
         if (memcmp(mine->data + (size_t)y * (size_t)mine->stride,
-                   ref->data + (size_t)y * (size_t)ref->rowsize, row) != 0) {
-            if (image_equal_cosmetic(mine, ref))
-                return 1;
-            return 0;
-        }
-    }
-    return 1;
+                   ref->data + (size_t)y * (size_t)ref->rowsize, row) != 0)
+            same = 0;
+    if (same) return IMG_SAME;
+    if (mine->format != DJVU_FORMAT_RGB24) return IMG_DIFF;
+
+    total = (size_t)mine->width * (size_t)mine->height;
+    diffs = image_rgb_diff_pixels(mine, ref);
+    *ndiff = diffs;
+    if (diffs > 0 && diffs <= 2000 && diffs * 1000000 / total <= 100) /* <= 0.01% */
+        return IMG_COSMETIC;
+    return IMG_DIFF;
 }
 
 static void ensure_dir(const char *dir)
@@ -1117,7 +1404,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
 {
     djvu_ctx *ctx = doc->ctx;
     int npages = djvu_doc_page_count(doc);
-    int m = 0, mm = 0, skip = 0;
+    int m = 0, mm = 0, skip = 0, cosmetic = 0;
     int i;
 
     /* Compare in BGR: DjVuLibre's pixmap is natively B,G,R, so asking ddjvu for
@@ -1154,6 +1441,7 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             const char *ext = want_rgb ? "ppm" : "pgm";
             djvu_image *mine = djvu_page_render(doc, i, 1);
             bench_render ref;
+            int cmp = IMG_DIFF;
 
             memset(&ref, 0, sizeof(ref));
             if (verify_mem_checkpoint(doc, i + 1, "after_ours_render") < 0)
@@ -1187,10 +1475,23 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
             if (verify_mem_checkpoint(doc, i + 1, "after_ddjvu_render") < 0)
                 goto mem_limit;
             g_verify_phase = "compare";
-            if (image_equal(mine, &ref)) {
-                m++;
-                printf("render\t%d\tok\n", i + 1);
-            } else {
+            {
+                size_t ndiff = 0;
+                cmp = image_compare(mine, &ref, &ndiff);
+                if (cmp == IMG_SAME) {
+                    m++;
+                    printf("render\t%d\tok\n", i + 1);
+                } else if (cmp == IMG_COSMETIC) {
+                    /* Within the oracle-quirk tolerance (see image_compare):
+                       counted as ok, but flagged with two extra fields so the
+                       runner can count / show it: "cosmetic" + differing
+                       pixel count. */
+                    m++;
+                    cosmetic++;
+                    printf("render\t%d\tok\tcosmetic\t%zu\n", i + 1, ndiff);
+                }
+            }
+            if (cmp == IMG_DIFF) {
                 mm++;
                 if (diffdir && diffdir[0]) {
                     char refpath[1024], minepath[1024];
@@ -1205,9 +1506,9 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
                         refimg.format = ref.bps == 3 ? DJVU_FORMAT_RGB24 : DJVU_FORMAT_GRAY8;
                         refimg.stride = ref.rowsize;
                         refimg.data = ref.data;
-                        write_pnm_ex(refpath, &refimg, 1); /* ref is BGR -> swap to RGB */
+                        hu_write_pnm(refpath, &refimg, 1); /* ref is BGR -> swap to RGB */
                     }
-                    write_pnm_ex(minepath, mine, 1); /* ours is BGR -> swap to RGB */
+                    hu_write_pnm(minepath, mine, 1); /* ours is BGR -> swap to RGB */
                     printf("render\t%d\tmismatch\t%s\t%s\n",
                            i + 1, refpath, minepath);
                 } else {
@@ -1223,12 +1524,14 @@ static int run_verify_render(djvu_doc *doc, const char *path, const char *diffdi
         }
         }
     }
+    /* summary <0> <0> <0> <ok> <mismatch> <skip> <cosmetic>: cosmetic is the
+       subset of <ok> pages accepted under the image_compare tolerance. */
     bench_ddjvu_purge();
-    printf("summary\t0\t0\t0\t%d\t%d\t%d\n", m, mm, skip);
+    printf("summary\t0\t0\t0\t%d\t%d\t%d\t%d\n", m, mm, skip, cosmetic);
     return mm ? 1 : 0;
 mem_limit:
     bench_ddjvu_purge();
-    printf("summary\t0\t0\t0\t%d\t%d\t%d\n", m, mm, skip);
+    printf("summary\t0\t0\t0\t%d\t%d\t%d\t%d\n", m, mm, skip, cosmetic);
     return 3;
 }
 
@@ -1275,27 +1578,51 @@ static int run_verify_text(djvu_doc *doc, const char *ref_blob, size_t ref_len)
     return tmm ? 1 : 0;
 }
 
-static void print_zone(const djvu_text_zone *z, int depth)
+static void usage(void)
 {
-    static const char *tn[8] = {"?","page","col","region","para","line","word","char"};
-    int i;
-    int t = (z->type >= 1 && z->type <= 7) ? z->type : 0;
-    for (i = 0; i < depth; i++) fputs("  ", stdout);
-    printf("%s [%d,%d %dx%d]", tn[t], z->x, z->y, z->w, z->h);
-    if (z->type == DJVU_ZONE_WORD && z->text) printf(" \"%s\"", z->text);
-    putchar('\n');
-    for (i = 0; i < z->nchildren; i++) print_zone(&z->children[i], depth + 1);
-}
-
-static void print_outline(const djvu_outline_item *it, int depth)
-{
-    int i;
-    if (it->title) {
-        for (i = 0; i < depth; i++) fputs("  ", stdout);
-        printf("%s -> %s (page %d)\n", it->title,
-               it->url ? it->url : "", it->page_no);
-    }
-    for (i = 0; i < it->nchildren; i++) print_outline(&it->children[i], depth + 1);
+    fputs(
+        "djvu_test -- djvudec test harness (verifies against DjVuLibre)\n"
+        "\n"
+        "  djvu_test [options] file.djvu\n"
+        "\n"
+        "Inspect (default with no option: -info):\n"
+        "  -info              page count + per-page size, dpi, version, rotation\n"
+        "  -comps             -info plus the DJVM component list\n"
+        "  -page N            page number, 1-based (default 1)\n"
+        "  -text              hidden text of the page\n"
+        "  -zones             text zone tree with bounding boxes\n"
+        "  -outline           document bookmark outline\n"
+        "  -links             page hyperlinks\n"
+        "  -type              page content type (bitonal/photo/compound)\n"
+        "  -out FILE          render the page to PGM/PPM (- = stdout)\n"
+        "  -sub N             subsample for -out (default 1)\n"
+        "\n"
+        "Verify:\n"
+        "  -verify-render     compare every page render with ddjvu (cmd/tests.ts)\n"
+        "  -diffdir DIR       with -verify-render: write ref/mine PNMs of mismatches\n"
+        "  -verify-text       compare page text with the packed reference on stdin\n"
+        "  -verify-into       djvu_page_render_into == djvu_page_render at sub 1,2,3\n"
+        "  -verify-abort      abort API: tokens, djvu_request_abort, in-flight abort\n"
+        "                     sweep, leak / stale-state checks (honors -page)\n"
+        "\n"
+        "Benchmark (ours vs DjVuLibre, same clock):\n"
+        "  -bench             per-page djvu_page_render vs ddjvu_page_render\n"
+        "  -bench-sum         same, replicating the SumatraPDF engine render paths\n"
+        "  -profile-sum       loop the -bench-sum render of -page forever (profilers)\n"
+        "\n"
+        "Codec layers:\n"
+        "  -bzzdec            decode the input as a raw BZZ stream to -out or stdout\n"
+        "  -bg                composited background layer of the page (to -out)\n"
+        "  -iwbg              BG44 IW44 layer (to -out)\n"
+        "  -iwfg              FG44 IW44 layer (to -out)\n"
+        "  -iwbggray          BG44 Y plane (to -out)\n"
+        "  -iwbgcb            BG44 Cb plane (to -out)\n"
+        "  -iwbgcr            BG44 Cr plane (to -out)\n"
+        "  -iwdumpbg          dump BG44 chunks as FORM:PM44 to -out (default iw.djvu)\n"
+        "  -iwdumpfg          dump FG44 chunks as FORM:PM44 to -out (default iw.djvu)\n"
+        "\n"
+        "  -h, -help          this text\n",
+        stderr);
 }
 
 int main(int argc, char **argv)
@@ -1303,8 +1630,8 @@ int main(int argc, char **argv)
     const char *in = NULL, *out = NULL;
     int do_info = 0, do_text = 0, do_bzz = 0, do_iw = 0, page = 1, out_sub = 1;
     int do_zones = 0, do_outline = 0, do_links = 0, do_type = 0, do_bench = 0;
-    int do_verify_text = 0, do_verify_render = 0, do_dump_features = 0, do_verify_into = 0;
-    int do_profile_sum = 0;
+    int do_verify_text = 0, do_verify_render = 0, do_verify_into = 0;
+    int do_verify_abort = 0, do_profile_sum = 0, page_explicit = 0;
     const char *diffdir = NULL;
     int i, rc = 0;
     uint8_t *data; size_t len;
@@ -1333,36 +1660,63 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-verify-into")) do_verify_into = 1;
         else if (!strcmp(argv[i], "-verify-text")) do_verify_text = 1;
         else if (!strcmp(argv[i], "-verify-render")) do_verify_render = 1;
-        else if (!strcmp(argv[i], "-dump-features")) do_dump_features = 1;
+        else if (!strcmp(argv[i], "-verify-abort")) do_verify_abort = 1;
         else if (!strcmp(argv[i], "-diffdir") && i + 1 < argc) diffdir = argv[++i];
-        else if (!strcmp(argv[i], "-page") && i + 1 < argc) page = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-page") && i + 1 < argc) {
+            page = atoi(argv[++i]);
+            page_explicit = 1;
+        }
         else if (!strcmp(argv[i], "-sub") && i + 1 < argc) out_sub = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-out") && i + 1 < argc) out = argv[++i];
+        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "-help") ||
+                 !strcmp(argv[i], "--help")) {
+            usage();
+            return 0;
+        }
+        else if (argv[i][0] == '-') {
+            /* An unknown flag (or a value flag missing its value) must not be
+               mistaken for the input file name. */
+            fprintf(stderr, "djvu_test: unknown option or missing value: %s\n\n",
+                    argv[i]);
+            usage();
+            return 2;
+        }
         else in = argv[i];
     }
     if (!in) {
-        fprintf(stderr, "usage: djvu_test [-info] [-page N] [-out f.pnm] [-text] in.djvu\n");
+        usage();
         return 2;
     }
 
-    data = read_file(in, &len);
+    data = hu_read_file(in, &len);
     if (!data) { fprintf(stderr, "cannot read %s\n", in); return 1; }
 
-    /* Verify: lazy decode per chunk (tests.ts sets DJVU_VERIFY_LO/HI); cold ddjvu oracle. */
-    if (do_verify_render) {
-        djvu_test_ddjvu_cold = 1;
-        verify_install_crash_handlers();
+    djvu_init();
+
+    /* -verify-abort builds its own contexts (counting allocator, cache on/off) */
+    if (do_verify_abort) {
+        rc = run_verify_abort(data, len, page_explicit ? page : 0);
+        free(data);
+        return rc;
     }
 
-    djvu_init();
+    /* Verify: lazy decode per chunk (tests.ts sets DJVU_VERIFY_LO/HI). */
+    if (do_verify_render)
+        verify_install_crash_handlers();
+
     /* -verify-render installs the accounting allocator (per-file memory report,
        leak check, 4 GB-per-ctx abort); other modes use the default allocator so
        e.g. -bench timing isn't perturbed. */
     if (do_verify_render)
-        ctx = djvu_ctx_new(mem_alloc, mem_free, bench_cache_lock_cb, bench_cache_unlock_cb,
-                           on_error, NULL);
+        ctx = djvu_ctx_new(mem_alloc, mem_free, hu_lock_cb, hu_unlock_cb,
+                           hu_on_error, NULL);
     else
-        ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, on_error, NULL);
+        ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, hu_on_error, NULL);
+    if (!ctx) {
+        fprintf(stderr, "djvu_ctx_new failed\n");
+        free(data);
+        return 1;
+    }
     if (do_verify_render)
         djvu_ctx_set_cache_per_page(ctx, 1);
 
@@ -1378,10 +1732,19 @@ int main(int argc, char **argv)
         /* decode a raw BZZ stream and write to -out (or stdout) */
         size_t olen = 0;
         uint8_t *o = djvu_bzz_decode_all(ctx, data, len, &olen);
-        if (!o) { rc = 1; }
-        else {
+        if (!o) {
+            fprintf(stderr, "bzzdec: decode failed\n");
+            rc = 1;
+        } else {
             FILE *f = out ? fopen(out, "wb") : stdout;
-            if (f) { fwrite(o, 1, olen, f); if (out) fclose(f); }
+            if (!out) hu_stdout_binary(); /* raw bytes: no CRLF translation */
+            if (!f) {
+                fprintf(stderr, "cannot write %s\n", out);
+                rc = 1;
+            } else {
+                if (fwrite(o, 1, olen, f) != olen) rc = 1;
+                if (out ? fclose(f) != 0 : fflush(f) != 0) rc = 1;
+            }
             djvu_free(ctx, o);
         }
         djvu_ctx_free(ctx);
@@ -1390,14 +1753,6 @@ int main(int argc, char **argv)
     }
     doc = djvu_doc_open(ctx, data, len);
     if (!doc) { fprintf(stderr, "cannot open document\n"); free(data); djvu_ctx_free(ctx); return 1; }
-
-    if (do_dump_features) {
-        rc = run_dump_features(doc);
-        djvu_doc_close(doc);
-        djvu_ctx_free(ctx);
-        free(data);
-        return rc;
-    }
 
     if (do_verify_render) {
         rc = run_verify_render(doc, in, diffdir);
@@ -1441,16 +1796,16 @@ int main(int argc, char **argv)
             rc = djvu_debug_dump_iw(doc, page - 1, do_iw == 4, out ? out : "iw.djvu");
         } else if (do_iw == 8) {
             djvu_image *img = djvu_debug_render_bg(doc, page - 1);
-            if (img) { if (out) write_pnm(out, img); djvu_image_destroy(ctx, img); }
+            if (img) { if (out) hu_write_pnm(out, img, 0); djvu_image_destroy(ctx, img); }
             else rc = 1;
         } else if (do_iw == 5 || do_iw == 6 || do_iw == 7) {
             djvu_image *img = djvu_debug_render_iw_plane(doc, page - 1, 0, do_iw - 5);
-            if (img) { if (out) write_pnm(out, img); djvu_image_destroy(ctx, img); }
+            if (img) { if (out) hu_write_pnm(out, img, 0); djvu_image_destroy(ctx, img); }
             else rc = 1;
         } else {
             djvu_image *img = djvu_debug_render_iw(doc, page - 1, do_iw == 2);
             if (img) {
-                if (out) write_pnm(out, img);
+                if (out) hu_write_pnm(out, img, 0);
                 djvu_image_destroy(ctx, img);
             } else rc = 1;
         }
@@ -1469,7 +1824,7 @@ int main(int argc, char **argv)
         djvu_doc_close(doc);
         doc = NULL;
         djvu_ctx_free(ctx);
-        ctx = bench_ctx_new(0);
+        ctx = bench_ctx_new();
         if (!ctx) {
             fprintf(stderr, "bench: out of memory\n");
             free(data);
@@ -1574,43 +1929,34 @@ int main(int argc, char **argv)
     }
 
     if (do_type) {
-        static const char *tn[4] = {"unknown","bitonal","photo","compound"};
-        djvu_page_type t = djvu_page_get_type(doc, page - 1);
-        printf("page %d type: %s\n", page, tn[(t >= 0 && t < 4) ? t : 0]);
+        printf("page %d type: %s\n", page,
+               hu_page_type_name(djvu_page_get_type(doc, page - 1)));
     }
 
     if (do_zones) {
         djvu_page_text_zones *z = djvu_page_text_get_zones(doc, page - 1);
-        if (z && z->root) print_zone(z->root, 0);
+        if (z && z->root) hu_print_zone(z->root, 0);
         else printf("(no text zones)\n");
         djvu_text_zones_destroy(ctx, z);
     }
 
     if (do_outline) {
         djvu_outline_item *root = djvu_doc_outline(doc);
-        if (root) print_outline(root, -1);
+        if (root) hu_print_outline(root, -1);
         else printf("(no outline)\n");
         djvu_outline_destroy(ctx, root);
     }
 
     if (do_links) {
         djvu_page_links *L = djvu_page_get_links(doc, page - 1);
-        if (L) {
-            int k;
-            for (k = 0; k < L->nlinks; k++) {
-                djvu_link *e = &L->links[k];
-                printf("link %d: [%d,%d %dx%d] shape=%d -> %s%s%s\n", k,
-                       e->x, e->y, e->w, e->h, e->shape, e->url,
-                       e->comment ? " ; " : "", e->comment ? e->comment : "");
-            }
-            djvu_page_links_destroy(ctx, L);
-        } else printf("(no links)\n");
+        hu_print_links(L);
+        if (L) djvu_page_links_destroy(ctx, L);
     }
 
     if (out) {
         djvu_image *img = djvu_page_render(doc, page - 1, out_sub);
         if (img) {
-            if (write_pnm(out, img) != 0) { fprintf(stderr, "cannot write %s\n", out); rc = 1; }
+            if (hu_write_pnm(out, img, 0) != 0) { fprintf(stderr, "cannot write %s\n", out); rc = 1; }
             djvu_image_destroy(ctx, img);
         } else { rc = 1; }
     }

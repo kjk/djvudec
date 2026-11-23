@@ -2,17 +2,19 @@
 //
 //   bun cmd/build-thread.ts          MSVC on Windows, clang elsewhere
 //   bun cmd/build-thread.ts -clang
-//   bun cmd/build-thread.ts -clean
-import { cleanBuildOutput, defaultUseClang } from "./build";
+//   bun cmd/build-thread.ts -clean   rebuild the thread objs + exe from scratch
 import { buildLibTool, THREAD_TARGET } from "./build-lib";
+import { defaultUseClang } from "./util";
 
-export async function buildThread(useClang = defaultUseClang): Promise<string> {
-  return buildLibTool(THREAD_TARGET, useClang);
+export async function buildThread(
+  useClang = defaultUseClang,
+  clean = false,
+): Promise<string> {
+  return buildLibTool(THREAD_TARGET, useClang, false, clean);
 }
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  if (args.includes("-clean")) cleanBuildOutput();
   const useClang = args.includes("-clang") || defaultUseClang;
-  await buildThread(useClang);
+  await buildThread(useClang, args.includes("-clean"));
 }

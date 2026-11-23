@@ -6,10 +6,14 @@
 //   bun cmd/fuzz.ts -check-crashes  replay fuzz/crashes/* under ASan (CI)
 //   bun cmd/fuzz.ts -minimize   shrink the corpus to a minimal covering set
 //
-// The fuzzer is always rebuilt from scratch: build-lib.ts doesn't track header
-// dependencies, so an edit to djvu_internal.h could otherwise leave mixed
-// object files (some against the old struct layout) -- an ABI mismatch that
-// looks like a decoder crash. A clean build is cheap here and removes that trap.
+// The fuzzer is always rebuilt from scratch. build-lib.ts does track sources
+// and the shared headers, but not the compile FLAGS, and this build's flags
+// vary by environment: DJVU_FUZZ_UBSAN switches the sanitizer set
+// (address,fuzzer vs address,undefined,fuzzer) and DJVUDEC_FUZZ_CLANG /
+// LLVM_PREFIX switch the compiler (and with it the sanitizer runtime). An
+// incremental build would reuse objects compiled under the other setting --
+// a mixed-instrumentation binary whose failures look like decoder bugs. A
+// clean build of 17 files is cheap here and removes that trap.
 //
 // The corpus directory (fuzz/corpus) IS the checkpoint: stop by killing the
 // process, resume by running again -- libFuzzer reloads the corpus and keeps

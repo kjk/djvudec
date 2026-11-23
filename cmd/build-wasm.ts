@@ -1,6 +1,6 @@
 // build-wasm.ts — build a WebAssembly drop of the djvu decoder into dist/wasm/.
 //
-//   bun cmd/build-wasm.ts            # incremental build (bootstraps emsdk once)
+//   bun cmd/build-wasm.ts            # always rebuilds (bootstraps emsdk once)
 //   bun cmd/build-wasm.ts -clean     # also wipe/re-activate the local emsdk
 //
 // Output (split module — needs an HTTP server; use `bun cmd/run-wasm-demo.ts`):
@@ -11,6 +11,8 @@
 // Emscripten isn't assumed to be on PATH: if `emcc` is missing we git-clone the
 // emsdk into deps/emsdk and `install/activate latest` there (one-time, cached).
 // build-dist.ts calls buildWasm({ useDist: true }) to compile dist/djvu.c.
+// Only ensureWasm() (verify-wasm.ts, run-wasm-demo.ts) is incremental: it
+// rebuilds when src/ is newer than dist/wasm/.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";

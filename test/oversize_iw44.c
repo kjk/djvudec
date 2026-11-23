@@ -18,7 +18,14 @@
  *
  * The page INFO dimensions must equal the BG44 native size, else the
  * compose reduction factor is 0 and the background is skipped before it
- * allocates. Self-contained: builds the .djvu in memory, no fixture file. */
+ * allocates. Self-contained: builds the .djvu in memory, no fixture file.
+ *
+ * To keep the test from passing vacuously (a crafted file that no longer opens,
+ * or a render that bails out before it reaches the IW44 decoder, would also
+ * "request nothing large"), it additionally requires that the document opens
+ * as one 65535x65535 photo page and that each render actually allocated
+ * something -- a photo render's first allocation is the IW44 decoder state, so
+ * a non-zero count means the BG44 decode was entered -- before failing. */
 #include "djvu.h"
 
 #include <stdio.h>
@@ -31,10 +38,12 @@
 #define ALLOC_CAP ((size_t)256 * 1024 * 1024)
 
 static size_t g_max_req; /* largest size ever passed to alloc, cap or not */
+static long g_nalloc;    /* number of alloc calls (reset around each render) */
 
 static void *cap_alloc(void *user, void *ctx, size_t size)
 {
     (void)user; (void)ctx;
+    g_nalloc++;
     if (size > g_max_req) g_max_req = size;
     if (size > ALLOC_CAP) return NULL; /* exercise the alloc-failure paths */
     return malloc(size ? size : 1);
@@ -93,12 +102,39 @@ static size_t build_djvu(unsigned char *out)
     return k;
 }
 
+/* Render the page at `subsample`; the oversize background must be rejected
+   (NULL) after the IW44 decode was entered (>= 1 allocation). Returns 0 if so. */
+static int render_must_reject(djvu_ctx *ctx, djvu_doc *doc, int subsample)
+{
+    djvu_image *img;
+    long nalloc;
+
+    g_nalloc = 0;
+    img = djvu_page_render(doc, 0, subsample);
+    nalloc = g_nalloc;
+    if (img) {
+        fprintf(stderr, "oversize_iw44: FAIL -- render at subsample %d returned a "
+                        "%dx%d image; the oversize BG44 was not rejected\n",
+                subsample, img->width, img->height);
+        djvu_image_destroy(ctx, img);
+        return 1;
+    }
+    if (nalloc == 0) {
+        fprintf(stderr, "oversize_iw44: FAIL -- render at subsample %d failed "
+                        "without allocating; the IW44 decode was never reached\n",
+                subsample);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void)
 {
     unsigned char file[512];
     size_t len = build_djvu(file);
     djvu_ctx *ctx;
     djvu_doc *doc;
+    djvu_page_info pi;
     int rc = 0;
 
     djvu_init();
@@ -106,14 +142,26 @@ int main(void)
     if (!ctx) { fprintf(stderr, "oversize_iw44: ctx_new failed\n"); return 2; }
 
     doc = djvu_doc_open(ctx, file, len);
-    if (doc) {
-        djvu_image *img;
-        img = djvu_page_render(doc, 0, 1);
-        if (img) djvu_image_destroy(ctx, img);
-        img = djvu_page_render(doc, 0, 4);
-        if (img) djvu_image_destroy(ctx, img);
-        djvu_doc_close(doc);
+    if (!doc) {
+        fprintf(stderr, "oversize_iw44: FAIL -- crafted document did not open; "
+                        "the test no longer reaches the IW44 decoder\n");
+        djvu_ctx_free(ctx);
+        return 1;
     }
+    memset(&pi, 0, sizeof(pi));
+    if (djvu_doc_page_count(doc) != 1 || djvu_doc_page_info(doc, 0, &pi) != 0 ||
+        pi.width != 65535 || pi.height != 65535 ||
+        djvu_page_get_type(doc, 0) != DJVU_PAGE_PHOTO) {
+        fprintf(stderr, "oversize_iw44: FAIL -- expected one 65535x65535 photo "
+                        "page, got %d page(s), %dx%d, type %d\n",
+                djvu_doc_page_count(doc), pi.width, pi.height,
+                (int)djvu_page_get_type(doc, 0));
+        rc = 1;
+    } else {
+        rc |= render_must_reject(ctx, doc, 1);
+        rc |= render_must_reject(ctx, doc, 4);
+    }
+    djvu_doc_close(doc);
     djvu_ctx_free(ctx);
 
     if (g_max_req > ALLOC_CAP) {
@@ -122,7 +170,7 @@ int main(void)
                 "(> cap %zu); oversize IW44 dims not rejected\n",
                 g_max_req, (size_t)ALLOC_CAP);
         rc = 1;
-    } else {
+    } else if (rc == 0) {
         printf("oversize_iw44: ok (largest request %zu bytes)\n", g_max_req);
     }
     return rc;

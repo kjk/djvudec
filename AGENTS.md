@@ -98,19 +98,32 @@ bun cmd/build-prof.ts
   `-clang` builds with clang instead (`djvu_test_clang.exe`). The exe is suffixed
   by toolchain so both can coexist; clang objects are `*.o`, MSVC objects
   `*.obj`. `build(useClang)` returns the exe path; `bun cmd/build.ts ref`
-  rebuilds just the ref tools. `buildRef()`/`build()`/`defaultUseClang` are
-  exported for `tests.ts`/`bench.ts`.
+  rebuilds just the ref tools. `buildRef()`/`build()` are exported for
+  `tests.ts`/`bench.ts`. The exe is relinked whenever any linked object or
+  libdjvu is newer (a failed link is not mistaken for "up to date").
+  Shared build helpers (`ROOT`, `defaultUseClang`, the single `LIB_SRCS` source
+  list, `needsRebuild`, `runCmd`, flag constants) live in `cmd/util.ts`, which
+  imports no other script; add new `src/*.c` files there only.
   djvu_test also links DjVuLibre's decoder (via the `test/bench_ddjvu.cpp` shim
   and a cached `ref_build/libdjvu.lib`, built once by `buildLibDjvu()` with
   clang++) so that `-bench` works. libdjvu.lib uses the **static** CRT (`/MT`),
   so the MSVC harness compiles with `-MT` to match (a `/MD` mismatch is LNK2038).
   NB: Bun's shell eats `\` in glob args, so `ROOT` is normalized to forward
   slashes; MSVC flags use `-` (a `/` synonym) to dodge the same path-mangling.
-- `bun cmd/bench.ts <file.djvu ... | -rand N> [-clang]` — builds, then runs
-  `djvu_test -bench` to compare our per-page render speed against DjVuLibre's
-  (`ddjvuapi` `page_render`: decode + composite + rotation; same `steady_clock`
-  both sides). Each line:
-  `page N, djvulibre A ms, ours B ms, +/-Δ ms, +/-Δ%` (`+` = we're slower).
+- `bun cmd/bench.ts <file.djvu ... | -rand N | -all> [-clang] [-verbose]
+  [-clean]` — builds a **separate bench harness from the amalgamation**, then
+  runs its `-bench` mode to compare our per-page render speed against
+  DjVuLibre's (`ddjvuapi` `page_render`: decode + composite + rotation; same
+  `steady_clock` both sides). The amalgamation is generated into
+  `out/amalg/djvu.{h,c}` (refreshed when `src/` is newer) and the harness is
+  `out/msvc_bench/djvu_bench_msvc.exe` / `out/clang_bench/djvu_bench_clang`;
+  bench never reads or writes `dist/`, never builds WASM, and does not share
+  an exe with `build()`. `-clean` removes only `out/amalg` and the bench dir.
+  The harness prints a table (`op libdjvu djvudec diff %diff`, rows open / page
+  N / close / total; `+` diff = we're slower); `bench.ts` condenses it to
+  per-file totals plus the 10 slowest pages (`-verbose` for every page).
+  Timed regions are symmetric: result buffers are allocated, touched and freed
+  outside the clock on both sides.
   Two fairness rules (both were once bugs — don't reintroduce them):
   the ours/libdjvu sessions are **interleaved** (ours, lib, ours, lib) so a
   machine-load swing can't hit only one side, and `bench_ddjvu_reset` calls
@@ -151,7 +164,11 @@ bun cmd/build-prof.ts
   than libdjvu on color pages too. `djvu_test -verify-into` checks
   `render_into` is byte-identical to `djvu_page_render`.
 - **Before/after render perf** (djvudec only, no DjVuLibre):
-  1. `bun cmd/build-bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`
+  1. `bun cmd/build-bench.ts before -clean` — snapshot `out/bench_before/…/bench_before.exe`.
+     This is the **only** thing that (re)builds the "before" exe:
+     `bench-perf.ts` and `profile-render.ts -variant before` refuse to run
+     without it and never rebuild it (the "after" exe is refreshed
+     automatically).
   2. Edit `src/` (or regenerate `dist/djvu.c` if benchmarking the amalgamation)
   3. `bun cmd/build-bench.ts after -clean` — build `out/bench_after/…/bench_after.exe`
   4. `bun cmd/bench-perf.ts path/to/file.djvu` — runs both binaries with
@@ -183,8 +200,18 @@ bun cmd/build-prof.ts
   default; `-clang` selects the clang harness. Files are tested **in parallel**,
   one worker per CPU (each worker uses private temp PNMs); `-cpu N` overrides the
   worker count. Per-file lines print in completion order (`[done/total] name …
-  — time — same|diff — alloc <total>, peak <peak>`). (This inverts the old
-  relationship where build.ts invoked verify.)
+  — time — same|diff — alloc <total>, peak <peak>`). File selection goes
+  through `selectFiles` (precedence `-all`, then `-rand`, then explicit files);
+  `-failures path` re-runs a saved failure list and `-failout path` picks where
+  the new one is written. A file that cannot be opened or read is a
+  **failure** (`FAILED: cannot open …`), not a 0-page pass; a leak (harness
+  exit 4) is reported as `memory leak`; any failed file makes the script exit 1.
+  **Cosmetic tolerance:** the render verifier is byte-exact except that an RGB
+  page differing from ddjvu in at most 2000 pixels and at most 0.01% of pixels
+  (`image_equal_cosmetic` in `test/djvu_test.c`) is accepted and reported as
+  `ok cosmetic`; the summary shows `MATCH=N (cosmetic=K)`. These are the ddjvu
+  fg-stencil quirk pages (e.g. 56 of 127 pages of `test061C.djvu`). A change
+  that makes K grow needs a look.
   **Memory accounting:** `-verify-render` installs tracking `djvu_alloc_cb` /
   `djvu_free_cb` hooks (per `djvu_ctx`, via the callbacks' `ctx` arg) that tally
   total allocations and peak live bytes per file, emit a `memstat` line on
@@ -222,7 +249,9 @@ bun cmd/build-prof.ts
   (`out/clang_asan/djvudec_stress_asan.exe`); `-no-asan` gives a plain release
   build (`out/msvc/djvudec_stress.exe`), `-cpu N` sets threads (default
   `cores-2`, min 2), `-clean` rebuilds from scratch. Files that open to zero
-  pages are reported as `skipped`, not failures. (This caught the shared-dict
+  pages are reported as `skipped`; a file that cannot be read or opened is
+  `FAILED` (exit 1). Threads are joined one handle at a time, so `-cpu` above
+  64 works. (This caught the shared-dict
   JB2 shape heap-use-after-free: page renders read dict-shape RLE lock-free
   while another thread's `MatchedRefine` uncompressed the same shared shape
   in place.)
@@ -245,11 +274,16 @@ bun cmd/build-prof.ts
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +
   amalgamation + UBSan crashes, macOS clang + full oracle + amalgamation, WASM
-  decode smoke). deps/ and ref_build/ are cached per OS. Under `CI=true`,
+  decode smoke). The host jobs verify the amalgamation with
+  `build-dist.ts -no-wasm` (only the wasm job builds WASM) and also run
+  `djvu_test -verify-into` on two small files, `test-abort.ts`,
+  `test-oversize-iw44.ts` and (Windows, Linux) `test-cache-race.ts -secs 5`.
+  deps/ and ref_build/ are cached per OS. Under `CI=true`,
   `tests.ts -all` skips known DjVuLibre oracle quirks that are not decoder
   bugs: `1998_compression.djvu` (ddjvu fg-stencil quirk on p19) and
   `nasa001C.orig.png.djvu` (ddjvu "Cannot decode page 1" on this standalone
-  PM44; our decoder renders it). A local `-all` still reports those.
+  PM44; our decoder renders it). A local `-all` reports the second as a
+  mismatch and the first as `ok cosmetic`.
 
 ### Verification scripts
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ...>` — corpus verifier
@@ -258,7 +292,21 @@ bun cmd/build-prof.ts
   corpus at any other directory (e.g. a real-world set) instead.
 - The old Python verifiers (`test/verify.py`, `test/verify_dir.py`) have been
   removed; `cmd/tests.ts` is their bun/TypeScript replacement.
-- `bun cmd/verify-subsample.ts <file.djvu ... | -rand N> [-sub N] [-pages a,b,c]` —
+- `bun cmd/test-abort.ts <file.djvu ... | -rand N | -all> [-clang]` — runs
+  `djvu_test -verify-abort`: abort-API test (pre-requested token, fresh/NULL
+  token identity, `djvu_request_abort` with nothing in flight, and in-flight
+  aborts injected from the allocator callback at every allocation count, with
+  per-page caching off and on; checks no partial image, no leak, and that the
+  next render still matches). Also covers `djvu_ctx_set_no_compose` /
+  `djvu_ctx_set_iw_max_chunks`.
+- `bun cmd/test-cache-race.ts <file.djvu ... | -rand N | -all> [-secs N]
+  [-sub N] [-cpu N] [-no-asan] [-clang]` — builds `test/crash_cache_race.c`
+  (clang + ASan by default: `out/clang_asan/crash_cache_race_asan`) and races
+  `djvu_doc_drop_page_cache` against renders for N seconds (default 5).
+  Regression test for the cached-layer refcounts.
+- `bun cmd/test-oversize-iw44.ts [-clang] [-asan]` — crafted oversize-IW44
+  regression (`test/oversize_iw44.c`; input from `cmd/gen-oversize-mark.ts`).
+- `bun cmd/verify-subsample.ts <file.djvu ... | -rand N> [-sub N] [-pages a,b,c] [-clang]` —
   compares reduced-size renders (subsamples 2/3 by default) against
   `ddjvu -subsample=N -aspect=no` and reports mean/max abs channel diff (not
   byte-exact by design: different scaler paths + mask anti-aliasing; corpus
@@ -266,11 +314,12 @@ bun cmd/build-prof.ts
   default shrinks one dimension after the ceil(dim/sub) rect to preserve
   aspect, a tool-only behavior that would misreport as a size mismatch.
 
-Known oracle-only mismatches (not decode bugs; CI skips both under `CI=true`):
+Known oracle-only differences (not decode bugs; CI skips both files under `CI=true`):
 - `1998_compression.djvu` p19 — ddjvu three-layer-stencil quirk (ddjvu paints
-  a few FG pixels ~1px off from the JB2 mask). Verified our mask/bg/fg are
-  byte-exact vs DjVuLibre internals. Our output is arguably more correct.
-  Do not "fix" it.
+  a few FG pixels ~1px off from the JB2 mask; 680 px / 0.008%). Verified our
+  mask/bg/fg are byte-exact vs DjVuLibre internals. Our output is arguably
+  more correct. Do not "fix" it. It falls inside the verifier's cosmetic
+  tolerance, so it shows as `ok cosmetic`, not as a mismatch.
 - `nasa001C.orig.png.djvu` (399-byte standalone PM44) — ddjvu fails with
   "Cannot decode page 1"; our decoder renders a full 1200×400 color page.
   Do not "fix" it.
@@ -282,7 +331,8 @@ Known oracle-only mismatches (not decode bugs; CI skips both under `CI=true`):
   with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped,
   comments removed, LF only, trailing whitespace stripped, and at most one
   blank line in a row). The script verifies the result with `clang -c` (and
-  MSVC on Windows) before finishing, then builds the WASM drop. Regenerate
+  MSVC on Windows) before finishing, then builds the WASM drop
+  (`-no-wasm` skips emsdk and `dist/wasm`). Regenerate
   after touching `src/` so the amalgamation still compiles; build artifacts are
   gitignored. This works because no two `.c` files share a file-local (`static`)
   symbol name — keep it that way or the single-unit build breaks.
@@ -301,8 +351,9 @@ bun + TypeScript is the standard tooling for ad-hoc tooling here.
 - `test/djvu_test.c` uses `fopen` → ASCII paths only. The **library** takes an
   in-memory buffer and is encoding-agnostic; only the test harness is limited.
   Unicode-path "failures" in the wild are harness limitations, not bugs.
-- Python on Windows can't read git-bash `/tmp` paths; write test outputs to the
-  session scratchpad dir instead.
+- `-clean` on `build.ts` / `tests.ts` deletes all of `out/` (including
+  `bench_before` snapshots and the fuzz/prof builds); the other build scripts
+  clean only their own outputs.
 
 ## C API (`src/djvu.h`) — jbig2dec flavor
 Opaque `djvu_ctx` / `djvu_doc`; caller-supplied `djvu_alloc_cb` / `free_cb` /
@@ -444,13 +495,22 @@ Per-context setters (no env var; call before `djvu_doc_open`):
 - `test/jb2ref.cpp` — decode raw Sjbz, dump blits/mask via DjVuLibre internals.
 - `djvu_test` flags (`-page N` is 1-based): `-info -page N -out f [-sub N] -text
   -type -zones -outline -links -bzzdec -comps -bench -bench-sum -profile-sum
-  -verify-into -verify-render -verify-text -diffdir -dump-features`,
+  -verify-into -verify-render -verify-text -verify-abort -diffdir`,
   IW44 debug: `-iwbg/-iwfg/-iwdumpbg/-iwdumpfg/-iwbggray/-iwbgcb/-iwbgcr -bg`.
   `-bench` times our render vs DjVuLibre `ddjvu_page_render` per page (see
   `bun cmd/bench.ts`); `-bench-sum` does the same for the SumatraPDF engine
   render path (`bun cmd/bench.ts -like-sumatra`). `-sub N` renders `-out` at subsample
   N (for inspecting the subsampled raster). `-verify-into` checks
-  `djvu_page_render_into` is byte-identical to `djvu_page_render`.
+  `djvu_page_render_into` is byte-identical to `djvu_page_render`;
+  `-verify-abort` is the abort-API test (see `bun cmd/test-abort.ts`).
+  Unknown flags are rejected (usage, exit 2); run with no args for the full
+  grouped usage.
+- Harness helpers shared by every file in `test/` (file reading, clock, CPU
+  count, lock callbacks, thread start/join, size-header allocator, PNM writer,
+  zone/outline/link printers) live in the header-only `test/harness_util.h`
+  (`hu_*`); include it first and add new shared helpers there, not per
+  harness. The build scripts treat `test/*.h` as a dependency of every
+  harness.
 
 ## Methodology
 Reference-oracle verification: every codec layer is checked byte-exact against

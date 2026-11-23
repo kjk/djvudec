@@ -14,6 +14,9 @@ finishes.
 | `djvu_ctx_new` / `djvu_ctx_free` | Single-threaded |
 | `djvu_doc_open` / `djvu_doc_close` | Single-threaded (mutates doc caches) |
 | All other APIs on an open `djvu_doc` | Intended safe for concurrent read-only use |
+| `djvu_doc_drop_page_cache` / `djvu_doc_page_cache_size` | Safe concurrently with renders when lock/unlock hooks are set (cached layers are refcounted; a layer pinned by an in-flight render is freed on its last release) |
+| `djvu_request_abort` | Thread-safe; aborts every in-flight render on the ctx, later renders run normally |
+| `djvu_abort_request` | Thread-safe; aborts only the render(s) given that token. The token must outlive the render call it was passed to |
 
 After `djvu_doc_open` returns, multiple threads may call `djvu_page_render`,
 `djvu_page_text`, `djvu_page_text_get_zones`, `djvu_page_get_links`,
@@ -93,6 +96,16 @@ serialized via the lock callbacks.
 call. That was a write race if two threads hit the same page concurrently.
 INFO is now parsed for all pages inside `djvu_doc_open`.
 
+## Aborting renders
+
+Abort is cooperative: a render polls at checkpoints (after the mask decode,
+every 64 blits in the bitonal and composite loops, at composite entry), so a
+late request may let the render complete. An aborted render returns NULL / -1,
+frees everything it allocated and leaves the page cache usable. The per-render
+state lives in thread-local storage, set at the public render entry and
+cleared at exit. `djvu_test -verify-abort` (`bun cmd/test-abort.ts`) checks all
+of this with aborts injected from the allocator callback.
+
 ## Stress harness
 
 ```text
@@ -106,4 +119,12 @@ then runs `-nops` random operations (default 256) across `-cpu` worker threads
 (default `processor_count / 2`). Each op picks a random page and one of: render,
 text, text zones, links. Exits 0 if all operations succeed, 1 otherwise.
 
-Run under Thread Sanitizer (clang `-fsanitize=thread`) for deeper validation.
+`bun cmd/stress-test.ts <dir | file.djvu ... | -rand N>` (`djvudec_stress`,
+ASan by default) renders every page of the selected files from N threads with
+per-page caching, the way SumatraPDF's render threads do.
+`bun cmd/test-cache-race.ts` (`test/crash_cache_race.c`) races
+`djvu_doc_drop_page_cache` against renders of the same pages (regression test
+for the cached-layer refcounts).
+
+No script builds with Thread Sanitizer yet (clang `-fsanitize=thread`); that
+would be the next step for deeper validation.

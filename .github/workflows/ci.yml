@@ -7,6 +7,11 @@
 # decoder bugs: 1998_compression.djvu (fg-stencil on p19) and
 # nasa001C.orig.png.djvu (ddjvu cannot decode this standalone PM44).
 # Local -all still reports both.
+#
+# The host jobs also run the quick regression tests tests.ts does not cover
+# (djvu_test -verify-into, cmd/test-abort.ts, cmd/test-oversize-iw44.ts,
+# cmd/test-cache-race.ts) and verify the amalgamation compiles
+# (`build-dist.ts -no-wasm`); only the wasm job builds WASM.
 name: ci
 
 on:
@@ -47,8 +52,23 @@ jobs:
         run: bun cmd/get-deps.ts
       - name: Oracle tests (MSVC)
         run: bun cmd/tests.ts -all
+      # Quick regression tests (seconds each) that tests.ts does not cover.
+      # djvu_test_msvc.exe was just built by the oracle step.
+      # One exe per step: a pwsh step only reports the LAST command's exit code.
+      - name: render_into == render, color (MSVC)
+        run: .\out\msvc\djvu_test_msvc.exe -verify-into deps/artifacts/test001C.djvu
+      - name: render_into == render, bitonal (MSVC)
+        run: .\out\msvc\djvu_test_msvc.exe -verify-into deps/DjVuLibre/doc/djvu2spec.djvu
+      - name: Abort API (MSVC)
+        run: bun cmd/test-abort.ts deps/artifacts/test001C.djvu deps/DjVuLibre/doc/djvu2spec.djvu
+      - name: Oversize IW44 dimensions (MSVC)
+        run: bun cmd/test-oversize-iw44.ts
+      - name: Page-cache drop vs render race (MSVC)
+        run: bun cmd/test-cache-race.ts -no-asan -secs 5 deps/artifacts/test001C.djvu
+      # Generates dist/djvu.{h,c} and compiles them (clang + cl). No WASM here:
+      # the wasm job builds and smoke-tests that.
       - name: Amalgamation
-        run: bun cmd/build-dist.ts
+        run: bun cmd/build-dist.ts -no-wasm
 
   windows-clang-fuzz:
     name: Windows clang ASan crash regression
@@ -94,8 +114,22 @@ jobs:
         run: bun cmd/get-deps.ts
       - name: Oracle tests (clang)
         run: bun cmd/tests.ts -all -clang
+      # Quick regression tests (seconds each) that tests.ts does not cover.
+      # djvu_test_clang was just built by the oracle step.
+      - name: render_into == render (clang)
+        run: |
+          out/clang/djvu_test_clang -verify-into deps/artifacts/test001C.djvu
+          out/clang/djvu_test_clang -verify-into deps/DjVuLibre/doc/djvu2spec.djvu
+      - name: Abort API (clang)
+        run: bun cmd/test-abort.ts -clang deps/artifacts/test001C.djvu deps/DjVuLibre/doc/djvu2spec.djvu
+      - name: Oversize IW44 dimensions (clang + ASan)
+        run: bun cmd/test-oversize-iw44.ts -asan
+      - name: Page-cache drop vs render race (clang + ASan)
+        run: bun cmd/test-cache-race.ts -secs 5 deps/artifacts/test001C.djvu
+      # Generates dist/djvu.{h,c} and compiles them. No WASM here: the wasm job
+      # builds and smoke-tests that.
       - name: Amalgamation
-        run: bun cmd/build-dist.ts
+        run: bun cmd/build-dist.ts -no-wasm
       - name: Fuzz crashes (ASan + UBSan)
         env:
           DJVU_FUZZ_UBSAN: "1"
@@ -125,8 +159,14 @@ jobs:
         # Apple clang is on the runner; -clang is the default off Windows but
         # keep it explicit so this job stays parallel to linux.
         run: bun cmd/tests.ts -all -clang
+      - name: Abort API (clang)
+        run: bun cmd/test-abort.ts -clang deps/artifacts/test001C.djvu deps/DjVuLibre/doc/djvu2spec.djvu
+      - name: Oversize IW44 dimensions (clang)
+        run: bun cmd/test-oversize-iw44.ts
+      # Generates dist/djvu.{h,c} and compiles them. No WASM here: the wasm job
+      # builds and smoke-tests that.
       - name: Amalgamation
-        run: bun cmd/build-dist.ts
+        run: bun cmd/build-dist.ts -no-wasm
 
   wasm:
     name: WASM decode smoke
@@ -141,6 +181,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang
+      # No fallback to the linux job's deps-v1-linux- cache: that one is saved
+      # with a different path list (deps + ref_build), and actions/cache only
+      # matches caches whose path list is identical.
       - name: Cache deps
         uses: actions/cache@v4
         with:
@@ -148,7 +191,6 @@ jobs:
           key: deps-v1-linux-wasm-${{ hashFiles('cmd/get-deps.ts', 'cmd/build-wasm.ts') }}
           restore-keys: |
             deps-v1-linux-wasm-
-            deps-v1-linux-
       - name: Clone deps (corpus)
         run: bun cmd/get-deps.ts
       - name: Build amalgamation + WASM

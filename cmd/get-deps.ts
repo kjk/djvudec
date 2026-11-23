@@ -14,7 +14,6 @@ import { join } from "path";
 const ROOT = `${import.meta.dir}/..`; // the djvudec project root
 export const DEPS_DIR = join(ROOT, "deps");
 export const DJVULIBRE_DIR = join(DEPS_DIR, "DjVuLibre");
-export const DJVUNET_DIR = join(DEPS_DIR, "DjvuNet");
 
 const REPOS = [
   { url: "https://github.com/DjvuNet/DjvuNet", dir: "DjvuNet" },

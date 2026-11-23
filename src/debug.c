@@ -53,39 +53,6 @@ djvu_image *djvu_debug_render_iw(djvu_doc *doc, int page_no, int kind)
     return out;
 }
 
-djvu_image *djvu_debug_render_iw_gray(djvu_doc *doc, int page_no, int kind)
-{
-    djvu_ctx *ctx;
-    const char *id = kind ? "FG44" : "BG44";
-    iw_pixmap *pm;
-    djvu_image *out = NULL;
-    int w, h;
-    int pm_owned = 0;
-    if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
-    ctx = doc->ctx;
-    pm = djvu_doc_iw44_acquire(doc, page_no, id, &pm_owned);
-    if (!pm) return NULL;
-    w = djvu_iw44_width(pm); h = djvu_iw44_height(pm);
-    if (w <= 0 || h <= 0) {
-        djvu_doc_iw44_release(ctx, pm, pm_owned);
-        return NULL;
-    }
-    out = (djvu_image *)djvu_alloc(ctx, sizeof(djvu_image));
-    if (!out) {
-        djvu_doc_iw44_release(ctx, pm, pm_owned);
-        return NULL;
-    }
-    out->width = w; out->height = h; out->format = DJVU_FORMAT_GRAY8; out->stride = w;
-    out->data = (uint8_t *)djvu_alloc(ctx, (size_t)w * h);
-    if (!out->data || djvu_iw44_render_gray(pm, out->data) != 0) {
-        djvu_image_destroy(ctx, out);
-        djvu_doc_iw44_release(ctx, pm, pm_owned);
-        return NULL;
-    }
-    djvu_doc_iw44_release(ctx, pm, pm_owned);
-    return out;
-}
-
 djvu_image *djvu_debug_render_iw_plane(djvu_doc *doc, int page_no, int kind, int plane)
 {
     djvu_ctx *ctx;

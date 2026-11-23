@@ -7,10 +7,7 @@
  *
  * Single-threaded on purpose: concurrency races are covered by the ASan
  * stress harness (test/djvudec_stress.c). See cmd/fuzz.ts for the driver. */
-#include "djvu.h"
-
-#include <stdlib.h>
-#include <string.h>
+#include "harness_util.h"
 
 /* Cap work per input so one pathological file can't run unbounded and stall
  * the fuzzer's throughput. */
@@ -21,34 +18,26 @@ enum { FUZZ_MAX_PAGES = 20 };
  * render buffers = multi-GB for one input; oom-9e1907... was this, not a
  * leak). Bound live bytes per input so such inputs fail cleanly through the
  * library's alloc-failure paths (fuzzing those too) instead of tripping
- * libFuzzer's RSS limit. Each block stores its size in a 16-byte header
- * (keeps malloc alignment) so the free side can un-count it. */
+ * libFuzzer's RSS limit. hu_size_malloc records each block's size so the free
+ * side can un-count it. */
 #define FUZZ_MEM_BUDGET ((size_t)1 << 30) /* 1 GB live per input */
 
 static size_t fuzz_live;
 
 static void *fuzz_alloc(void *user, void *ctx, size_t size)
 {
-    uint8_t *p;
+    void *p;
     (void)user; (void)ctx;
     if (size > FUZZ_MEM_BUDGET - fuzz_live) return NULL;
-    p = (uint8_t *)malloc(size + 16);
-    if (!p) return NULL;
-    memcpy(p, &size, sizeof(size));
-    fuzz_live += size;
-    return p + 16;
+    p = hu_size_malloc(size);
+    if (p) fuzz_live += size;
+    return p;
 }
 
 static void fuzz_free(void *user, void *ctx, void *ptr)
 {
-    uint8_t *p;
-    size_t size;
     (void)user; (void)ctx;
-    if (!ptr) return;
-    p = (uint8_t *)ptr - 16;
-    memcpy(&size, p, sizeof(size));
-    fuzz_live -= size;
-    free(p);
+    fuzz_live -= hu_size_free(ptr);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)

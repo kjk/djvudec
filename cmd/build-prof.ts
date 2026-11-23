@@ -12,11 +12,9 @@
 //
 // which builds this binary and records under ../winperf.
 import { $ } from "bun";
-import { existsSync, mkdirSync, rmSync, statSync } from "fs";
-import { isWindows } from "./build";
-import { LIB_SRCS } from "./build-lib";
+import { existsSync, mkdirSync, rmSync } from "fs";
+import { headerDeps, isWindows, LIB_SRCS, needsRebuild, ROOT } from "./util";
 
-const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const PROF_DIR = `${ROOT}/out/msvc_prof`;
 const EXE = `${PROF_DIR}/djvudec_prof.exe`;
 const PDB = `${PROF_DIR}/djvudec_prof.pdb`;
@@ -27,18 +25,6 @@ const TEST_SRC = "test/djvudec_dump.c";
 const PROF_CL =
   `-nologo -O2 -Ob1 -Zi -W4 -WX -std:c11 -MT -D_CRT_SECURE_NO_WARNINGS ` +
   `-Isrc -Fd${PROF_DIR}/ -Fo${PROF_DIR}/ -c`;
-
-const HEADERS = [`${ROOT}/src/djvu.h`, `${ROOT}/src/djvu_internal.h`];
-
-function needsRebuild(output: string, ...inputs: string[]): boolean {
-  if (!existsSync(output)) return true;
-  const outM = statSync(output).mtimeMs;
-  for (const input of inputs) {
-    if (!existsSync(input)) return true;
-    if (statSync(input).mtimeMs > outM) return true;
-  }
-  return false;
-}
 
 function objPath(src: string): string {
   const base = src.replace(/^src\//, "").replace(/^test\//, "").replace(/\.c$/, "");
@@ -53,7 +39,7 @@ function units(): { src: string; obj: string }[] {
 }
 
 function objStale(u: { src: string; obj: string }): boolean {
-  return needsRebuild(u.obj, u.src, ...HEADERS);
+  return needsRebuild(u.obj, u.src, ...headerDeps(u.src));
 }
 
 export async function buildProf(clean = false): Promise<string> {

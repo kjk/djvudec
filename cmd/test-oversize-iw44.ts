@@ -1,6 +1,7 @@
 // test-oversize-iw44.ts -- regression for the IW44 bw*bh / nb int overflow.
 //
-//   bun cmd/test-oversize-iw44.ts            build + run (msvc)
+//   bun cmd/test-oversize-iw44.ts            build + run (MSVC on Windows)
+//   bun cmd/test-oversize-iw44.ts -clang     build + run with clang
 //   bun cmd/test-oversize-iw44.ts -asan      build + run under ASan
 //   bun cmd/test-oversize-iw44.ts -clean     rebuild from scratch
 //
@@ -9,8 +10,8 @@
 // the oversize dimensions in map_new so no multi-GB buffer is ever requested
 // (exit 0); pre-fix the render path asks for gigabytes (exit 1).
 import { $ } from "bun";
-import { defaultUseClang } from "./build";
 import { buildLibTool, OVERSIZE_IW44_TARGET } from "./build-lib";
+import { defaultUseClang } from "./util";
 
 export async function testOversizeIw44(
   useClang = defaultUseClang,

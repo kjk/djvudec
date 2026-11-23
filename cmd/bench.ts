@@ -4,12 +4,18 @@
 //                     [-clang] [-clean]
 //   bun cmd/bench.ts -list-files
 //
-// Regenerates dist/ when src/ is newer (`-clean`: always regenerate dist/,
-// delete out/, full rebuild). Builds djvu_test from dist/djvu.c
-// (DjVuLibre via test/bench_ddjvu.cpp), then runs `djvu_test -bench` on each
-// selected file. Session benchmark: open doc, render every page, close; 2
-// runs each for djvudec and libdjvu. Best-of-2 comparison (op | libdjvu |
-// djvudec | diff | %diff; + = djvudec slower).
+// Builds the bench harness with buildBench() (cmd/build.ts): the djvu_test
+// sources compiled against the single-file amalgamation, which is generated
+// into out/amalg/ (refreshed when src/ is newer) and linked with DjVuLibre via
+// test/bench_ddjvu.cpp -> out/<msvc|clang>_bench/djvu_bench_<msvc|clang>[.exe].
+// Nothing under dist/ is read or written and no WASM build is triggered; only
+// `bun cmd/build-dist.ts` touches dist/. `-clean` removes out/amalg and the
+// toolchain's bench dir first (not the rest of out/).
+//
+// Then runs `djvu_bench -bench` on each selected file. Session benchmark: open
+// doc, render every page, close; 2 runs each for djvudec and libdjvu, the two
+// sides interleaved. Best-of-2 comparison (op | libdjvu | djvudec | diff |
+// %diff; + = djvudec slower).
 //
 // Default output: directory header lines (`deps/...`), then per-file totals
 //   libdjvu djvudec diff %diff <basename> : <bytes>
@@ -21,22 +27,25 @@
 //
 // -like-sumatra (formerly cmd/bench-sum.ts): same harness, but instead of
 // timing the bare djvu_page_render(subsample=1) it replicates how SumatraPDF
-// actually opens and renders pages (runs `djvu_test -bench-sum`):
+// actually opens and renders pages (runs `-bench-sum`):
 //   - ours  -> EngineDjvuDec::RenderPage (src/EngineDjvuDec.cpp): pick an
-//     integer subsample (compound pages forced to full res), decode with
-//     djvu_ctx_set_bgr so color comes out BGR-ready (no per-pixel swap), pack
-//     rows / copy gray8, rotate for subsample>1.
+//     integer subsample (any page type; color composes at the subsample too),
+//     query djvu_page_render_info, then djvu_page_render_into a destination
+//     buffer with djvu_ctx_set_bgr on -- color is composited straight into the
+//     buffer in BGR order, with no intermediate djvu_image and no separate
+//     convert/copy pass. The decoder applies the page's intrinsic rotation
+//     itself at every subsample, so the engine does not rotate separately.
 //   - libdjvu -> EngineDjVu::RenderPage (src/EngineDjVu.cpp): one
 //     ddjvu_page_render into a BGR24 buffer at the mediabox size (page scaled
 //     to fileDPI=300), letting ddjvu scale during decode.
-// Both render at zoom=1, user-rotation=0. Per-page timings use a warm page:
-// ours preloads Sjbz at doc-open; libdjvu runs ddjvu_page_decoding_done before
-// the timer. The timed region is render-to-buffer only (GDI StretchBlt excluded).
+// Both render at zoom=1, user-rotation=0; the timed region is decode + pixel
+// conversion only (the engines' GDI StretchBlt/DIB step is excluded -- not a
+// decoder cost).
 import { readFileSync } from "fs";
 import { basename, dirname } from "path";
 import { getDeps } from "./get-deps";
-import { buildDist } from "./build-dist";
-import { buildRef, buildBench, cleanBuildOutput, defaultUseClang } from "./build";
+import { buildRef, buildBench, cleanBenchOutput } from "./build";
+import { defaultUseClang } from "./util";
 import {
   corpusFiles,
   corpusSummary,
@@ -100,11 +109,11 @@ selection (required; default prints this help):
   -all            bench every corpus file
   -list-files     list corpus dirs + basenames (size, pages) and exit
 options:
-  -like-sumatra   time the SumatraPDF engine render path (djvu_test -bench-sum)
+  -like-sumatra   time the SumatraPDF engine render path (-bench-sum)
                   instead of the bare full-res djvu_page_render
   -verbose        print full per-file table (open/pages/close/total + allocs)
   -clang          build with clang instead of MSVC
-  -clean          regenerate dist/ and delete out/ first
+  -clean          rebuild the bench harness from scratch (out/amalg + bench dir)
 
 Default: dir headers (deps/...), then basename lines (libdjvu djvudec diff %diff file),
 ends with a "total" line (sum of per-file totals), then elapsed and top 10
@@ -114,10 +123,8 @@ ${corpusSummary()}`,
 );
 
 if (doClean) {
-  console.log("clean: regenerating dist/...");
-  await buildDist();
-  console.log("clean: removing out/...");
-  cleanBuildOutput();
+  console.log("clean: removing the bench build (out/amalg + bench dir)...");
+  cleanBenchOutput(useClang);
 }
 await buildRef();
 const TEST = await buildBench(useClang);

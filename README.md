@@ -1,12 +1,12 @@
 # djvudec — a plain-C DjVu decoder
 
 This is a [DjVu](https://fileformats.dev/djvu) format decoder, like [libdjvu](https://github.com/barak/djvulibre), but better:
-* smaller: `bun cmd/compare-code-sizes.ts -clang` shows a 293 KiB stripped probe executable (us) vs. 1.86 MiB for the same probe linked against libdjvu (clang -O3, Windows x64; `.text` 221 KiB vs. 1.21 MiB). With MSVC (`bun cmd/compare-code-sizes.ts`, -O2 -Ob3 -GL/-LTCG): 685 KiB vs. 2.41 MiB (`.text` 546 KiB vs. 1.84 MiB)
+* smaller: `bun cmd/compare-code-sizes.ts -rand 1 -clang` shows a 293 KiB stripped probe executable (us) vs. 1.86 MiB for the same probe linked against libdjvu (clang -O3, Windows x64; `.text` 221 KiB vs. 1.21 MiB). With MSVC (`bun cmd/compare-code-sizes.ts -rand 1`, -O2 -Ob3 -GL/-LTCG): 685 KiB vs. 2.41 MiB (`.text` 546 KiB vs. 1.84 MiB)
 * plain C, no dependencies (vs. C++)
 * simpler API
 * simpler to integrate: copy dist/djvu.h and dist/djvu.c into your project. This is amalgamated src/* into a single file, like sqlite
-* mostly faster, according to benchmarks (`bun cmd/bench.ts`)
-* tested on thousands of .djvu files for bit-by-bit correctness to libdjvu
+* mostly faster, according to benchmarks (`bun cmd/bench.ts -all`)
+* tested on thousands of .djvu files for bit-by-bit correctness to libdjvu (the one tolerated difference: a few foreground-edge pixels on some color pages, where ddjvu's own stencil is off by a pixel)
 
 ## API
 See [`src/djvu.h`](src/djvu.h). Sketch:
@@ -21,7 +21,9 @@ char *txt = djvu_page_text(doc, 0);
 ```
 
 ## Build & test
-Requires `clang`, `bun`, and `git`. `cmd/get-deps.ts` clones the DjvuNet,
+Requires `bun`, `git` and a C/C++ toolchain: MSVC (the default on Windows; run
+from a developer prompt) or `clang` (`-clang`; the only option on Linux/macOS,
+and needed everywhere for the DjVuLibre reference build, ASan and fuzzing). `cmd/get-deps.ts` clones the DjvuNet,
 DjVuLibre, and DjvuNet/artifacts repos into `deps/`; the `.djvu` samples in
 those checkouts are the test corpus. `build.ts` and `tests.ts` call it
 automatically.

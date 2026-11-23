@@ -2,48 +2,9 @@
  *
  * Exercises decode-path APIs used by viewers: page render, hidden text zones,
  * hyperlinks, and document outline. Linked with production src (no debug.c). */
-#include "djvu.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "harness_util.h"
 
 static volatile unsigned long g_sink;
-
-static uint8_t *read_file(const char *path, size_t *out_len)
-{
-    FILE *f = fopen(path, "rb");
-    uint8_t *buf;
-    long n;
-
-    if (!f)
-        return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return NULL;
-    }
-    n = ftell(f);
-    if (n < 0) {
-        fclose(f);
-        return NULL;
-    }
-    if (fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        return NULL;
-    }
-    buf = (uint8_t *)malloc((size_t)n);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
-        free(buf);
-        fclose(f);
-        return NULL;
-    }
-    fclose(f);
-    *out_len = (size_t)n;
-    return buf;
-}
 
 static void touch_image(const djvu_image *img)
 {
@@ -113,7 +74,7 @@ int main(int argc, char **argv)
     }
     path = argv[1];
 
-    data = read_file(path, &len);
+    data = hu_read_file(path, &len);
     if (!data) {
         fprintf(stderr, "cannot read %s\n", path);
         return 1;

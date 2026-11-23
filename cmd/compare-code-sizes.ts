@@ -5,25 +5,32 @@
 // decoder with matching release optimization, then reports executable and .text
 // sizes.
 //
-//   bun cmd/compare-code-sizes.ts [file.djvu] [-clang] [-clean]
+//   bun cmd/compare-code-sizes.ts <file.djvu | -rand 1> [-clang] [-clean]
 //
-// With no file, uses the first corpus .djvu (deps/ checkouts).
+// The file is only the smoke-test input both probes are run on before their
+// sizes are reported. With no selection it prints usage and does nothing (the
+// first run builds a release libdjvu, which is slow). Windows + macOS only.
+// -clean wipes out/code_size (this script's own output) first.
 import { $ } from "bun";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, rmSync, statSync } from "fs";
+import { DJVULIBRE_DIR, getDeps } from "./get-deps";
+import { corpusSummary, selectFiles } from "./corpus";
 import {
+  binName,
   defaultUseClang,
   isMac,
   isWindows,
+  headerDeps,
+  LIB_SRCS,
   MSVC_CL_CXX,
   MSVC_LINK,
   msvcFd,
-} from "./build";
-import { DJVULIBRE_DIR, getDeps } from "./get-deps";
-import { LIB_SRCS } from "./build-lib";
-import { corpusFiles } from "./corpus";
+  needsRebuild,
+  objBase,
+  ROOT,
+  runCmd,
+} from "./util";
 
-const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/");
 const OUT = `${ROOT}/out/code_size`;
 
@@ -31,7 +38,6 @@ const DJVU_SRCS = LIB_SRCS.filter((s) => s !== "src/debug.c");
 
 const PROBE_DJVUDEC = `${ROOT}/test/size_probe_djvudec.c`;
 const PROBE_LIBDJVU = `${ROOT}/test/size_probe_libdjvu.cpp`;
-const PUBLIC_H = `${ROOT}/src/djvu.h`;
 
 const RELEASE_CLANG_C =
   "-std=c11 -O3 -DNDEBUG -ffunction-sections -fdata-sections " +
@@ -51,7 +57,6 @@ const RELEASE_CLANG_CXX_MAC =
   `-DDIR_DATADIR='"/usr/share"' ` +
   "-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT " +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
-const RELEASE_CLANG_LINK_GNU = "-Wl,--gc-sections -Wl,-s";
 const RELEASE_CLANG_LINK_MAC = "-Wl,-dead_strip";
 const RELEASE_CLANG_LINK_WIN = "-Wl,/OPT:REF -Wl,/OPT:ICF";
 function releaseLibPath(dir: string): string {
@@ -66,31 +71,8 @@ const DJVU_DEFINES =
   `-DDJVUAPI_EXPORT -DDDJVUAPI_EXPORT -DMINILISPAPI_EXPORT ` +
   `-I${DJVULIBRE} -I${DJVULIBRE}/libdjvu`;
 
-function binName(base: string): string {
-  return isWindows ? `${base}.exe` : base;
-}
-
-function objBase(src: string): string {
-  return src.replace(/^src\//, "").replace(/\.c$/, "");
-}
-
-function needsRebuild(output: string, ...inputs: string[]): boolean {
-  if (!existsSync(output)) return true;
-  const outMtime = statSync(output).mtimeMs;
-  for (const input of inputs) {
-    if (!existsSync(input)) return true;
-    if (statSync(input).mtimeMs > outMtime) return true;
-  }
-  return false;
-}
-
-async function runCmd(cmd: string, cwd?: string): Promise<void> {
-  console.log(cwd ? `+ cd ${cwd} && ${cmd}` : `+ ${cmd}`);
-  const shell = $`${{ raw: cmd }}`;
-  if (cwd) await shell.cwd(cwd);
-  else await shell;
-}
-
+// KiB/MiB and sign-aware: used for sizes AND signed deltas (so not util's
+// fmtBytesHuman, which is unsigned KB/MB/GB).
 function formatBytes(n: number): string {
   const a = Math.abs(n);
   if (a >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MiB`;
@@ -195,17 +177,14 @@ async function readSectionSizes(exe: string): Promise<SectionSizes> {
   }
 }
 
+// Windows or macOS only (the entry point rejects every other platform).
 function clangLinkFlags(): string {
-  if (isWindows) return RELEASE_CLANG_LINK_WIN;
-  if (isMac) return RELEASE_CLANG_LINK_MAC;
-  return RELEASE_CLANG_LINK_GNU;
+  return isWindows ? RELEASE_CLANG_LINK_WIN : RELEASE_CLANG_LINK_MAC;
 }
 
 function stripNote(useClang: boolean): string {
   if (!useClang) return "LTCG";
-  if (isWindows) return "OPT:REF/ICF + llvm-strip";
-  if (isMac) return "-dead_strip + strip";
-  return "--gc-sections -s";
+  return isWindows ? "OPT:REF/ICF + llvm-strip" : "-dead_strip + strip";
 }
 
 async function stripExe(exe: string): Promise<void> {
@@ -224,8 +203,13 @@ async function buildReleaseLibDjvu(dir: string, useClang: boolean): Promise<stri
   const libsrc = `${DJVULIBRE}/libdjvu/*.cpp`;
   mkdirSync(objdir, { recursive: true });
 
+  // The stamp is written last, after the archive: lib + stamp both present
+  // means a complete earlier build. (Comparing their mtimes would always say
+  // stale, the stamp being the newer of the two.) libdjvu comes from the deps/
+  // checkout, so there are no inputs to track; -clean forces a rebuild.
   const stamp = `${objdir}/.stamp`;
-  if (!needsRebuild(lib, stamp)) return lib;
+  if (existsSync(lib) && existsSync(stamp)) return lib;
+  rmSync(stamp, { force: true });
 
   console.log("building release libdjvu (one-time, slow)...");
   if (useClang) {
@@ -266,7 +250,7 @@ async function buildDjvudecProbeClang(dir: string): Promise<string> {
   ];
 
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, PUBLIC_H)) continue;
+    if (!needsRebuild(u.obj, u.src, ...headerDeps(u.src))) continue;
     await runCmd(
       `clang ${RELEASE_CLANG_C} -I${ROOT}/src -c -o ${u.obj} ${u.src}`,
     );
@@ -299,7 +283,7 @@ async function buildDjvudecProbeMsvc(dir: string): Promise<string> {
 
   const clC = `${RELEASE_MSVC_C} -Isrc -Fo${dir}/ ${msvcFd(dir)} -c`;
   for (const u of units) {
-    if (!needsRebuild(u.obj, u.src, PUBLIC_H)) continue;
+    if (!needsRebuild(u.obj, u.src, ...headerDeps(u.src))) continue;
     await runCmd(`cl ${clC} ${u.rel}`, ROOT);
   }
 
@@ -393,27 +377,25 @@ function printSectionRow(
 async function main(): Promise<void> {
   const useClang = process.argv.includes("-clang") || defaultUseClang;
   const doClean = process.argv.includes("-clean");
-  const fileArg = process.argv
-    .slice(2)
-    .find((a) => !a.startsWith("-"));
-
-  if (doClean) rmSync(OUT, { recursive: true, force: true });
 
   await getDeps();
+  // Does nothing without a selection (prints usage, exits 2).
+  const [testFile] = selectFiles(
+    `usage: bun cmd/compare-code-sizes.ts <file.djvu | -rand 1> [-clang] [-clean]
 
-  let testFile = fileArg;
+Builds two size probes (djvudec vs libdjvu, release flags), runs both on the
+file as a smoke test, and reports executable + section sizes.
+  -clang   build with clang instead of MSVC
+  -clean   wipe out/code_size first (rebuilds release libdjvu: slow)
+
+${corpusSummary()}`,
+  );
   if (!testFile) {
-    const files = corpusFiles();
-    if (files.length === 0) {
-      console.error("no corpus .djvu found; pass a file path");
-      process.exit(1);
-    }
-    testFile = files[0]!;
-  }
-  if (!existsSync(testFile)) {
-    console.error(`file not found: ${testFile}`);
+    console.error("no .djvu file selected");
     process.exit(1);
   }
+
+  if (doClean) rmSync(OUT, { recursive: true, force: true });
 
   const { djvudec, libdjvu } = await buildProbes(useClang);
 

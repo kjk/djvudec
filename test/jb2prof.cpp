@@ -74,7 +74,8 @@ static int run_ddjvu(const char *path, int page0, int reps)
 
 int main(int argc, char **argv)
 {
-    if (argc < 3) {
+    /* -ddjvu needs file + page0 (argc >= 4); the raw mode needs dict + page */
+    if (argc < 3 || (!strcmp(argv[1], "-ddjvu") && argc < 4)) {
         fprintf(stderr, "usage: jb2prof dict.djbz page.sjbz [reps]\n"
                         "       jb2prof -ddjvu file.djvu <page0> [reps]\n");
         return 2;

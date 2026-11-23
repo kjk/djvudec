@@ -29,7 +29,7 @@ bun cmd/prof.ts deps/artifacts/test043C.djvu -page 5 -runs 10
 
 Verification after any speed change:
 
-- Byte-exact: `bun cmd/tests.ts` (corpus oracle), before/after PPM hashes, `djvu_test -verify-into`.
+- Byte-exact: `bun cmd/tests.ts -all` (corpus oracle), before/after PPM hashes, `djvu_test -verify-into`.
 - Speed: layer lines from `-bench-render -layers`; true before/after binaries.
 
 ---
@@ -38,7 +38,7 @@ Verification after any speed change:
 
 | Work | Approx. effect | Notes |
 |------|----------------|--------|
-| Planar `map_image` + SSE2 clamp + SSE2 YCbCr→RGB (`iw44.c`) | ~6–10% on IW44 stage (color) | Byte-exact; commit on `simd` |
+| Planar `map_image` + SSE2 clamp + SSE2 YCbCr→RGB (`iw44.c`) | ~6–10% on IW44 stage (color) | Byte-exact |
 | SSE2 `filter_bv` interior, `scale==1` only | Small / noisy (~few % IW44) | Edges + coarser scales still scalar |
 | Lazy per-page cache + public APIs | Repeat paints skip re-decode | `djvu_ctx_set_cache_per_page(1)` + lock/unlock; `djvu_doc_drop_page_cache` / `djvu_doc_page_cache_size` |
 | Run-aware color stamp (`compose.c`) | **~30% composite** on FGbz palette pages (e.g. `test008C`) | `visit_ink_runs` + solid RGB fill; FG44 weaker win |
@@ -49,6 +49,11 @@ Verification after any speed change:
 | Word-OR JB2 white-run scan (`jb2.c`) | Cuts dual-`memchr` on mostly-white shapes | Parallel up1/up2 8-byte OR |
 | Word-scan RLE encode + ink-run visit (`bitmap.c`) | Replaces hot `memchr` in compress/stamp | 0/1-only `bm_find_01` |
 | SSE2 `scaler_interp_row` + unrolled RGB fill | Helps 3× BG expand compound pages | `test008C` / `test075C` scale path |
+| red=3 expansion delta table (`scaler_expand_row3`) | Was 17.1% self on `test041C` | Exact 6/16 + 11/16 results per byte difference |
+| Unrolled exact 4× / 12× row expansion (`scaler_expand_row4/12`) | Removes per-pixel coord load on common reductions | Other integer scales use the grouped path |
+| Direct top-down composite for FGbz / FG44 at subsample 1 | Skips the intermediate bottom-up pixmap + flip | `compose_page_direct_rgb` |
+| IW44 local ZP renorm (`iw_zp_renorm_*`) | `decode_buckets` was 54.7% self on `test043C p5` | a/fence stay in locals across the coefficient loops |
+| Composite at the reduced size for subsample > 1 | O(ink + output) instead of full-res + downscale | `compose_stencil_sub`, `djvu_cpix_scale_ratio` |
 
 **Host must enable caching** for Sjbz/IW44/bg reuse across paints. Without
 `cache_per_page` + locks + long-lived `djvu_doc`, every render re-decodes.
@@ -106,9 +111,11 @@ Always use **`-page N`** so the trace is one workload.
 
 ## Suggested next work (priority)
 
-### 1. Wire page cache in the real viewer path (product)
+### 1. Page cache in the real viewer path — done in SumatraPDF
 
-APIs exist; speed only appears if the host:
+`src/shared/EngineDjvuDec.cpp` enables `djvu_ctx_set_cache_per_page`, queries
+`djvu_doc_page_cache_size` and evicts with `djvu_doc_drop_page_cache`. For any
+other host, speed only appears if it:
 
 - `djvu_ctx_set_cache_per_page(1)` + non-NULL lock/unlock  
 - keeps `djvu_doc` open across paints  
@@ -141,13 +148,12 @@ Already tried (commit `6ba8a11` era): hot-loop rewrite of
 ~1–3% on p61; gap to DjVuLibre largely unchanged. Skipping RLE on ephemeral
 masks sped JB2 but hurt composite (bytes `visit_ink`).
 
-### 3. Confirm where IW44 time goes (before more SIMD)
+### 3. Where IW44 time goes — answered
 
-Profile **test043C p5**:
-
-- If **bitplane ZP decode** dominates → more lifting SIMD is low ROI.  
-- If **`filter_bv` / `filter_bh` / `map_image` / YCbCr** dominate → continue
-  transform path (below).
+`test043C p5` was profiled (see PROGRESS.md): bitplane ZP decode
+(`decode_buckets`) dominated at 54.7% self and was optimized with local ZP
+state. More lifting SIMD is therefore low ROI unless a new profile says
+otherwise.
 
 ### 4. More IW44 (only if transform is hot)
 
@@ -181,8 +187,9 @@ changing codecs.
 
 ### 8. Lower priority / situational
 
-- Scaler: usually off hot path (cached BG).  
-- Caller subsample policy (don't force full-res at low zoom).  
+- Scaler: has been hot on compound pages (48.5% / 17.1% self before the
+  red=3 and 4×/12× passes, see PROGRESS.md); re-profile before touching it
+  again.  
 - Release vs profile builds: ship may keep `-GL -LTCG` / PGO; profile binary
   stays non-LTCG.  
 - NEON ports of planar clamp/YCbCr/`filter_bv` for ARM.
@@ -252,9 +259,11 @@ Probe: `djvudec_dump -cache-probe -page 1 file.djvu`
 
 Shared Djbz remains doc-wide (not in page cache size).
 
-**Not done:** host-side LRU policy; eager full-doc Sjbz at open (avoid — open
-latency). Internal `djvu_doc_preload_jb2_masks_range` already exists (not
-public); exposing it, or using it for nearby pages, is the remaining option.
+**Not done:** eager full-doc Sjbz at open (avoid — open latency), and
+preloading nearby pages. The unused internal `djvu_doc_preload_*_range`
+helpers were removed; a neighbour-page preload would be new public API.
+Host-side LRU eviction is the host's job (SumatraPDF's engine calls
+`djvu_doc_drop_page_cache` / `djvu_doc_page_cache_size`).
 
 ---
 
@@ -273,7 +282,7 @@ stay amalgamation-safe (`static`, unique names). AVX2 only via runtime dispatch.
 | `compose_finalize` BGR/flip | Open (small) |
 | Bitonal run stamp | **Done** (algorithmic) |
 | Color run stamp | **Done** (FGbz big win) |
-| Scaler bilinear | Skip unless profiled hot |
+| Scaler bilinear | **Done** for `scaler_interp_row` (SSE2/NEON) and red=3 row expansion (NEON); other paths scalar |
 | JB2/ZP | **Not vectorizable** |
 
 DjvuNet SIMD inspiration was YCbCr→RGB (integer recipe matches our scalar;

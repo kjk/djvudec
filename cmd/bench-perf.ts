@@ -2,20 +2,23 @@
 // bench-perf.ts -- compare per-page render times (bench_before vs bench_after).
 //
 //   bun cmd/bench-perf.ts file.djvu              run both + compare
-//   bun cmd/bench-perf.ts -p 3 file.djvu        single page only
+//   bun cmd/bench-perf.ts -p 3 file.djvu        single page only (-page / --page too)
 //   bun cmd/bench-perf.ts -warm 1 -layers file.djvu
 //   bun cmd/bench-perf.ts run before file.djvu   capture timings to stdout
 //   bun cmd/bench-perf.ts compare before.txt after.txt
 //
-// Builds bench_before / bench_after automatically when missing or stale.
-// Each timing line: pN t1 t2 (ms, from -bench-render). Comparison uses the
-// fastest of the two runs per page. With -layers, also:
+// bench_after is built / refreshed from the current sources automatically.
+// bench_before is a snapshot: it must already exist (`bun cmd/build-bench.ts
+// before`, run BEFORE editing src/) and is never rebuilt here -- an implicit
+// rebuild would recompile it from the edited sources and compare after with
+// after. Each timing line: pN t1 t2 (ms, from -bench-render). Comparison uses
+// the fastest of the two runs per page. With -layers, also:
 //   layer pN jb2 t1 t2 iw44 t1 t2 composite t1 t2 rotate t1 t2
 import { existsSync, readFileSync } from "fs";
-import { defaultUseClang } from "./build";
-import { benchTarget, buildLibTool } from "./build-lib";
+import { benchExe } from "./build-lib";
 import { getDeps } from "./get-deps";
 import { corpusSummary, selectFiles } from "./corpus";
+import { defaultUseClang } from "./util";
 
 export type PageTimings = Map<number, [number, number]>;
 
@@ -163,8 +166,14 @@ export function compareLayerTimings(
   return lines.join("\n");
 }
 
+// Every spelling of the page flag; all take a value (see VALUE_FLAGS).
+const PAGE_FLAGS = ["-p", "-page", "--page"];
+
+// Flags whose next argument is a value, not a file path.
+const VALUE_FLAGS = ["-rand", "-warm", ...PAGE_FLAGS];
+
 function isPageFlag(arg: string): boolean {
-  return arg === "-p" || arg === "--page";
+  return PAGE_FLAGS.includes(arg);
 }
 
 export function parseBenchOpts(argv: string[]): BenchOpts {
@@ -197,20 +206,11 @@ function filterBenchArgs(argv: string[]): string[] {
   return out;
 }
 
-async function ensureBenchExe(
-  variant: "before" | "after",
-  useClang: boolean,
-): Promise<string> {
-  return buildLibTool(benchTarget(variant), useClang);
-}
-
 async function runBenchRender(
-  variant: "before" | "after",
-  useClang: boolean,
+  exe: string,
   file: string,
   opts: BenchOpts,
 ): Promise<string> {
-  const exe = await ensureBenchExe(variant, useClang);
   const cmd = [exe, "-bench-render"];
   if (opts.warm > 0) cmd.push("-warm", String(opts.warm));
   if (opts.layers) cmd.push("-layers");
@@ -271,50 +271,66 @@ async function main(): Promise<number> {
       console.error(`no such file: ${file}`);
       return 1;
     }
-    const out = await runBenchRender(variant, useClang, file, benchOpts);
+    // Build chatter goes to stdout too; send it to stderr so `> before.txt`
+    // captures only the timing lines.
+    const log = console.log;
+    console.log = console.error;
+    const exe = await benchExe(variant, useClang);
+    console.log = log;
+    const out = await runBenchRender(exe, file, benchOpts);
     process.stdout.write(out);
     return 0;
   }
 
   await getDeps();
   const files = selectFiles(
-    `usage: bun cmd/bench-perf.ts <file.djvu ... | -rand N | -all> [-warm N] [-layers] [-p N]
+    `usage: bun cmd/bench-perf.ts <file.djvu ... | -rand N | -all> [-warm N] [-layers] [-p N] [-clang]
        bun cmd/bench-perf.ts run before|after file.djvu [-warm N] [-layers] [-p N]
        bun cmd/bench-perf.ts compare before.txt after.txt
 
+Needs the "before" snapshot: run \`bun cmd/build-bench.ts before\` on the
+baseline sources first. bench_after is rebuilt from the current sources.
+
 ${corpusSummary()}`,
-    ["-rand", "-warm", "-p"],
+    VALUE_FLAGS,
   );
+
+  // before: the existing snapshot (never rebuilt); after: current sources.
+  const beforeExe = await benchExe("before", useClang);
+  console.log(`before: ${beforeExe} (snapshot, not rebuilt)`);
+  const afterExe = await benchExe("after", useClang);
+  console.log(`after:  ${afterExe}`);
 
   if (benchOpts.page != null) console.log(`page: ${benchOpts.page}`);
   if (benchOpts.warm > 0) console.log(`warm: ${benchOpts.warm} renders/page`);
   if (benchOpts.layers) console.log("layers: jb2 / iw44 / composite / rotate");
 
   for (const file of files) {
-  console.log(`file: ${file}`);
-  console.log("before: building...");
-  const beforeOut = await runBenchRender("before", useClang, file, benchOpts);
-  console.log("after: building...");
-  const afterOut = await runBenchRender("after", useClang, file, benchOpts);
+    console.log(`file: ${file}`);
+    const beforeOut = await runBenchRender(beforeExe, file, benchOpts);
+    const afterOut = await runBenchRender(afterExe, file, benchOpts);
 
-  const before = parseBenchOutput(beforeOut);
-  const after = parseBenchOutput(afterOut);
-  console.log("\n--- comparison (fastest of 2 runs per page; + = slower after) ---");
-  console.log(compareTimings(before, after));
+    const before = parseBenchOutput(beforeOut);
+    const after = parseBenchOutput(afterOut);
+    console.log("\n--- comparison (fastest of 2 runs per page; + = slower after) ---");
+    console.log(compareTimings(before, after));
 
-  if (benchOpts.layers) {
-    const beforeLayers = parseLayerOutput(beforeOut);
-    const afterLayers = parseLayerOutput(afterOut);
-    console.log(
-      "\n--- layer breakdown (fastest of 2 runs per stage; + = slower after) ---",
-    );
-    console.log(compareLayerTimings(beforeLayers, afterLayers));
-  }
+    if (benchOpts.layers) {
+      const beforeLayers = parseLayerOutput(beforeOut);
+      const afterLayers = parseLayerOutput(afterOut);
+      console.log(
+        "\n--- layer breakdown (fastest of 2 runs per stage; + = slower after) ---",
+      );
+      console.log(compareLayerTimings(beforeLayers, afterLayers));
+    }
   }
   return 0;
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main().then(
+  (code) => process.exit(code),
+  (e) => {
+    console.error(e instanceof Error ? e.message : e);
+    process.exit(1);
+  },
+);

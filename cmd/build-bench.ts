@@ -5,11 +5,13 @@
 //
 // Each variant links src/*.c + test/djvudec_dump.c into its own out/bench_* tree
 // so you can snapshot a binary before edits and rebuild after without overwriting.
+//
+// `before` is the baseline SNAPSHOT: run it before editing src/. This script is
+// the only thing that (re)builds it -- bench-perf.ts and profile-render.ts
+// require it to exist and never rebuild it (they refresh only `after`).
 import { rmSync } from "fs";
-import { defaultUseClang } from "./build";
 import { benchTarget, buildLibTool } from "./build-lib";
-
-const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
+import { defaultUseClang, ROOT } from "./util";
 
 function cleanVariant(variant: "before" | "after") {
   rmSync(`${ROOT}/out/bench_${variant}`, { recursive: true, force: true });

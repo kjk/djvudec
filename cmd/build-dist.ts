@@ -1,6 +1,8 @@
 // build-dist.ts -- produce an SQLite-style single-file amalgamation in dist/.
 //
-//   bun cmd/build-dist.ts
+//   bun cmd/build-dist.ts            write dist/, verify it compiles, build WASM
+//   bun cmd/build-dist.ts -no-wasm   write dist/ + verify only (no emsdk, no
+//                                    dist/wasm rebuild) -- what CI's host jobs run
 //
 // Emits:
 //   dist/djvu.h  -- the public API header (verbatim copy of src/djvu.h)
@@ -15,67 +17,45 @@
 //
 // A consumer drops both files into their tree and compiles djvu.c like any
 // other source. Verifies the result compiles with every available toolchain
-// (clang everywhere; MSVC cl.exe too on Windows) before finishing.
-// bench.ts calls ensureDist() to regenerate only when src/ is newer than dist/.
+// (clang everywhere; MSVC cl.exe too on Windows) before finishing; the
+// throwaway verify objects go to out/dist_verify/, never into dist/.
+//
+// Only this script (run directly) writes dist/. Other scripts that want the
+// amalgamation -- bench.ts via buildBench() -- call ensureAmalgamation(dir)
+// to generate the same djvu.h + djvu.c into a directory under out/, so they
+// never dirty the tracked dist/ files and never trigger a WASM build.
 import { $ } from "bun";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
+import { relative } from "path";
 import {
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  existsSync,
-  statSync,
-  rmSync,
-  readdirSync,
-} from "fs";
-import { join } from "path";
-import { clangCFlags, DJVUDEC_MSVC_CL_C, isWindows, msvcFd } from "./build";
+  clangCFlags,
+  DJVUDEC_MSVC_CL_C,
+  INTERNAL_H,
+  isWindows,
+  LIB_SRCS,
+  msvcFd,
+  needsRebuild,
+  PUBLIC_H,
+  ROOT,
+} from "./util";
 import { buildWasm } from "./build-wasm";
 
-const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
-const SRC = join(ROOT, "src");
-const DIST = join(ROOT, "dist");
+const DIST = `${ROOT}/dist`;
+const VERIFY_DIR = `${ROOT}/out/dist_verify`;
 
-// Same translation-unit order build.ts uses. djvu_internal.h declares every
-// cross-module function, so order among the .c files doesn't matter for
-// linkage; we keep build.ts's order for a stable, readable amalgamation.
-export const DIST_MODULES = [
-  "zptable.c",
-  "zpcodec.c",
-  "bzz.c",
-  "bitmap.c",
-  "jb2.c",
-  "iw44_zigzag.c",
-  "iw44.c",
-  "scaler.c",
-  "compose.c",
-  "document.c",
-  "bufread.c",
-  "render.c",
-  "text.c",
-  "outline.c",
-  "annot.c",
-  "debug.c",
-];
-
-export const DIST_H = join(DIST, "djvu.h");
-export const DIST_C = join(DIST, "djvu.c");
-
-export function distInputPaths(): string[] {
-  return [
-    join(SRC, "djvu.h"),
-    join(SRC, "djvu_internal.h"),
-    ...DIST_MODULES.map((name) => join(SRC, name)),
-  ];
+/** The two files of an amalgamation generated into `dir`. */
+export function amalgPaths(dir: string): { h: string; c: string } {
+  return { h: `${dir}/djvu.h`, c: `${dir}/djvu.c` };
 }
 
-export function distOutdated(): boolean {
-  if (!existsSync(DIST_H) || !existsSync(DIST_C)) return true;
-  const outMtime = Math.min(statSync(DIST_H).mtimeMs, statSync(DIST_C).mtimeMs);
-  for (const input of distInputPaths()) {
-    if (!existsSync(input)) return true;
-    if (statSync(input).mtimeMs > outMtime) return true;
-  }
-  return false;
+// Inputs, in concatenation order: public header, internal header, then the
+// modules in LIB_SRCS order (see util.ts -- the order is the layout of djvu.c).
+const AMALG_INPUTS = [PUBLIC_H, INTERNAL_H, ...LIB_SRCS.map((s) => `${ROOT}/${s}`)];
+
+/** True when dir/djvu.h or dir/djvu.c is missing or older than any src/ input. */
+export function amalgOutdated(dir: string): boolean {
+  const { h, c } = amalgPaths(dir);
+  return needsRebuild(h, ...AMALG_INPUTS) || needsRebuild(c, ...AMALG_INPUTS);
 }
 
 // Drop a local-quote include of one of the named headers (system <...>
@@ -180,12 +160,45 @@ function stripCComments(code: string): string {
   return normalizeSourceText(out);
 }
 
-/** Echo a compiler command, then run it (stdout progress tracking). */
-async function runCmd(cmd: string, cwd?: string): Promise<number> {
-  console.log(cwd ? `+ cd ${cwd} && ${cmd}` : `+ ${cmd}`);
-  const shell = $`${{ raw: cmd }}`.nothrow();
-  if (cwd) await shell.cwd(cwd);
-  const r = await shell;
+/** Path relative to the repo root, forward slashes (for logs and cl args). */
+const rel = (p: string) => relative(ROOT, p).replaceAll("\\", "/");
+
+/** Generate the amalgamation (djvu.h + djvu.c) into `dir`. Writes nothing else. */
+export function writeAmalgamation(dir: string): { h: string; c: string } {
+  mkdirSync(dir, { recursive: true });
+  const { h, c } = amalgPaths(dir);
+
+  const publicHeader = normalizeSourceText(readFileSync(PUBLIC_H, "utf8"));
+  writeFileSync(h, publicHeader);
+
+  const parts: string[] = [publicHeader];
+  parts.push(stripIncludes(readFileSync(INTERNAL_H, "utf8"), ["djvu\.h"]));
+  for (const src of LIB_SRCS) {
+    const code = readFileSync(`${ROOT}/${src}`, "utf8");
+    parts.push(stripIncludes(code, ["djvu_internal\.h", "djvu\.h"]));
+  }
+
+  // Final pass also collapses blank runs left at module boundaries.
+  const amalgamated = stripCComments(parts.join("\n"));
+  writeFileSync(c, amalgamated);
+
+  console.log(`wrote ${rel(h)} (${publicHeader.split("\n").length} lines)`);
+  console.log(
+    `wrote ${rel(c)} (${amalgamated.split("\n").length} lines, ${LIB_SRCS.length} modules)`,
+  );
+  return { h, c };
+}
+
+/** Regenerate dir/djvu.{h,c} only when src/ is newer (no verify, no WASM). */
+export function ensureAmalgamation(dir: string): { h: string; c: string } {
+  if (amalgOutdated(dir)) return writeAmalgamation(dir);
+  return amalgPaths(dir);
+}
+
+/** Echo a compiler command, run it, return its exit code (never throws). */
+async function tryCmd(cmd: string, cwd: string): Promise<number> {
+  console.log(`+ cd ${cwd} && ${cmd}`);
+  const r = await $`${{ raw: cmd }}`.cwd(cwd).nothrow();
   return r.exitCode ?? 1;
 }
 
@@ -195,102 +208,70 @@ async function haveCompiler(name: string): Promise<boolean> {
   return r.exitCode === 0;
 }
 
-const VERIFY_OBJS = ["djvu.o", "djvu_verify_clang.o", "djvu_verify_msvc.obj"];
+/** Compile dir/djvu.c with every available toolchain; throws if one fails. */
+export async function verifyAmalgamation(dir: string): Promise<void> {
+  const src = rel(amalgPaths(dir).c);
+  const objDir = rel(VERIFY_DIR);
+  rmSync(VERIFY_DIR, { recursive: true, force: true });
+  mkdirSync(VERIFY_DIR, { recursive: true });
 
-function cleanVerifyObjs(): void {
-  for (const name of VERIFY_OBJS) {
-    const p = join(DIST, name);
-    if (existsSync(p)) rmSync(p);
+  if (!(await haveCompiler("clang"))) {
+    throw new Error("amalgamation verify: clang not found");
   }
-}
-
-async function verifyDistCompile(toolchain: "clang" | "msvc"): Promise<boolean> {
-  const relC = "dist/djvu.c";
-  if (toolchain === "clang") {
-    const obj = "dist/djvu_verify_clang.o";
-    const rc = await runCmd(
-      `clang ${clangCFlags("-O1")} -c ${relC} -o ${obj}`,
-      ROOT,
-    );
-    if (existsSync(join(DIST, "djvu_verify_clang.o"))) rmSync(join(DIST, "djvu_verify_clang.o"));
-    return rc === 0;
-  }
-  const obj = "dist/djvu_verify_msvc.obj";
-  // -Fd keeps the intermediate compiler PDB out of the repo root (MSVC_CL has -Zi).
-  const rc = await runCmd(
-    `cl ${DJVUDEC_MSVC_CL_C} -c ${relC} -Fo${obj} ${msvcFd(DIST)}`,
-    ROOT,
-  );
-  if (existsSync(join(DIST, "djvu_verify_msvc.obj"))) rmSync(join(DIST, "djvu_verify_msvc.obj"));
-  // cl -Zi -Fddir/ writes vc*.pdb in that dir; drop it after the compile smoke-test.
-  for (const name of readdirSync(DIST)) {
-    if (/^vc\d+\.pdb$/i.test(name)) rmSync(join(DIST, name), { force: true });
-  }
-  return rc === 0;
-}
-
-export async function buildDist(): Promise<void> {
-  mkdirSync(DIST, { recursive: true });
-
-  const publicHeader = normalizeSourceText(readFileSync(join(SRC, "djvu.h"), "utf8"));
-  writeFileSync(DIST_H, publicHeader);
-
-  const parts: string[] = [publicHeader];
-
-  const internal = readFileSync(join(SRC, "djvu_internal.h"), "utf8");
-  parts.push(stripIncludes(internal, ["djvu\\.h"]));
-
-  for (const name of DIST_MODULES) {
-    const code = readFileSync(join(SRC, name), "utf8");
-    parts.push(stripIncludes(code, ["djvu_internal\\.h", "djvu\\.h"]));
-  }
-
-  // Final pass also collapses blank runs left at module boundaries.
-  const amalgamated = stripCComments(parts.join("\n"));
-  writeFileSync(DIST_C, amalgamated);
-
-  const hLines = publicHeader.split("\n").length;
-  const cLines = amalgamated.split("\n").length;
-  console.log(`wrote dist/djvu.h (${hLines} lines)`);
-  console.log(`wrote dist/djvu.c (${cLines} lines, ${DIST_MODULES.length} modules)`);
-
-  cleanVerifyObjs();
-
-  const toolchains: ("clang" | "msvc")[] = [];
-  if (await haveCompiler("clang")) toolchains.push("clang");
-  else {
-    console.error("amalgamation verify: clang not found");
-    process.exit(1);
-  }
+  const toolchains: { label: string; cmd: string }[] = [
+    {
+      label: "clang",
+      cmd: `clang ${clangCFlags("-O1")} -c ${src} -o ${objDir}/djvu_verify_clang.o`,
+    },
+  ];
   if (isWindows) {
-    if (await haveCompiler("cl")) toolchains.push("msvc");
-    else console.log("amalgamation verify: skipping msvc (cl.exe not found)");
+    if (await haveCompiler("cl")) {
+      toolchains.push({
+        label: "msvc cl",
+        // -Fd keeps the intermediate compiler PDB (-Zi) out of the repo root.
+        cmd: `cl ${DJVUDEC_MSVC_CL_C} -c ${src} -Fo${objDir}/djvu_verify_msvc.obj ${msvcFd(objDir)}`,
+      });
+    } else console.log("amalgamation verify: skipping msvc (cl.exe not found)");
   }
 
-  let failed = false;
+  const failed: string[] = [];
   for (const tc of toolchains) {
-    const label = tc === "clang" ? "clang" : "msvc cl";
-    console.log(`verifying dist/djvu.c (${label})...`);
-    if (await verifyDistCompile(tc)) console.log(`amalgamation compiles cleanly (${label}) ✓`);
-    else {
-      console.error(`amalgamation FAILED to compile (${label})`);
-      failed = true;
+    console.log(`verifying ${src} (${tc.label})...`);
+    if ((await tryCmd(tc.cmd, ROOT)) === 0) {
+      console.log(`amalgamation compiles cleanly (${tc.label}) ✓`);
+    } else {
+      console.error(`amalgamation FAILED to compile (${tc.label})`);
+      failed.push(tc.label);
     }
   }
-  if (failed) process.exit(1);
-
-  buildWasm({ useDist: true });
+  rmSync(VERIFY_DIR, { recursive: true, force: true });
+  if (failed.length) {
+    throw new Error(`amalgamation does not compile with: ${failed.join(", ")}`);
+  }
 }
 
-export async function ensureDist(): Promise<void> {
-  if (distOutdated()) {
-    console.log("dist/ outdated, regenerating...");
-    await buildDist();
-  } else {
-    console.log("dist/ up to date");
-  }
+/** Write dist/djvu.{h,c}, verify they compile, and (unless wasm=false) rebuild
+    dist/wasm from them. This is the only code path that writes dist/. */
+export async function buildDist(opts: { wasm?: boolean } = {}): Promise<void> {
+  writeAmalgamation(DIST);
+  await verifyAmalgamation(DIST);
+  if (opts.wasm ?? true) buildWasm({ useDist: true });
+  else console.log("skipping WASM build (-no-wasm)");
 }
 
 if (import.meta.main) {
-  await buildDist();
+  const args = process.argv.slice(2);
+  const known = ["-no-wasm"];
+  const bad = args.filter((a) => !known.includes(a));
+  if (bad.length) {
+    console.error(`unknown argument(s): ${bad.join(" ")}`);
+    console.error("usage: bun cmd/build-dist.ts [-no-wasm]");
+    process.exit(2);
+  }
+  try {
+    await buildDist({ wasm: !args.includes("-no-wasm") });
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : e);
+    process.exit(1);
+  }
 }

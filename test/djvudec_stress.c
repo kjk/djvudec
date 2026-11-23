@@ -7,19 +7,12 @@
  *
  * Default thread count: processor_count - 2, at least 2.
  * Prints per-file timing: load / render / close. */
-#include "djvu.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
+#include "harness_util.h"
 
-#if defined(_WIN32)
-#include <windows.h>
-#else
+#if !defined(_WIN32)
 #include <dirent.h>
-#include <pthread.h>
+#include <strings.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #endif
 
 typedef struct {
@@ -30,71 +23,17 @@ typedef struct {
     int render_errors;
 } file_timing;
 
-#if defined(_WIN32)
-static CRITICAL_SECTION g_cache_lock;
-
-static void cache_lock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    EnterCriticalSection(&g_cache_lock);
-}
-
-static void cache_unlock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    LeaveCriticalSection(&g_cache_lock);
-}
-
-static int cpu_count(void)
-{
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return (int)si.dwNumberOfProcessors;
-}
-
-static double now_ms(void)
-{
-    LARGE_INTEGER freq, ctr;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&ctr);
-    return (double)ctr.QuadPart * 1000.0 / (double)freq.QuadPart;
-}
-#else
-static pthread_mutex_t g_cache_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static void cache_lock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    pthread_mutex_lock(&g_cache_lock);
-}
-
-static void cache_unlock_cb(void *user, void *ctx)
-{
-    (void)user;
-    (void)ctx;
-    pthread_mutex_unlock(&g_cache_lock);
-}
-
-static int cpu_count(void)
-{
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int)n : 1;
-}
-
-static double now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
-}
-#endif
+/* stress_file results */
+enum {
+    STRESS_OK = 0,
+    STRESS_RENDER_ERRORS = 1, /* at least one page failed to render */
+    STRESS_NO_PAGES = 2,      /* document opened but has zero pages: a skip */
+    STRESS_FAILED = 3         /* unreadable / cannot open / setup failure */
+};
 
 static int default_thread_count(void)
 {
-    int n = cpu_count() - 2;
+    int n = hu_cpu_count() - 2;
     if (n < 2) n = 2;
     return n;
 }
@@ -118,77 +57,33 @@ static void format_duration_ms(double ms, char *buf, size_t bufsz)
     }
 }
 
-static uint8_t *read_file(const char *path, size_t *out_len)
-{
-    FILE *f = fopen(path, "rb");
-    uint8_t *buf;
-    long n;
-
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
-    n = ftell(f);
-    if (n < 0) { fclose(f); return NULL; }
-    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
-    buf = (uint8_t *)malloc((size_t)n);
-    if (!buf) { fclose(f); return NULL; }
-    if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
-        free(buf);
-        fclose(f);
-        return NULL;
-    }
-    fclose(f);
-    *out_len = (size_t)n;
-    return buf;
-}
-
 typedef struct {
     djvu_doc *doc;
     djvu_ctx *ctx;
     int npages;
-#if defined(_WIN32)
-    volatile LONG next_page;
-    volatile LONG render_errors;
-#else
-    volatile int next_page;
-    volatile int render_errors;
-#endif
+    hu_atomic next_page;
+    hu_atomic render_errors;
 } render_job;
 
-#if defined(_WIN32)
-static DWORD WINAPI render_worker(void *arg)
-#else
-static void *render_worker(void *arg)
-#endif
+static void render_worker(void *arg)
 {
     render_job *job = (render_job *)arg;
     for (;;) {
-        int page;
-#if defined(_WIN32)
-        page = (int)InterlockedIncrement(&job->next_page) - 1;
-#else
-        page = __sync_fetch_and_add(&job->next_page, 1);
-#endif
+        int page = (int)hu_atomic_inc(&job->next_page) - 1;
         djvu_image *img;
         if (page >= job->npages) break;
         img = djvu_page_render(job->doc, page, 1);
         if (!img) {
-#if defined(_WIN32)
-            InterlockedIncrement(&job->render_errors);
-#else
-            __sync_fetch_and_add(&job->render_errors, 1);
-#endif
+            hu_atomic_inc(&job->render_errors);
             continue;
         }
         djvu_image_destroy(job->ctx, img);
     }
-#if defined(_WIN32)
-    return 0;
-#else
-    return NULL;
-#endif
 }
 
-static int stress_file(const char *path, int ncpu, file_timing *out)
+/* Returns a STRESS_* code; on STRESS_FAILED *why names the step that failed
+   (the decoder's own diagnostics go to stderr via the error callback). */
+static int stress_file(const char *path, int ncpu, file_timing *out, const char **why)
 {
     djvu_ctx *ctx = NULL;
     djvu_doc *doc = NULL;
@@ -196,84 +91,67 @@ static int stress_file(const char *path, int ncpu, file_timing *out)
     size_t len = 0;
     double t0, t_load, t_render, t_close;
     render_job job;
-    int i, rc = -1;
-#if defined(_WIN32)
-    HANDLE *handles = NULL;
-#else
-    pthread_t *tids = NULL;
-#endif
+    hu_thread *threads = NULL;
+    int i, started_all = 1, rc = STRESS_FAILED;
 
     memset(out, 0, sizeof(*out));
-    t0 = now_ms();
-    data = read_file(path, &len);
-    if (!data) return -1;
+    *why = "";
+    t0 = hu_now_ms();
+    data = hu_read_file(path, &len);
+    if (!data) { *why = "cannot read file"; return STRESS_FAILED; }
 
-    ctx = djvu_ctx_new(NULL, NULL, cache_lock_cb, cache_unlock_cb, NULL, NULL);
-    if (!ctx) goto done;
+    ctx = djvu_ctx_new(NULL, NULL, hu_lock_cb, hu_unlock_cb, hu_on_error, NULL);
+    if (!ctx) { *why = "djvu_ctx_new failed"; goto done; }
     djvu_ctx_set_cache_per_page(ctx, 1);
 
     doc = djvu_doc_open(ctx, data, len);
-    t_load = now_ms() - t0;
-    if (!doc) goto done;
+    t_load = hu_now_ms() - t0;
+    if (!doc) { *why = "djvu_doc_open failed"; goto done; }
 
     out->npages = djvu_doc_page_count(doc);
-    if (out->npages <= 0) goto done;
+    if (out->npages <= 0) { rc = STRESS_NO_PAGES; goto done; }
 
     memset(&job, 0, sizeof(job));
     job.doc = doc;
     job.ctx = ctx;
     job.npages = out->npages;
-    job.next_page = 0;
-    job.render_errors = 0;
 
-    t0 = now_ms();
-#if defined(_WIN32)
-    handles = (HANDLE *)calloc((size_t)ncpu, sizeof(HANDLE));
-    if (!handles) goto done;
-    for (i = 0; i < ncpu; i++) {
-        handles[i] = CreateThread(NULL, 0, render_worker, &job, 0, NULL);
-        if (!handles[i]) goto done;
-    }
-    WaitForMultipleObjects((DWORD)ncpu, handles, TRUE, INFINITE);
-#else
-    tids = (pthread_t *)calloc((size_t)ncpu, sizeof(pthread_t));
-    if (!tids) goto done;
-    for (i = 0; i < ncpu; i++) {
-        if (pthread_create(&tids[i], NULL, render_worker, &job) != 0) goto done;
-    }
-    for (i = 0; i < ncpu; i++)
-        pthread_join(tids[i], NULL);
-#endif
-    t_render = now_ms() - t0;
-    out->render_errors = job.render_errors;
+    threads = (hu_thread *)calloc((size_t)ncpu, sizeof(hu_thread));
+    if (!threads) { *why = "out of memory"; goto done; }
 
-    t0 = now_ms();
+    t0 = hu_now_ms();
+    for (i = 0; i < ncpu; i++) {
+        if (hu_thread_start(&threads[i], render_worker, &job) != 0) {
+            started_all = 0;
+            break;
+        }
+    }
+    /* Always join whatever started before touching doc/ctx: the workers that
+       did start are rendering from them. */
+    hu_threads_join(threads, ncpu);
+    if (!started_all) { *why = "cannot create thread"; goto done; }
+    t_render = hu_now_ms() - t0;
+    out->render_errors = (int)hu_atomic_load(&job.render_errors);
+
+    t0 = hu_now_ms();
     djvu_doc_close(doc);
     doc = NULL;
     djvu_ctx_free(ctx);
     ctx = NULL;
     free(data);
     data = NULL;
-    t_close = now_ms() - t0;
+    t_close = hu_now_ms() - t0;
 
     out->load_ms = t_load;
     out->render_ms = t_render;
     out->close_ms = t_close;
-    rc = out->render_errors == 0 ? 0 : 1;
+    rc = out->render_errors == 0 ? STRESS_OK : STRESS_RENDER_ERRORS;
 
 done:
     if (doc) djvu_doc_close(doc);
     if (ctx) djvu_ctx_free(ctx);
     free(data);
-#if defined(_WIN32)
-    if (handles) {
-        for (i = 0; i < ncpu; i++)
-            if (handles[i]) CloseHandle(handles[i]);
-        free(handles);
-    }
-#else
-    free(tids);
-#endif
+    free(threads);
     return rc;
 }
 
@@ -386,19 +264,26 @@ static int stress_one(const char *path, void *user)
     stress_ctx *ctx = (stress_ctx *)user;
     file_timing t;
     char loadbuf[32], renderbuf[32], closebuf[32];
+    const char *why = "";
     int rc;
 
-    rc = stress_file(path, ctx->ncpu, &t);
+    rc = stress_file(path, ctx->ncpu, &t, &why);
+    ctx->nfiles++;
 
-    /* rc < 0: nothing to render (unreadable, undecodable, or zero pages --
-       e.g. corrupt crash-repro files or indirect-document indexes). Not a
-       stress failure; report it and move on. */
-    if (rc < 0) {
-        printf("%s\n  skipped (no renderable pages)\n", path);
+    /* Only a document that opens cleanly with zero pages is a skip (e.g. an
+       indirect-document index). Unreadable / undecodable files and setup
+       failures are failures. */
+    if (rc == STRESS_NO_PAGES) {
+        printf("%s\n  skipped (no pages)\n", path);
         fflush(stdout);
-        ctx->nfiles++;
         ctx->nskipped++;
         return 0;
+    }
+    if (rc == STRESS_FAILED) {
+        printf("%s\n  FAILED: %s\n", path, why);
+        fflush(stdout);
+        ctx->nfailed++;
+        return 1;
     }
 
     format_duration_ms(t.load_ms, loadbuf, sizeof(loadbuf));
@@ -413,9 +298,8 @@ static int stress_one(const char *path, void *user)
     printf("\n");
     fflush(stdout);
 
-    ctx->nfiles++;
-    if (rc != 0) ctx->nfailed++;
-    return rc;
+    if (rc != STRESS_OK) ctx->nfailed++;
+    return rc != STRESS_OK;
 }
 
 static void usage(const char *prog)
@@ -454,9 +338,6 @@ int main(int argc, char **argv)
     if (ncpu <= 0) ncpu = default_thread_count();
 
     djvu_init();
-#if defined(_WIN32)
-    InitializeCriticalSection(&g_cache_lock);
-#endif
 
     memset(&ctx, 0, sizeof(ctx));
     ctx.ncpu = ncpu;
@@ -471,10 +352,6 @@ int main(int argc, char **argv)
                                    : stress_one(argv[i], &ctx);
         if (frc != 0) rc = frc;
     }
-
-#if defined(_WIN32)
-    DeleteCriticalSection(&g_cache_lock);
-#endif
 
     if (rc < 0) {
         fprintf(stderr, "cannot walk one or more paths\n");

@@ -43,8 +43,13 @@ compose, debug). Every `.c` file includes just that one header.
 | bitmap.c            | Graphics/Bitmap (GBitmap)               | DONE   |
 | iw44.c              | Wavelet/* (decode)                      | DONE   |
 | text.c              | Text/PageText + TXTa/TXTz chunks        | DONE   |
-| compose.c           | DjvuImage composite + GPixmapScaler     | DONE   |
-| render/compose      | DjvuPage composite (mask+fg+bg)         | DONE   |
+| compose.c           | DjvuImage composite (mask+fg+bg)        | DONE   |
+| scaler.c            | Graphics/PixelMapScaler (GPixmapScaler) | DONE   |
+| render.c            | DjvuPage (layer selection, rotation)    | DONE   |
+| outline.c           | NavmChunk + Navigation/Bookmark         | DONE   |
+| annot.c             | AntaChunk/AntzChunk maparea links       | DONE   |
+| iw44_zigzag.c       | zigzag table (InterWaveCodec)           | DONE   |
+| bufread.c, debug.c  | (no C# counterpart: readers, harness hooks) | DONE |
 
 ## Status: feature-complete; verified byte-for-byte vs DjVuLibre
 `bun cmd/tests.ts -all` over the deps/ corpus: the most recent full MSVC runs
@@ -132,6 +137,44 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- audit follow-up (tooling + harnesses; decoder change is the JB2 one only):
+  - decoder: `code_record` now refines against a private copy of ANY
+    inherited (dict) reference shape, not only RLE-compressed ones -- raw
+    zero-size dict shapes are never compressed and `djvu_bm_set_min_border`
+    could reallocate them under concurrent readers
+    (`djvu_bm_uncompress_copy` -> `djvu_bm_private_copy`). Removed the uncalled
+    `djvu_debug_render_iw_gray` / `djvu_iw44_render_gray`.
+    `djvu_ctx_set_lazy_iw44` stays: SumatraPDF's `libsumatrapdf.def` exports it.
+  - abort API is now tested: `djvu_test -verify-abort` / `cmd/test-abort.ts`
+    (aborts injected from the allocator callback at every allocation count;
+    no partial image, no leak, next render identical; cache off and on). No
+    decoder bug found. Noted: IW44 decode has no abort checkpoint, so a photo
+    page (or the IW44 phase of a compound page) runs to completion once started.
+  - the verifier's cosmetic tolerance (RGB page within 2000 px / 0.01% of
+    ddjvu) is now reported (`ok cosmetic`, `MATCH=N (cosmetic=K)`) instead of
+    silent; it covers the fg-stencil quirk pages incl. 1998_compression p19.
+  - `tests.ts`: unopenable/unreadable files fail instead of passing as
+    "0 pages"; selection via `selectFiles`.
+  - bench: `bench.ts` builds its own harness (`out/*_bench/djvu_bench_*`) from
+    an amalgamation in `out/amalg` -- it no longer rewrites `dist/`, builds
+    WASM, or shares an exe with `build()`; exes relink when any object is
+    newer. `-bench`/`-bench-sum` timed regions are symmetric (buffers
+    allocated/touched/freed outside the clock on both sides), so numbers are
+    not comparable with earlier entries. `bench-perf.ts` no longer silently
+    rebuilds the "before" snapshot from edited sources.
+  - harnesses: shared helpers in `test/harness_util.h`; thread joins work
+    above 64 threads; `djvudec_stress` reports open/read failures as failures;
+    `djvu_test` has full usage and rejects unknown flags; `-dump-features`
+    and ~200 lines of uncalled `bench_ddjvu.cpp` code removed;
+    `oversize_iw44` can no longer pass vacuously.
+  - scripts: shared `cmd/util.ts` (one source list, one `needsRebuild`);
+    new `test-cache-race.ts` (builds `test/crash_cache_race.c`), `test-abort.ts`;
+    `build-dist.ts -no-wasm`; `verify-subsample.ts` builds its own tools;
+    removed `verify-one.ts`, `debug-chunk.ts`, `perf-mac.ts`,
+    `ensure-ascii-names.ts`, `find-slower-pages.ts` (its parser had been
+    matching nothing since the bench output was compacted, so the
+    `slower-*.txt` files it wrote said "0 slower pages" regardless) and
+    `slower-mac-clang.txt`. CI runs the new tests and builds WASM once.
 - whole-project audit pass. Decoder fixes: stack overflow on crafted input in
   the NAVM outline parser (chain of single-child bookmarks; a 78-byte file)
   and the ANTa/ANTz s-expression parser (run of `(`; a 54-byte file) -- both

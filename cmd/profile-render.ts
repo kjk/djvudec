@@ -5,19 +5,19 @@
 //   bun cmd/profile-render.ts file.djvu -p 39 -reps 180 -seconds 8
 //   bun cmd/profile-render.ts file.djvu -p 39 -tool xctrace
 //   bun cmd/profile-render.ts file.djvu -p 39 -variant before
+//     (-variant before profiles the existing bench_before snapshot; build it
+//      with `bun cmd/build-bench.ts before` -- it is never rebuilt here)
 //
 // The default uses macOS `sample` and writes a text call tree under out/profile/.
 // `-tool xctrace` records an Instruments Time Profiler trace when full Xcode is
 // installed and `xcrun xctrace` is available.
 import { existsSync, mkdirSync } from "fs";
 import { basename } from "path";
-import { defaultUseClang } from "./build";
-import { benchTarget, buildLibTool, DUMP_TARGET } from "./build-lib";
+import { benchExe, buildLibTool, DUMP_TARGET } from "./build-lib";
+import { defaultUseClang, ROOT } from "./util";
 
 type Tool = "sample" | "xctrace";
 type Variant = "dump" | "before" | "after";
-
-const ROOT = `${import.meta.dir}/..`.replaceAll("\\", "/");
 
 function usage(): never {
   console.error(
@@ -69,8 +69,10 @@ async function commandExists(cmd: string[]): Promise<boolean> {
 }
 
 async function buildTarget(variant: Variant, useClang: boolean): Promise<string> {
+  // "before" is a snapshot built by `bun cmd/build-bench.ts before`; benchExe
+  // requires it to exist and never rebuilds it (see build-lib.ts).
   if (variant === "before" || variant === "after")
-    return buildLibTool(benchTarget(variant), useClang);
+    return benchExe(variant, useClang);
   return buildLibTool(DUMP_TARGET, useClang);
 }
 

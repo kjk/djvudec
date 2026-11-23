@@ -17,21 +17,28 @@
 // files inside the deps/ reference checkouts (cmd/corpus.ts; DJVU_SPECS
 // overrides with any directory). With no selection argument it prints usage
 // and the available file count; run with `-all`, `-rand N`, explicit files,
-// or `-failures path`. Files are tested in parallel across one worker per
-// CPU; `-cpu N` overrides the count.
+// or `-failures path` (selection is corpus.ts selectFiles, the same convention
+// as every other script, plus `-failures`). Files are tested in parallel across
+// one worker per CPU; `-cpu N` overrides the count.
 // `-failout path` writes failing file paths (default: failures.txt in repo root);
 // each failure is appended as soon as it is found.
+// A file our decoder cannot open (or that cannot be read) is a FAILURE; a file
+// that opens with 0 pages is not. Pages the harness reports as `ok cosmetic`
+// (equal to the oracle within its small pixel tolerance) count as matches and
+// are shown separately: `MATCH=N (cosmetic=K)`. An empty verify_diffs/<name>/
+// is removed again when a file produced no mismatch dumps.
 // `-clean` deletes out/ before building, forcing a full harness rebuild.
 // After each djvu_test_* subprocess exits, Windows FFI enumerates processes; if
 // any djvu_test_* process exceeds 8 GB RAM, all are killed and the offending
 // file is printed before exit. Long books are verified in VERIFY_PAGE_CHUNK-page
 // subprocesses; render and text verify run sequentially per file.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import { join, dirname, basename } from "path";
 import { getDeps } from "./get-deps";
-import { buildRef, build, buildAsan, cleanBuildOutput, defaultUseClang, refToolPath } from "./build";
-import { corpusFiles, corpusSummary, pickRandom } from "./corpus";
+import { buildRef, build, buildAsan, cleanBuildOutput, refToolPath } from "./build";
+import { corpusSummary, selectFiles } from "./corpus";
+import { defaultUseClang } from "./util";
 import { trackDjvuTestProc, awaitDjvuTestProc } from "./win-proc-mem";
 
 const ROOT = dirname(import.meta.dir);
@@ -125,31 +132,50 @@ function scanChunkTags(data: Buffer): { anno: boolean; text: boolean } {
   return { anno, text };
 }
 
+// Page count + feature hints for one file. openError is set when our decoder
+// cannot open the file at all: `djvu_test -info` prints "pages: N" and exits 0
+// for any document it opens (N may legitimately be 0), and exits non-zero
+// ("cannot open document") otherwise -- so the exit code, not N, tells an
+// unopenable file (a failure) from a genuinely page-less one (not a failure).
 async function fileMeta(
   f: string,
   data: Buffer,
-): Promise<{ nPages: number; anno: boolean; text: boolean }> {
+): Promise<{ nPages: number; anno: boolean; text: boolean; openError?: string }> {
   const offs = pageOffsets(data);
   if (offs.length > 0) return { nPages: offs.length, ...docFeatures(data, offs) };
-  const out = await run([TEST, "-info", f], f);
-  const pages = parseInt(out.toString("latin1").match(/pages: (\d+)/)?.[1] ?? "0", 10);
-  return { nPages: pages, ...scanChunkTags(data) };
+  const { code, out } = await runWithCode([TEST, "-info", f], f);
+  const feats = scanChunkTags(data);
+  if (code !== 0) {
+    return { nPages: 0, ...feats, openError: `cannot open (djvu_test -info exited ${code})` };
+  }
+  const m = out.toString("latin1").match(/pages: (\d+)/);
+  if (!m) {
+    return { nPages: 0, ...feats, openError: "cannot open (djvu_test -info printed no page count)" };
+  }
+  return { nPages: parseInt(m[1], 10), ...feats };
 }
 
-// Run djvu_test and capture stdout; checks for runaway memory after exit (Windows FFI).
-async function run(cmd: string[], file: string): Promise<Buffer> {
+// Run a tool and capture stdout + exit code; checks for runaway memory after
+// exit (Windows FFI).
+async function runWithCode(cmd: string[], file: string): Promise<{ code: number; out: Buffer }> {
   const proc = Bun.spawn({ cmd, stdout: "pipe", stderr: "ignore" });
   trackDjvuTestProc(proc, file, pidToFile);
   const out = Buffer.from(await new Response(proc.stdout).arrayBuffer());
   const code = await awaitDjvuTestProc(proc, pidToFile);
-  if (code !== 0) return Buffer.alloc(0);
-  return out;
+  return { code, out };
+}
+
+// Same, for callers that only want the output: empty on a non-zero exit.
+async function run(cmd: string[], file: string): Promise<Buffer> {
+  const { code, out } = await runWithCode(cmd, file);
+  return code !== 0 ? Buffer.alloc(0) : out;
 }
 
 type VerifyResult = {
   fRender: number[];
   fText: number[];
-  m: number;
+  m: number; // pages that match the oracle (includes the cosmetic ones)
+  cosmetic: number; // of m: matched only within the harness's pixel tolerance
   mm: number;
   skip: number;
   tm: number;
@@ -162,8 +188,26 @@ type VerifyResult = {
   memAllocs: number; // number of allocations (sum over page chunks)
   memLeak: boolean; // a chunk reported unfreed allocations
   renderCrashed?: boolean; // djvu_test -verify-render died (no per-page result)
+  renderNoResult?: boolean; // -verify-render exited without a summary (cannot open)
   textCrashed?: boolean; // djvu_test -verify-text died
 };
+
+// The render-verify fields of a VerifyResult.
+type RenderResult = Pick<
+  VerifyResult,
+  | "fRender" | "m" | "cosmetic" | "mm" | "skip" | "bad"
+  | "memTotal" | "memPeak" | "memAllocs" | "memLeak"
+  | "renderCrashed" | "renderNoResult"
+>;
+
+// A whole-file render failure (crash, memory limit, ASan, no result): one
+// mismatch carrying the message, no per-page data.
+function renderFailure(msg: string, flag: "renderCrashed" | "renderNoResult"): RenderResult {
+  return {
+    fRender: [], m: 0, cosmetic: 0, mm: 1, skip: 0, bad: [msg],
+    memTotal: 0, memPeak: 0, memAllocs: 0, memLeak: false, [flag]: true,
+  };
+}
 
 // Human-readable byte count, e.g. 52279209 -> "49.86 MB".
 function humanBytes(n: number): string {
@@ -212,30 +256,38 @@ function safeDirName(name: string): string {
   return name.replace(/[<>:"/\\|?*]/g, "_");
 }
 
-// Parse `djvu_test -verify-render` tab-separated output.
+// Parse `djvu_test -verify-render` tab-separated output:
+//   render <page> <status> [extra...]     one per page
+//   memstat <total> <peak> <allocs> <frees> <live>
+//   summary 0 0 0 <match> <mismatch> <skip>   always last when the doc opened
+// A page matches when its status is `ok`, or any status starting with `ok`
+// (e.g. `ok-cosmetic`), or `ok` with a trailing `cosmetic` field. The latter
+// two mean "equal within the harness's small pixel tolerance" and are counted
+// in `cosmetic` as well as in `m`. Counts come from the per-page lines; the
+// summary line is only used as a fallback (and as proof the run completed).
 function parseVerifyRender(
   name: string,
   out: Buffer,
-): Pick<
-  VerifyResult,
-  "fRender" | "m" | "mm" | "skip" | "bad" | "memTotal" | "memPeak" | "memAllocs" | "memLeak"
-> {
+): RenderResult & { sawSummary: boolean } {
   const fRender: number[] = [];
   const bad: string[] = [];
   let m = 0,
+    cosmetic = 0,
     mm = 0,
     skip = 0,
     memTotal = 0,
     memPeak = 0,
     memAllocs = 0,
-    memLeak = false;
+    memLeak = false,
+    sawSummary = false,
+    pageLines = 0;
 
   for (const line of out.toString("latin1").split(/\r?\n/)) {
     if (!line) continue;
     const parts = line.split("\t");
     const kind = parts[0];
     const page = parseInt(parts[1], 10);
-    const status = parts[2];
+    const status = parts[2] ?? "";
     if (kind === "memstat") {
       // memstat <total> <peak> <allocs> <frees> <live>
       memTotal += parseInt(parts[1], 10) || 0;
@@ -243,8 +295,11 @@ function parseVerifyRender(
       memAllocs += parseInt(parts[3], 10) || 0;
       if ((parseInt(parts[5], 10) || 0) > 0) memLeak = true;
     } else if (kind === "render") {
-      if (status === "ok") m++;
-      else if (status === "skip") skip++;
+      pageLines++;
+      if (status.startsWith("ok")) {
+        m++;
+        if (status !== "ok" || parts.slice(3).includes("cosmetic")) cosmetic++;
+      } else if (status === "skip") skip++;
       else {
         mm++;
         fRender.push(page);
@@ -257,12 +312,15 @@ function parseVerifyRender(
         );
       }
     } else if (kind === "summary") {
-      m = parseInt(parts[4], 10) || m;
-      mm = parseInt(parts[5], 10) || mm;
-      skip = parseInt(parts[6], 10) || skip;
+      sawSummary = true;
+      if (pageLines === 0) {
+        m = parseInt(parts[4], 10) || 0;
+        mm = parseInt(parts[5], 10) || 0;
+        skip = parseInt(parts[6], 10) || 0;
+      }
     }
   }
-  return { fRender, m, mm, skip, bad, memTotal, memPeak, memAllocs, memLeak };
+  return { fRender, m, cosmetic, mm, skip, bad, memTotal, memPeak, memAllocs, memLeak, sawSummary };
 }
 
 // Per-page djvutxt packed for -verify-text: u32-BE len + bytes per page.
@@ -314,22 +372,40 @@ function crashDetail(code: number, out: Buffer, errTxt: string): string {
 }
 
 // In-memory render verify via djvu_test -verify-render (ddjvuapi oracle inside).
-async function verifyRender(
+async function verifyRender(f: string, name: string, nPages: number): Promise<RenderResult> {
+  // djvu_test writes ref/mine PNMs here only for mismatching pages. The
+  // directory has to exist up front (the harness mkdirs one level only); drop
+  // it again afterwards if nothing was written, so a passing run leaves no
+  // empty verify_diffs/<name>/ behind.
+  const diffDir = join(VERIFY_DIFFS, safeDirName(name));
+  mkdirSync(diffDir, { recursive: true });
+  try {
+    return await verifyRenderChunks(f, name, nPages, diffDir);
+  } finally {
+    removeIfEmpty(diffDir);
+  }
+}
+
+// rmdir fails on a non-empty (or missing) directory: exactly "remove if empty".
+function removeIfEmpty(dir: string): void {
+  try {
+    rmdirSync(dir);
+  } catch {}
+}
+
+async function verifyRenderChunks(
   f: string,
   name: string,
   nPages: number,
-): Promise<
-  Pick<VerifyResult, "fRender" | "m" | "mm" | "skip" | "bad" | "memTotal" | "memPeak" | "memAllocs" | "memLeak" | "renderCrashed">
-> {
-  const diffDir = join(VERIFY_DIFFS, safeDirName(name));
-  mkdirSync(diffDir, { recursive: true });
-
-  const merged = {
-    fRender: [] as number[],
+  diffDir: string,
+): Promise<RenderResult> {
+  const merged: RenderResult = {
+    fRender: [],
     m: 0,
+    cosmetic: 0,
     mm: 0,
     skip: 0,
-    bad: [] as string[],
+    bad: [],
     memTotal: 0,
     memPeak: 0,
     memAllocs: 0,
@@ -360,61 +436,47 @@ async function verifyRender(
 
   for (let lo = 1; lo <= nPages; lo += VERIFY_PAGE_CHUNK) {
     const hi = Math.min(nPages, lo + VERIFY_PAGE_CHUNK - 1);
+    const what = `djvu_test -verify-render p${lo}-${hi}`;
     let { code, out, errTxt } = await runChunk(lo, hi);
     if (ASAN && code === ASAN_EXITCODE) {
-      return {
-        fRender: [] as number[],
-        m: 0,
-        mm: 1,
-        skip: 0,
-        bad: [`${name}: AddressSanitizer error (p${lo}-${hi})\n${asanReport(errTxt)}`],
-        memTotal: 0,
-        memPeak: 0,
-        memAllocs: 0,
-        memLeak: false,
-        renderCrashed: true,
-      };
+      return renderFailure(
+        `${name}: AddressSanitizer error (p${lo}-${hi})\n${asanReport(errTxt)}`,
+        "renderCrashed",
+      );
     }
     if (code === 3) {
-      return {
-        fRender: [] as number[],
-        m: 0,
-        mm: 1,
-        skip: 0,
-        bad: [`${name}: djvu_test -verify-render p${lo}-${hi} exceeded the memory limit (4 GB per ctx / DJVU_VERIFY_MEM_MB)`],
-        memTotal: 0,
-        memPeak: 0,
-        memAllocs: 0,
-        memLeak: false,
-        renderCrashed: true,
-      };
+      return renderFailure(
+        `${name}: ${what} exceeded the memory limit (4 GB per ctx / DJVU_VERIFY_MEM_MB)`,
+        "renderCrashed",
+      );
     }
     // exit 4 = finished but leaked; the memstat line already flags it
     if (code !== 0 && code !== 1 && code !== 4) {
       // A crash (e.g. a rare one inside the in-process ddjvu oracle) is retried
       // once: a real decoder crash is deterministic and fails again.
       const first = crashDetail(code, out, errTxt);
-      console.log(`  CRASH ${name}: djvu_test -verify-render p${lo}-${hi} ${first}; retrying`);
+      console.log(`  CRASH ${name}: ${what} ${first}; retrying`);
       ({ code, out, errTxt } = await runChunk(lo, hi));
       if (code !== 0 && code !== 1 && code !== 4) {
         const again = crashDetail(code, out, errTxt);
-        return {
-          fRender: [] as number[],
-          m: 0,
-          mm: 1,
-          skip: 0,
-          bad: [`${name}: djvu_test -verify-render p${lo}-${hi} ${first}; retry ${again}`],
-          memTotal: 0,
-          memPeak: 0,
-          memAllocs: 0,
-          memLeak: false,
-          renderCrashed: true,
-        };
+        return renderFailure(`${name}: ${what} ${first}; retry ${again}`, "renderCrashed");
       }
       console.log(`  CRASH ${name}: p${lo}-${hi} passed on retry (flaky)`);
     }
     const part = parseVerifyRender(name, out);
+    // Exit 0/1/4 normally means "ran every page" -- but exit 1 is also how the
+    // harness reports "cannot open document" (before any page, no summary
+    // line). Without a summary there is no result to count: that is a failure,
+    // not zero mismatches.
+    if (!part.sawSummary) {
+      const why = errTxt.trim().split(/\r?\n/).pop() || "no output";
+      return renderFailure(
+        `${name}: ${what} exited ${code} without a result (${why})`,
+        "renderNoResult",
+      );
+    }
     merged.m += part.m;
+    merged.cosmetic += part.cosmetic;
     merged.mm += part.mm;
     merged.skip += part.skip;
     merged.fRender.push(...part.fRender);
@@ -507,8 +569,11 @@ function readFailureList(path: string): string[] {
     .filter((l) => l.length > 0);
 }
 
-function usage(): never {
-  console.log(
+// Flags whose next argument is a value, not a .djvu path (for selectFiles).
+const VALUE_FLAGS = ["-rand", "-cpu", "-failout", "-failures"];
+
+function usageText(): string {
+  return (
     `usage: bun cmd/tests.ts <selection> [options]
 selection (required; default prints this help):
   -all             verify every corpus file
@@ -522,9 +587,8 @@ options:
   -failout path    where to write failing paths (default: failures.txt)
   -clean           delete out/ before building
 
-${corpusSummary()}`,
+${corpusSummary()}`
   );
-  process.exit(2);
 }
 
 async function main(): Promise<number> {
@@ -534,38 +598,20 @@ async function main(): Promise<number> {
 
   const failOutPath = argPath("-failout") ?? join(ROOT, "failures.txt");
   const failInPath = argPath("-failures");
-  const randArg = process.argv.indexOf("-rand");
-  const explicit = process.argv
-    .slice(2)
-    .filter((a, i, all) => !a.startsWith("-") && all[i - 1] !== "-rand" &&
-      all[i - 1] !== "-cpu" && all[i - 1] !== "-failout" && all[i - 1] !== "-failures");
 
+  // -failures path is tests.ts's own selection mode; everything else is the
+  // shared convention (corpus.ts selectFiles: -all, else -rand N, else explicit
+  // files; no selection prints the usage and exits 2).
   let files: string[];
-  let totalFiles: number;
   if (failInPath) {
     if (!existsSync(failInPath)) {
       console.error(`failures list not found: ${failInPath}`);
       return 1;
     }
     files = readFailureList(failInPath);
-    totalFiles = files.length;
     console.log(`testing ${files.length} files from ${failInPath}`);
-  } else if (explicit.length > 0) {
-    for (const f of explicit)
-      if (!existsSync(f)) { console.error(`no such file: ${f}`); return 1; }
-    files = explicit;
-    totalFiles = files.length;
-  } else if (randArg >= 0) {
-    const nRand = parseInt(process.argv[randArg + 1]);
-    if (!(nRand > 0)) usage();
-    const all = corpusFiles();
-    files = pickRandom(all, nRand);
-    totalFiles = all.length;
-  } else if (process.argv.includes("-all")) {
-    files = corpusFiles();
-    totalFiles = files.length;
   } else {
-    usage();
+    files = selectFiles(usageText(), VALUE_FLAGS);
   }
 
   // CI: drop known DjVuLibre oracle failures that are not our bugs (see
@@ -590,7 +636,6 @@ async function main(): Promise<number> {
       console.log(
         `CI: skipping ${skipped.join(", ")} (known DjVuLibre oracle quirks, not decoder bugs)`,
       );
-      totalFiles = files.length;
     }
   }
 
@@ -601,6 +646,7 @@ async function main(): Promise<number> {
   if (ASAN) console.log("running under AddressSanitizer (out/clang_asan)");
 
   let m = 0,
+    cosmetic = 0,
     mm = 0,
     skip = 0;
   let tm = 0,
@@ -618,11 +664,7 @@ async function main(): Promise<number> {
       files.length || 1,
     ),
   );
-  const randNote =
-    randArg >= 0 && files.length < totalFiles
-      ? ` (${files.length} random of ${totalFiles})`
-      : "";
-  console.log(`testing ${files.length} files${randNote} with ${nWorkers} workers`);
+  console.log(`testing ${files.length} files with ${nWorkers} workers`);
 
   writeFileSync(failOutPath, "");
 
@@ -634,15 +676,34 @@ async function main(): Promise<number> {
   };
 
   let finished = 0;
+  // A file that could not be verified at all (unreadable, or our decoder cannot
+  // open it): a FAILURE, never "(0 pages) ... same".
+  async function failFile(f: string, t0: number, why: string) {
+    failedFiles.set(f, [why]);
+    await appendFailure(f, [why]);
+    finished++;
+    console.log(
+      `[${finished}/${files.length}] ${basename(f)} — ` +
+        `${humanMs(performance.now() - t0)} — FAILED: ${why}`,
+    );
+  }
+
   async function testFile(f: string) {
     const t0 = performance.now();
-    const data = readFileSync(f);
-    const { nPages, anno, text: hasText } = await fileMeta(f, data);
+    let data: Buffer;
+    try {
+      data = readFileSync(f);
+    } catch (e) {
+      return failFile(f, t0, `cannot read file (${(e as { code?: string }).code ?? e})`);
+    }
+    const { nPages, anno, text: hasText, openError } = await fileMeta(f, data);
+    if (openError) return failFile(f, t0, openError);
     const feats = [`${nPages} pages`];
     if (anno) feats.push("annots");
     if (hasText) feats.push("text");
     const vr = await verifyFile(f, nPages, hasText);
     m += vr.m;
+    cosmetic += vr.cosmetic;
     mm += vr.mm;
     skip += vr.skip;
     tm += vr.tm;
@@ -655,6 +716,7 @@ async function main(): Promise<number> {
     if (vr.fText.length) diffs.push(`text diff p${vr.fText.join(",p")}`);
     if (vr.memLeak) diffs.push("memory leak");
     if (vr.renderCrashed) diffs.push("render crashed");
+    if (vr.renderNoResult) diffs.push("cannot open (render verify produced no result)");
     if (vr.textCrashed) diffs.push("text crashed");
     const status = diffs.length ? diffs.join(", ") : "same";
     if (diffs.length) {
@@ -679,7 +741,15 @@ async function main(): Promise<number> {
   };
   await Promise.all(Array.from({ length: nWorkers }, () => worker()));
 
-  console.log(`render (mask=pgm, bg/color=ppm): MATCH=${m} MISMATCH=${mm}; skipped=${skip}`);
+  // No mismatch dumps were written at all -> don't leave an empty verify_diffs/.
+  removeIfEmpty(VERIFY_DIFFS);
+
+  // cosmetic: pages counted in MATCH that equal the oracle only within the
+  // harness's small pixel tolerance (shown only when there are any).
+  const cosmeticNote = cosmetic ? ` (cosmetic=${cosmetic})` : "";
+  console.log(
+    `render (mask=pgm, bg/color=ppm): MATCH=${m}${cosmeticNote} MISMATCH=${mm}; skipped=${skip}`,
+  );
   for (const x of bad.slice(0, 50)) console.log("  render MISMATCH", x);
   console.log(`text: MATCH=${tm} MISMATCH=${tmm}; both-empty=${te}`);
   for (const x of tbad.slice(0, 50)) console.log("  text MISMATCH", x);

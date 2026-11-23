@@ -12,7 +12,7 @@
 // With no selection it prints usage + the available corpus file count.
 import { cpus } from "node:os";
 import { resolve } from "node:path";
-import { defaultUseClang } from "./build";
+import { defaultUseClang } from "./util";
 import { buildStress } from "./build-stress";
 import { getDeps } from "./get-deps";
 import { corpusSummary, selectFiles } from "./corpus";

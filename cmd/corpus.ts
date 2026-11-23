@@ -108,14 +108,6 @@ export function fmtBytesExact(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-// "1.2 MB" -- human-readable size.
-export function fmtBytesHuman(n: number): string {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
 /** Path relative to `root` when possible (forward slashes). */
 export function fileRel(f: string, root: string): string {
   let rel = relative(root, f);

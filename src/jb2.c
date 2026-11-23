@@ -785,13 +785,14 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
         parent = c->lib2shape[match];
         tmp_shape.parent = parent;
         cbm = &djvu_jb2_get_shape(jim, parent)->bm;
-        /* A compressed reference shape lives in a shared dict, which
-           concurrent renders read lock-free — never mutate it in place
-           (uncompress frees its RLE mid-read; code_bitmap_cross's
-           set_min_border reallocs its data). Refine against a private
-           uncompressed copy instead. */
-        if (!cbm->data && cbm->rle) {
-            if (djvu_bm_uncompress_copy(c->ctx, cbm, &cbm_copy) != 0) {
+        /* An inherited reference shape lives in a dict that concurrent
+           renders read lock-free -- never mutate it in place (uncompress
+           frees its RLE mid-read; code_bitmap_cross's set_min_border
+           reallocs its data, which also hits the raw zero-size shapes
+           compress leaves alone). Refine against a private byte copy.
+           Local shapes are thread-private and still raw during decode. */
+        if (parent < jim->inherited_shapes || (!cbm->data && cbm->rle)) {
+            if (djvu_bm_private_copy(c->ctx, cbm, &cbm_copy) != 0) {
                 c->error = 1;
                 break;
             }
