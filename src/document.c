@@ -89,9 +89,11 @@ void djvu_request_abort(djvu_ctx *ctx)
 #if defined(_MSC_VER)
 __declspec(thread) uint32_t djvu_render_epoch_tls;
 __declspec(thread) const djvu_abort *djvu_render_abort_tls;
+__declspec(thread) const djvu_ctx *djvu_render_ctx_tls;
 #else
 __thread uint32_t djvu_render_epoch_tls;
 __thread const djvu_abort *djvu_render_abort_tls;
+__thread const djvu_ctx *djvu_render_ctx_tls;
 #endif
 
 void djvu_abort_init(djvu_abort *ab)
@@ -468,8 +470,10 @@ static void preload_iw_layer(djvu_doc *doc, djvu_page_int *pg, const char *id,
     maxc = doc->ctx->iw_max_chunks;
     if (djvu_iw44_decode_form(doc, pg->form_off, id, pm, maxc) != 0) {
         djvu_iw44_free(pm);
-        djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
-                    "IW44 preload failed (%s at form %u)", id, pg->form_off);
+        /* an aborted decode is partial: never cache it, and it is no error */
+        if (!djvu_aborted(doc->ctx))
+            djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
+                        "IW44 preload failed (%s at form %u)", id, pg->form_off);
         return;
     }
     *slot = pm;

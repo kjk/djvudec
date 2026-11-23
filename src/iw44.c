@@ -1134,6 +1134,10 @@ int djvu_iw44_decode_chunk(iw_pixmap *pm, const uint8_t *data, size_t len)
     djvu_zp_init(&zp, data + pos, len - pos);
 
     for (flag = 1; flag != 0 && pm->cslices < nslices; pm->cslices++) {
+        /* Abort checkpoint, once per slice (a slice walks every block of the
+           plane). The pixmap is left partial: callers free it on -1 and the
+           page cache never stores a failed decode. */
+        if (djvu_aborted(ctx)) return -1;
         flag = code_slice(pm->yc, &zp);
         if (pm->crc && pm->cbc && pm->crcbdelay <= pm->cslices) {
             flag |= code_slice(pm->cbc, &zp);
@@ -1302,13 +1306,17 @@ static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
     bp = color ? planes + plane : NULL;
     rp = color ? planes + 2 * plane : NULL;
 
-    if (map_image(ctx, pm->ymap, 0, yp, w, 1, 0) != 0) {
+    /* abort checkpoints around each plane's inverse transform */
+    if (djvu_aborted(ctx) || map_image(ctx, pm->ymap, 0, yp, w, 1, 0) != 0) {
         djvu_free(ctx, planes);
         return -1;
     }
     if (color) {
-        if (map_image(ctx, pm->cbmap, 0, bp, w, 1, pm->crcbhalf) != 0 ||
-            map_image(ctx, pm->crmap, 0, rp, w, 1, pm->crcbhalf) != 0) {
+        if (djvu_aborted(ctx) ||
+            map_image(ctx, pm->cbmap, 0, bp, w, 1, pm->crcbhalf) != 0 ||
+            djvu_aborted(ctx) ||
+            map_image(ctx, pm->crmap, 0, rp, w, 1, pm->crcbhalf) != 0 ||
+            djvu_aborted(ctx)) {
             djvu_free(ctx, planes);
             return -1;
         }

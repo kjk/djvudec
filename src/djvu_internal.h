@@ -125,9 +125,11 @@ struct djvu_ctx {
 #if defined(_MSC_VER)
 extern __declspec(thread) uint32_t djvu_render_epoch_tls;
 extern __declspec(thread) const djvu_abort *djvu_render_abort_tls;
+extern __declspec(thread) const djvu_ctx *djvu_render_ctx_tls;
 #else
 extern __thread uint32_t djvu_render_epoch_tls;
 extern __thread const djvu_abort *djvu_render_abort_tls;
+extern __thread const djvu_ctx *djvu_render_ctx_tls;
 #endif
 
 /* Called at public render entry (djvu_page_render_timed / render_into).
@@ -139,18 +141,24 @@ static inline void djvu_render_begin(djvu_ctx *ctx, const djvu_abort *ab)
     if (ctx)
         djvu_render_epoch_tls = djvu_atomic_epoch_load(&ctx->abort_epoch);
     djvu_render_abort_tls = ab;
+    djvu_render_ctx_tls = ctx;
 }
 
-/* Called at public render exit so a stale token pointer is never consulted
-   by later non-render calls on the same thread. */
+/* Called at public render exit so stale abort state is never consulted by
+   later non-render calls on the same thread. */
 static inline void djvu_render_end(void)
 {
     djvu_render_abort_tls = NULL;
+    djvu_render_ctx_tls = NULL;
 }
 
+/* True only while this thread is inside a public render call on ctx. Decode
+   code shared with non-render paths (djvu_doc_open's dict preload, the debug
+   hooks) polls this too; outside a render the thread's epoch snapshot is
+   stale, so it must never report an abort there. */
 static inline int djvu_aborted(djvu_ctx *ctx)
 {
-    if (!ctx) return 0;
+    if (!ctx || djvu_render_ctx_tls != ctx) return 0;
     if (djvu_render_abort_tls && djvu_render_abort_tls->requested) return 1;
     return djvu_atomic_epoch_load(&ctx->abort_epoch) != djvu_render_epoch_tls;
 }

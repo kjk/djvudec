@@ -661,13 +661,11 @@ static int run_verify_into(djvu_doc *doc)
  *
  * Abort is cooperative: the decoder polls djvu_aborted() at a few checkpoints
  * (render.c after the JB2 mask is acquired and every 64 blits of the bitonal
- * loops; compose.c at composite entry and every 64 blits of the stencil loop).
+ * loops; compose.c at composite entry and every 64 blits of the stencil loop;
+ * iw44.c once per decoded slice and around each plane's inverse transform).
  * So what an abort request may do depends on the page:
- *   - bitonal / compound (have a mask): a request made before the call, or
- *     during the mask decode, MUST abort the render;
- *   - photo (BG44 only): only the composite-entry checkpoint exists, so a
- *     request made before the call must abort, but one made mid-render (after
- *     the first allocation) has no later checkpoint and the render completes;
+ *   - bitonal / compound / photo: a request made before the call, or early
+ *     in the decode, MUST abort the render;
  *   - blank / INFO-only (type unknown): no checkpoint, always completes.
  * In every case the invariant is: a render returns either "aborted" (NULL / -1)
  * or output byte-identical to an undisturbed render -- never a partial image --
@@ -963,7 +961,7 @@ static int va_page(va_side *s, const uint8_t *data, size_t len, int page, int su
     djvu_page_type type = djvu_page_get_type(s->doc, page);
     /* see the checkpoint list at the top of this section */
     int must_abort = (type != DJVU_PAGE_UNKNOWN);
-    int inflight = (type == DJVU_PAGE_BITONAL || type == DJVU_PAGE_COMPOUND);
+    int inflight = (type != DJVU_PAGE_UNKNOWN);
     djvu_image *img;
     djvu_render_info ri;
     djvu_abort tok;

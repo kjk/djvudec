@@ -137,6 +137,15 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- IW44 abort checkpoints: `djvu_iw44_decode_chunk` polls `djvu_aborted` once
+  per slice and `iw44_render_rgb_impl` around each plane's inverse transform,
+  so photo pages (and the IW44 phase of compound pages) can be aborted
+  mid-decode; before, the only checkpoint was at composite entry. An aborted
+  decode is freed, never cached, and logs no warning. `djvu_aborted` now also
+  requires the thread to be inside a render on that ctx (new
+  `djvu_render_ctx_tls`), since IW44 decode is reachable from non-render
+  paths where the thread's epoch snapshot is stale. `-verify-abort` sweeps
+  photo pages in flight now: test043C 32 -> 545 aborted renders, 0 failures.
 - audit follow-up (tooling + harnesses; decoder change is the JB2 one only):
   - decoder: `code_record` now refines against a private copy of ANY
     inherited (dict) reference shape, not only RLE-compressed ones -- raw
