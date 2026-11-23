@@ -1297,8 +1297,7 @@ static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
     /* Planar Y/Cb/Cr (or Y only for gray): contiguous rows for SIMD clamp +
        color convert. map_image still emits bottom-up (DjVu convention). */
     planes = (int8_t *)djvu_alloc(ctx, plane * (color ? 3u : 1u));
-    if (!planes) return -1;
-    memset(planes, 0, plane * (color ? 3u : 1u));
+    if (!planes) return -1;   /* map_image fills every sample */
     yp = planes;
     bp = color ? planes + plane : NULL;
     rp = color ? planes + 2 * plane : NULL;

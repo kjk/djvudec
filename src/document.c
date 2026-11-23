@@ -495,31 +495,6 @@ iw_pixmap *djvu_doc_iw44_acquire_under_lock(djvu_doc *doc, djvu_page_int *pg,
     return *slot;
 }
 
-void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0)
-{
-    int i;
-
-    if (!doc || !djvu_cache_stores_page(doc->ctx)) return;
-    if (lo0 < 0) lo0 = 0;
-    if (hi0 >= doc->npages) hi0 = doc->npages - 1;
-    if (lo0 > hi0) return;
-    djvu_cache_lock(doc->ctx);
-    for (i = lo0; i <= hi0; i++) {
-        djvu_page_int *pg = &doc->pages[i];
-        preload_iw_layer(doc, pg, "BG44", &pg->iw_bg);
-        preload_iw_layer(doc, pg, "FG44", &pg->iw_fg);
-    }
-    djvu_cache_unlock(doc->ctx);
-}
-
-void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no)
-{
-    if (!doc || page_no < 0 || page_no >= doc->npages) return;
-    djvu_cache_lock(doc->ctx);
-    free_page_iw44(&doc->pages[page_no]);
-    djvu_cache_unlock(doc->ctx);
-}
-
 static size_t cpix_mem_size(const djvu_cpix *p)
 {
     if (!p || !p->d || p->w <= 0 || p->h <= 0) return 0;
@@ -608,43 +583,6 @@ iw_pixmap *djvu_doc_iw44_by_form_acquire(djvu_doc *doc, uint32_t form_off,
     for (i = 0; i < doc->npages; i++)
         if (doc->pages[i].form_off == form_off)
             return djvu_doc_iw44_acquire(doc, i, chunk_id, owned_out);
-    return NULL;
-}
-
-/* Borrowed look-up for debug/tools: only valid while the page-cache slot still
-   holds the layer (no concurrent drop). Prefer acquire/release for renders. */
-iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id)
-{
-    djvu_page_int *pg;
-    iw_pixmap **slot;
-    iw_pixmap *pm;
-
-    if (!doc || page_no < 0 || page_no >= doc->npages || !chunk_id)
-        return NULL;
-    if (!djvu_cache_stores_page(doc->ctx))
-        return NULL; /* exclusive decode has no borrowable slot */
-    pg = &doc->pages[page_no];
-    if (chunk_id[0] == 'B' && chunk_id[1] == 'G' && chunk_id[2] == '4')
-        slot = &pg->iw_bg;
-    else if (chunk_id[0] == 'F' && chunk_id[1] == 'G' && chunk_id[2] == '4')
-        slot = &pg->iw_fg;
-    else
-        return NULL;
-    djvu_cache_lock(doc->ctx);
-    if (!*slot)
-        preload_iw_layer(doc, pg, chunk_id, slot);
-    pm = *slot;
-    djvu_cache_unlock(doc->ctx);
-    return pm;
-}
-
-iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id)
-{
-    int i;
-    if (!doc) return NULL;
-    for (i = 0; i < doc->npages; i++)
-        if (doc->pages[i].form_off == form_off)
-            return djvu_doc_iw44(doc, i, chunk_id);
     return NULL;
 }
 
@@ -806,11 +744,6 @@ static void djvu_doc_preload_shared_range(djvu_doc *doc, int lo0, int hi0)
     djvu_dict_unlock(doc->ctx);
 }
 
-void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0)
-{
-    djvu_doc_preload_shared_range(doc, lo0, hi0);
-}
-
 static void preload_jb2_mask(djvu_doc *doc, djvu_page_int *pg)
 {
     uint32_t sz;
@@ -819,7 +752,7 @@ static void preload_jb2_mask(djvu_doc *doc, djvu_page_int *pg)
 
     if (djvu_aborted(doc->ctx)) return;
     if (!djvu_cache_stores_page(doc->ctx)) return;
-    if (!doc || !pg || pg->jb2_mask) return;
+    if (pg->jb2_mask) return;
     sjbz = djvu_form_find_chunk(doc, pg->form_off, "Sjbz", &sz, NULL);
     if (!sjbz) return;
     dict = jb2_dict_for_form_unlocked(doc, pg->form_off);
@@ -830,20 +763,6 @@ static void preload_jb2_mask(djvu_doc *doc, djvu_page_int *pg)
         return;
     }
     pg->jb2_mask = mask;
-}
-
-void djvu_doc_preload_jb2_masks_range(djvu_doc *doc, int lo0, int hi0)
-{
-    int i;
-
-    if (!doc || !djvu_cache_stores_page(doc->ctx)) return;
-    if (lo0 < 0) lo0 = 0;
-    if (hi0 >= doc->npages) hi0 = doc->npages - 1;
-    if (lo0 > hi0) return;
-    djvu_cache_lock(doc->ctx);
-    for (i = lo0; i <= hi0; i++)
-        preload_jb2_mask(doc, &doc->pages[i]);
-    djvu_cache_unlock(doc->ctx);
 }
 
 jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out)
@@ -891,23 +810,6 @@ void djvu_doc_jb2_mask_release(djvu_doc *doc, jb2_image *mask, int owned)
         djvu_jb2_free(ctx, dict);
 }
 
-jb2_image *djvu_doc_jb2_mask(djvu_doc *doc, int page_no)
-{
-    djvu_page_int *pg;
-    jb2_image *mask;
-
-    if (!doc || page_no < 0 || page_no >= doc->npages) return NULL;
-    if (!djvu_cache_stores_page(doc->ctx))
-        return NULL; /* exclusive decode has no borrowable slot */
-    pg = &doc->pages[page_no];
-    djvu_cache_lock(doc->ctx);
-    if (!pg->jb2_mask)
-        preload_jb2_mask(doc, pg);
-    mask = pg->jb2_mask;
-    djvu_cache_unlock(doc->ctx);
-    return mask;
-}
-
 static void free_jb2_inline_cache(djvu_ctx *ctx, djvu_doc *doc)
 {
     int i;
@@ -930,22 +832,6 @@ static void free_jb2_dict_cache(djvu_ctx *ctx, djvu_doc *doc)
     djvu_free(ctx, doc->jb2_dicts);
     doc->jb2_dicts = NULL;
     doc->n_jb2_dicts = 0;
-}
-
-jb2_image *djvu_doc_jb2_dict(djvu_doc *doc, const char *incl_id)
-{
-    return jb2_dict_find(doc, incl_id);
-}
-
-jb2_image *djvu_doc_jb2_dict_inline(djvu_doc *doc, uint32_t form_off)
-{
-    uint32_t sz;
-    const uint8_t *djbz;
-
-    if (!doc) return NULL;
-    djbz = djvu_form_find_chunk(doc, form_off, "Djbz", &sz, NULL);
-    if (!djbz) return NULL;
-    return jb2_inline_find(doc, djbz, sz);
 }
 
 static jb2_image *jb2_dict_for_form_unlocked(djvu_doc *doc, uint32_t form_off)
@@ -971,16 +857,6 @@ static jb2_image *jb2_dict_for_form_unlocked(djvu_doc *doc, uint32_t form_off)
         if (dict) return dict;
     }
     return NULL;
-}
-
-jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off)
-{
-    jb2_image *dict;
-    if (!doc) return NULL;
-    djvu_dict_lock(doc->ctx);
-    dict = jb2_dict_for_form_unlocked(doc, form_off);
-    djvu_dict_unlock(doc->ctx);
-    return dict;
 }
 
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id)
@@ -1232,14 +1108,13 @@ int djvu_doc_page_by_name(djvu_doc *doc, const char *name)
 
 djvu_page_type djvu_page_get_type(djvu_doc *doc, int page_no)
 {
-    uint32_t form_off, sz;
+    uint32_t flags;
     int has_mask, has_bg, has_fg;
     if (!doc || page_no < 0 || page_no >= doc->npages) return DJVU_PAGE_UNKNOWN;
-    form_off = doc->pages[page_no].form_off;
-    has_mask = djvu_form_find_chunk(doc, form_off, "Sjbz", &sz, NULL) != NULL;
-    has_bg   = djvu_form_bg_iw44_id(doc, form_off) != NULL;
-    has_fg   = djvu_form_find_chunk(doc, form_off, "FG44", &sz, NULL) != NULL ||
-               djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL) != NULL;
+    flags = doc->pages[page_no].chunk_flags;   /* indexed at open */
+    has_mask = (flags & DJVU_PG_SJBZ) != 0;
+    has_bg   = (flags & DJVU_PG_BG44) != 0;
+    has_fg   = (flags & (DJVU_PG_FG44 | DJVU_PG_FGBZ)) != 0;
     if (has_mask && (has_bg || has_fg)) return DJVU_PAGE_COMPOUND;
     if (has_mask) return DJVU_PAGE_BITONAL;
     if (has_bg || has_fg) return DJVU_PAGE_PHOTO;

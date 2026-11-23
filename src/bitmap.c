@@ -220,8 +220,10 @@ static void bm_decode_rle_rows(djvu_bitmap *bm, const uint8_t *runs)
         x = bm_read_run(&runs);
         if (c + x > bm->width)
             break;
-        while (x-- > 0)
-            bm->data[djvu_bm_rowoffset(bm, n) + c++] = (uint8_t)p;
+        /* data starts zeroed (both callers memset), so only ink runs write */
+        if (p && x > 0)
+            memset(bm->data + djvu_bm_rowoffset(bm, n) + c, 1, (size_t)x);
+        c += x;
         p = 1 - p;
         if (c >= bm->width) {
             c = 0;
@@ -344,154 +346,6 @@ int djvu_bm_set_min_border(djvu_ctx *ctx, djvu_bitmap *bm, int value)
     return djvu_bm_alloc_guard(ctx, bm);
 }
 
-static void bm_blit_bytes(djvu_bitmap *dst, const djvu_bitmap *src,
-                          int x0, int y0, int x1, int y1, int w, int h, int maxval)
-{
-    do {
-        int off = djvu_bm_rowoffset(dst, y0++) + x0;
-        int roff = djvu_bm_rowoffset(src, y1++) + x1;
-        int i = w;
-        do {
-            int g = dst->data[off] + src->data[roff++];
-            dst->data[off++] = (uint8_t)(g <= maxval ? g : maxval);
-        } while (--i > 0);
-    } while (--h > 0);
-}
-
-static void bm_blit_rle(djvu_bitmap *dst, const djvu_bitmap *src,
-                        int dx, int dy, int maxval)
-{
-    const uint8_t *runs = src->rle;
-    const uint8_t *runs_end = src->rle + src->rle_len;
-    int sr = src->height - 1;
-    int sc = 0, p = 0;
-
-    if (!dst->data) return;
-
-    while (runs < runs_end && sr >= 0) {
-        int z = bm_read_run(&runs);
-        int nc;
-
-        if (sc + z > src->width) return;
-        nc = sc + z;
-
-        if (p) {
-            int dest_row = dy + sr;
-            if (dest_row >= 0 && dest_row < dst->height) {
-                uint8_t *drow = dst->data + djvu_bm_rowoffset(dst, dest_row);
-                int col = sc;
-                if (dx < 0) {
-                    if (nc <= -dx) goto next_run;
-                    col = sc + (-dx);
-                }
-                while (col < nc) {
-                    int px = dx + col;
-                    if (px >= dst->width) break;
-                    if (px >= 0) {
-                        int g = drow[px] + 1;
-                        drow[px] = (uint8_t)(g <= maxval ? g : maxval);
-                    }
-                    col++;
-                }
-            }
-        }
-    next_run:
-        sc = nc;
-        p = 1 - p;
-        if (sc >= src->width) {
-            sc = 0;
-            p = 0;
-            sr--;
-        }
-    }
-}
-
-/* InsertMap(doBlit=true): dst[off] = min(dst[off]+src[off], maxval), bottom-up. */
-void djvu_bm_blit(djvu_bitmap *dst, const djvu_bitmap *src, int dx, int dy, int maxval)
-{
-    int x0, y0, x1, y1, w0, w1, w, h0, h1, h;
-
-    if (!dst || !src || !dst->data) return;
-    if ((dx >= dst->width) || (dy >= dst->height) ||
-        (dx + src->width < 0) || (dy + src->height < 0))
-        return;
-
-    if (src->data) {
-        x0 = dx > 0 ? dx : 0;
-        y0 = dy > 0 ? dy : 0;
-        x1 = dx < 0 ? -dx : 0;
-        y1 = dy < 0 ? -dy : 0;
-        w0 = dst->width - x0;
-        w1 = src->width - x1;
-        w = w0 < w1 ? w0 : w1;
-        h0 = dst->height - y0;
-        h1 = src->height - y1;
-        h = h0 < h1 ? h0 : h1;
-        if (w <= 0 || h <= 0) return;
-        bm_blit_bytes(dst, src, x0, y0, x1, y1, w, h, maxval);
-        return;
-    }
-
-    if (src->rle)
-        bm_blit_rle(dst, src, dx, dy, maxval);
-}
-
-static void bm_visit_ink_bytes(const djvu_bitmap *src, int left, int bottom,
-                               void (*fn)(void *, int, int), void *user)
-{
-    int rr, cc, sw = src->width, sh = src->height;
-
-    for (rr = 0; rr < sh; rr++) {
-        int srow = djvu_bm_rowoffset(src, rr);
-        int py = bottom + rr;
-        for (cc = 0; cc < sw; cc++) {
-            if (src->data[srow + cc])
-                fn(user, left + cc, py);
-        }
-    }
-}
-
-static void bm_visit_ink_rle(const djvu_bitmap *src, int left, int bottom,
-                             void (*fn)(void *, int, int), void *user)
-{
-    const uint8_t *runs = src->rle;
-    const uint8_t *runs_end = src->rle + src->rle_len;
-    int sr = src->height - 1;
-    int sc = 0, p = 0;
-
-    while (runs < runs_end && sr >= 0) {
-        int z = bm_read_run(&runs);
-        int nc;
-
-        if (sc + z > src->width) return;
-        nc = sc + z;
-
-        if (p) {
-            int py = bottom + sr;
-            int col = sc;
-            while (col < nc)
-                fn(user, left + col++, py);
-        }
-        sc = nc;
-        p = 1 - p;
-        if (sc >= src->width) {
-            sc = 0;
-            p = 0;
-            sr--;
-        }
-    }
-}
-
-void djvu_bm_visit_ink(const djvu_bitmap *src, int left, int bottom,
-                       void (*fn)(void *user, int px, int py), void *user)
-{
-    if (!src || !fn) return;
-    if (src->data)
-        bm_visit_ink_bytes(src, left, bottom, fn, user);
-    else if (src->rle)
-        bm_visit_ink_rle(src, left, bottom, fn, user);
-}
-
 static void bm_visit_ink_runs_bytes(const djvu_bitmap *src, int left, int bottom,
                                     void (*fn)(void *, int, int, int), void *user)
 {
@@ -581,7 +435,8 @@ static void bm_bbox_rle(const djvu_bitmap *bm, int *xmin, int *ymin, int *xmax, 
         }
     }
     if (area == 0) {
-        *xmin = 1; *ymin = 1; *xmax = 0; *ymax = 0;
+        /* same result as the byte path below (and DjVuLibre's LibRect) */
+        *xmin = 0; *ymin = 0; *xmax = -1; *ymax = -1;
         return;
     }
     *xmin = xa; *ymin = ya; *xmax = xb; *ymax = yb;

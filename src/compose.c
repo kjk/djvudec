@@ -40,36 +40,30 @@ static int compose_background_from_native(djvu_ctx *ctx, const djvu_cpix *native
     return djvu_cpix_scale_ratio(ctx, native, out, rw, rh, red, subsample);
 }
 
-static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg, int cache_locked)
+/* Fill pg->bg_native / pg->bg_scaled (page cache). Caller holds the cache
+   lock; the IW44 layer stays owned by its page-cache slot. */
+static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
 {
     djvu_ctx *ctx = doc->ctx;
     iw_pixmap *pm;
-    int bw, bh, w, h, pm_owned = 0;
+    int bw, bh, w, h;
 
     if (!djvu_cache_stores_page(ctx)) return -1;
-    if (!doc || !pg || pg->bg_native.d) return 0;
+    if (pg->bg_native.d) return 0;
     if (!pg->has_info || pg->info.width <= 0 || pg->info.height <= 0)
         return -1;
     if (!djvu_form_bg_iw44_id(doc, pg->form_off))
         return -1;
-    if (cache_locked)
-        pm = djvu_doc_iw44_acquire_under_lock(doc, pg, "BG44");
-    else
-        pm = djvu_doc_iw44_by_form_acquire(doc, pg->form_off, "BG44", &pm_owned);
+    pm = djvu_doc_iw44_acquire_under_lock(doc, pg, "BG44");
     if (!pm) return -1;
     bw = djvu_iw44_width(pm);
     bh = djvu_iw44_height(pm);
-    if (bw <= 0 || bh <= 0) {
-        djvu_doc_iw44_release(ctx, pm, pm_owned);
+    if (bw <= 0 || bh <= 0)
         return -1;
-    }
-    if (djvu_cpix_init(ctx, &pg->bg_native, bw, bh) != 0) {
-        djvu_doc_iw44_release(ctx, pm, pm_owned);
+    if (djvu_cpix_init(ctx, &pg->bg_native, bw, bh) != 0)
         return -1;
-    }
     if (djvu_iw44_render_rgb_raw(pm, pg->bg_native.d) != 0) {
         djvu_cpix_free(ctx, &pg->bg_native);
-        djvu_doc_iw44_release(ctx, pm, pm_owned);
         return -1;
     }
     w = pg->info.width;
@@ -77,23 +71,9 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg, int cache_l
     if (!pg->bg_scaled.d &&
         compose_background_from_native(ctx, &pg->bg_native, w, h, 1, &pg->bg_scaled) != 0) {
         djvu_cpix_free(ctx, &pg->bg_native);
-        djvu_doc_iw44_release(ctx, pm, pm_owned);
         return -1;
     }
-    djvu_doc_iw44_release(ctx, pm, pm_owned);
     return 0;
-}
-
-void djvu_doc_preload_compose_bg_range(djvu_doc *doc, int lo0, int hi0)
-{
-    int i;
-
-    if (!doc || !djvu_cache_stores_page(doc->ctx)) return;
-    if (lo0 < 0) lo0 = 0;
-    if (hi0 >= doc->npages) hi0 = doc->npages - 1;
-    if (lo0 > hi0) return;
-    for (i = lo0; i <= hi0; i++)
-        compose_bg_native_build(doc, &doc->pages[i], 0);
 }
 
 int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int height,
@@ -114,7 +94,7 @@ int djvu_compose_background(djvu_doc *doc, uint32_t form_off, int width, int hei
         pg = &doc->pages[page_no];
         djvu_cache_lock(ctx);
         if (!pg->bg_native.d)
-            compose_bg_native_build(doc, pg, 1);
+            compose_bg_native_build(doc, pg);
         if (pg->bg_scaled.d && pg->bg_scaled.w == rw && pg->bg_scaled.h == rh) {
             size_t n = (size_t)rw * (size_t)rh * 3;
             djvu_free(ctx, out->d);
@@ -435,9 +415,9 @@ static int fgbz_palette_parse(djvu_ctx *ctx, const uint8_t *fgbz,
     version = fgbz[p++];
     fg->palsize = (fgbz[p] << 8) | fgbz[p + 1];
     p += 2;
-    if ((size_t)p + (size_t)fg->palsize * 3 > sz) return -1;
+    if ((size_t)p + (size_t)fg->palsize * 3 > sz) { fg->palsize = 0; return -1; }
     fg->pal = (uint8_t *)djvu_alloc(ctx, (size_t)fg->palsize * 3);
-    if (!fg->pal) return -1;
+    if (!fg->pal) { fg->palsize = 0; return -1; }
     memcpy(fg->pal, fgbz + p, (size_t)fg->palsize * 3);
     p += (size_t)fg->palsize * 3;
 
@@ -734,15 +714,18 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     uint32_t form_off = doc->pages[page_no].form_off;
     djvu_cpix bg;
     uint32_t sz; const uint8_t *fgbz;
-    uint8_t *pal = NULL; int palsize = 0;
-    short *colordata = NULL; int ncolor = 0;
+    fgbz_palette fg;
+    const uint8_t *pal; int palsize;
+    const short *colordata; int ncolor;
     iw_pixmap *fgpm = NULL; djvu_cpix fgnat; int fgred = 0, fg_owned = 0;
+    int has_fg = 0;
     int i, stencil_rc = 0;
     double t0 = 0.0;
 
     if (djvu_aborted(ctx)) return -1;
     if (subsample < 1) subsample = 1;
     memset(&bg, 0, sizeof(bg)); memset(&fgnat, 0, sizeof(fgnat));
+    memset(&fg, 0, sizeof(fg));
     if (t) t0 = djvu_bench_now_ms();
     if (djvu_compose_background(doc, form_off, width, height, subsample, &bg) != 0)
         return -1;
@@ -750,31 +733,12 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
 
     if (t) t0 = djvu_bench_now_ms();
 
+    /* A malformed FGbz parses to an empty palette (fg stays zeroed). */
     fgbz = djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL);
-    if (fgbz && sz >= 3) {
-        size_t p = 0;
-        int version = fgbz[p++];
-        palsize = (fgbz[p] << 8) | fgbz[p + 1]; p += 2;
-        if ((size_t)p + (size_t)palsize * 3 <= sz) {
-            pal = (uint8_t *)djvu_alloc(ctx, (size_t)palsize * 3);
-            if (pal) memcpy(pal, fgbz + p, (size_t)palsize * 3);
-            p += (size_t)palsize * 3;
-            if ((version & 0x80) && p + 3 <= sz) {
-                int datasize = (fgbz[p] << 16) | (fgbz[p+1] << 8) | fgbz[p+2]; p += 3;
-                size_t dlen = 0;
-                uint8_t *dd = djvu_bzz_decode_all(ctx, fgbz + p, sz - p, &dlen);
-                if (dd && (size_t)datasize * 2 <= dlen) {
-                    colordata = (short *)djvu_alloc(ctx, sizeof(short) * datasize);
-                    if (colordata) {
-                        for (i = 0; i < datasize; i++)
-                            colordata[i] = (short)((dd[i*2] << 8) | dd[i*2+1]);
-                        ncolor = datasize;
-                    }
-                }
-                djvu_free(ctx, dd);
-            }
-        }
-    }
+    if (fgbz)
+        (void)fgbz_palette_parse(ctx, fgbz, sz, &fg);
+    pal = fg.pal; palsize = fg.palsize;
+    colordata = fg.colordata; ncolor = fg.ncolor;
 
     if (!pal) {
         double tfg = 0.0;
@@ -785,9 +749,9 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
             int fh = djvu_iw44_height(fgpm);
             fgred = djvu_compute_red(width, height, fw, fh);
             if (fgred < 1) fgred = 1;
-            if (djvu_cpix_init(ctx, &fgnat, fw, fh) != 0 ||
-                djvu_iw44_render_rgb_raw(fgpm, fgnat.d) != 0)
-                fgpm = NULL;
+            /* fgpm stays set either way so it is released below */
+            has_fg = djvu_cpix_init(ctx, &fgnat, fw, fh) == 0 &&
+                     djvu_iw44_render_rgb_raw(fgpm, fgnat.d) == 0;
         }
         if (t) t->iw44_ms += djvu_bench_now_ms() - tfg;
     }
@@ -795,7 +759,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
     if (subsample > 1) {
         stencil_rc = compose_stencil_sub(ctx, &bg, mask, width, height, subsample,
                                          pal, palsize, colordata, ncolor,
-                                         &fgnat, fgred, fgpm != NULL);
+                                         &fgnat, fgred, has_fg);
     } else {
         for (i = 0; mask && i < mask->nblits; i++) {
             jb2_blit *b = &mask->blits[i];
@@ -817,7 +781,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
                     ink.palb = pal[ci*3+0]; ink.palg = pal[ci*3+1]; ink.palr = pal[ci*3+2];
                     ink.has_pal = 1;
                 }
-            } else if (fgpm) {
+            } else if (has_fg) {
                 ink.has_fg = 1;
             }
             /* Run-aware stamp (RLE or memchr runs on bytes): O(runs) not O(ink
@@ -834,7 +798,7 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
 
     if (t) t->composite_ms += djvu_bench_now_ms() - t0;
 
-    djvu_free(ctx, pal); djvu_free(ctx, colordata);
+    fgbz_palette_free(ctx, &fg);
     djvu_cpix_free(ctx, &fgnat);
     djvu_doc_iw44_release(ctx, fgpm, fg_owned);
     if (stencil_rc != 0) {

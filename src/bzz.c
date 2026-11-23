@@ -150,14 +150,14 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
 
     for (i = 0; i < 256; i++) count[i] = 0;
     for (i = 0; i < markerpos; i++) {
-        signed char c = (signed char)data[i];
-        d->pos[i] = (c << 24) | (count[0xff & c] & 0xffffff);
-        count[0xff & c]++;
+        uint32_t c = data[i];
+        d->pos[i] = (int)((c << 24) | ((uint32_t)count[c] & 0xffffff));
+        count[c]++;
     }
     for (i = markerpos + 1; i < size; i++) {
-        signed char c = (signed char)data[i];
-        d->pos[i] = (c << 24) | (count[0xff & c] & 0xffffff);
-        count[0xff & c]++;
+        uint32_t c = data[i];
+        d->pos[i] = (int)((c << 24) | ((uint32_t)count[c] & 0xffffff));
+        count[c]++;
     }
 
     last = 1;

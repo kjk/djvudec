@@ -13,6 +13,11 @@ typedef struct {
     int count;       /* total bookmark nodes parsed so far */
 } nparse;
 
+/* Real outlines nest a handful of levels. parse_item/free_items recurse per
+   level, so a crafted chain of single-child bookmarks (7 bytes each, and BZZ
+   shrinks megabytes of them to a few dozen bytes) would overflow the stack. */
+#define DJVU_MAX_OUTLINE_DEPTH 64
+
 /* Resolve a bookmark url to a 0-based page number, or -1. */
 static int resolve_url(djvu_doc *doc, const char *url)
 {
@@ -33,7 +38,8 @@ static int resolve_url(djvu_doc *doc, const char *url)
 static void free_items(djvu_ctx *ctx, djvu_outline_item *items, int n);
 
 /* Parse one bookmark (and its subtree) into *out. Returns 0 on success. */
-static int parse_item(nparse *np, djvu_doc *doc, djvu_outline_item *out)
+static int parse_item(nparse *np, djvu_doc *doc, djvu_outline_item *out,
+                      int depth)
 {
     int nkids, namelen, urllen, i;
 
@@ -49,12 +55,13 @@ static int parse_item(nparse *np, djvu_doc *doc, djvu_outline_item *out)
     if (np->br.failed) return -1;
 
     if (nkids > 0) {
+        if (depth >= DJVU_MAX_OUTLINE_DEPTH) return -1;
         out->children = (djvu_outline_item *)djvu_alloc(np->ctx,
                             sizeof(djvu_outline_item) * (size_t)nkids);
         if (!out->children) return -1;
         memset(out->children, 0, sizeof(djvu_outline_item) * (size_t)nkids);
         for (i = 0; i < nkids; i++) {
-            if (parse_item(np, doc, &out->children[i]) != 0) {
+            if (parse_item(np, doc, &out->children[i], depth + 1) != 0) {
                 out->nchildren = i;
                 return -1;
             }
@@ -105,7 +112,7 @@ djvu_outline_item *djvu_doc_outline(djvu_doc *doc)
     while (!np.br.failed && np.br.pos < dlen && np.count < total) {
         djvu_outline_item tmp;
         memset(&tmp, 0, sizeof(tmp));
-        if (parse_item(&np, doc, &tmp) != 0) {
+        if (parse_item(&np, doc, &tmp, 0) != 0) {
             free_items(ctx, tmp.children, tmp.nchildren);
             djvu_free(ctx, tmp.title); djvu_free(ctx, tmp.url);
             break;

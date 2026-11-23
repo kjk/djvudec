@@ -32,7 +32,7 @@ void djvu_zp_init(djvu_zp *zp, const uint8_t *data, size_t len)
     /* DecoderInitialize */
     zp->code = 0xff00;
     b = zp_read_byte(zp);
-    zp->code = 0xff00u & (uint32_t)(b << 8);
+    zp->code = 0xff00u & ((uint32_t)b << 8);
     b = zp_read_byte(zp);
     zp->zbyte = (uint8_t)(0xff & b);
     zp->code |= zp->zbyte;

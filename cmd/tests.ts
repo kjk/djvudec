@@ -274,7 +274,7 @@ async function fetchRefText(f: string, nPages: number): Promise<Buffer> {
     const pages: number[] = [];
     for (let p = start; p <= end; p++) pages.push(p);
     const chunks = await Promise.all(
-      pages.map((p) => run([refToolPath("djvutxt"), `--page=${p}`, f])),
+      pages.map((p) => run([refToolPath("djvutxt"), `--page=${p}`, f], f)),
     );
     for (const chunk of chunks) {
       const hdr = Buffer.alloc(4);
@@ -389,13 +389,14 @@ async function verifyRender(
         renderCrashed: true,
       };
     }
-    if (code !== 0 && code !== 1) {
+    // exit 4 = finished but leaked; the memstat line already flags it
+    if (code !== 0 && code !== 1 && code !== 4) {
       // A crash (e.g. a rare one inside the in-process ddjvu oracle) is retried
       // once: a real decoder crash is deterministic and fails again.
       const first = crashDetail(code, out, errTxt);
       console.log(`  CRASH ${name}: djvu_test -verify-render p${lo}-${hi} ${first}; retrying`);
       ({ code, out, errTxt } = await runChunk(lo, hi));
-      if (code !== 0 && code !== 1) {
+      if (code !== 0 && code !== 1 && code !== 4) {
         const again = crashDetail(code, out, errTxt);
         return {
           fRender: [] as number[],
@@ -689,7 +690,7 @@ async function main(): Promise<number> {
   else
     console.log(`no failures (${failOutPath} cleared)`);
 
-  return mm || tmm ? 1 : 0;
+  return mm || tmm || failedFiles.size ? 1 : 0;
 }
 
 process.exit(await main());

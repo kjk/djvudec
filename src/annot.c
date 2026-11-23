@@ -19,7 +19,12 @@ typedef struct {
     djvu_ctx *ctx;
     const char *s;
     size_t len, pos;
+    int depth;           /* current list nesting */
 } sparse;
+
+/* maparea forms nest 3-4 lists deep. parse_list/walk/snode_free recurse per
+   level, so an annotation of nothing but '(' would overflow the stack. */
+#define DJVU_MAX_SEXPR_DEPTH 64
 
 static void snode_free(djvu_ctx *ctx, snode *n)
 {
@@ -126,11 +131,14 @@ static snode *parse_node(sparse *sp);
 static snode *parse_list(sparse *sp)
 {
     djvu_ctx *ctx = sp->ctx;
-    snode *list = (snode *)djvu_alloc(ctx, sizeof(snode));
+    snode *list;
+    if (sp->depth >= DJVU_MAX_SEXPR_DEPTH) return NULL;
+    list = (snode *)djvu_alloc(ctx, sizeof(snode));
     if (!list) return NULL;
     memset(list, 0, sizeof(*list));
     list->kind = 0;
     sp->pos++;   /* opening paren */
+    sp->depth++;
     for (;;) {
         skip_ws(sp);
         if (sp->pos >= sp->len) break;
@@ -141,6 +149,7 @@ static snode *parse_list(sparse *sp)
             snode_add(sp, list, kid);
         }
     }
+    sp->depth--;
     return list;
 }
 
@@ -168,7 +177,6 @@ static int is_list_head(const snode *n, const char *head)
 
 typedef struct {
     djvu_ctx *ctx;
-    djvu_doc *doc;
     int page_h;
     djvu_link *links;
     int n, cap;
@@ -309,7 +317,7 @@ djvu_page_links *djvu_page_get_links(djvu_doc *doc, int page_no)
     if (!buf) return NULL;
 
     memset(&lc, 0, sizeof(lc));
-    lc.ctx = ctx; lc.doc = doc;
+    lc.ctx = ctx;
     lc.page_h = (djvu_doc_page_info(doc, page_no, &info) == 0) ? info.height : 0;
 
     memset(&sp, 0, sizeof(sp));

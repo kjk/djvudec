@@ -73,23 +73,25 @@ typedef struct {
     int *hcoord, *vcoord;
 } scaler;
 
-static void scaler_set_h(scaler *s, int numer, int denom)
+static int scaler_set_h(scaler *s, int numer, int denom)
 {
-    if (numer == 0 && denom == 0) { numer = s->outw; denom = s->inw; }
     s->hnum = numer; s->hden = denom;
     s->xshift = 0; s->redw = s->inw;
     while (numer + numer < denom) { s->xshift++; s->redw = (s->redw + 1) >> 1; numer <<= 1; }
     s->hcoord = (int *)djvu_alloc(s->ctx, sizeof(int) * s->outw);
+    if (!s->hcoord) return -1;
     prepare_coord(s->hcoord, s->redw, s->outw, denom, numer);
+    return 0;
 }
-static void scaler_set_v(scaler *s, int numer, int denom)
+static int scaler_set_v(scaler *s, int numer, int denom)
 {
-    if (numer == 0 && denom == 0) { numer = s->outh; denom = s->inh; }
     s->vnum = numer; s->vden = denom;
     s->yshift = 0; s->redh = s->inh;
     while (numer + numer < denom) { s->yshift++; s->redh = (s->redh + 1) >> 1; numer <<= 1; }
     s->vcoord = (int *)djvu_alloc(s->ctx, sizeof(int) * s->outh);
+    if (!s->vcoord) return -1;
     prepare_coord(s->vcoord, s->redh, s->outh, denom, numer);
+    return 0;
 }
 
 static void scaler_get_line(scaler *s, int fy, const djvu_cpix *in, int in_x0, int in_y0,
@@ -140,14 +142,6 @@ static void scaler_get_line(scaler *s, int fy, const djvu_cpix *in, int in_x0, i
             idx++;
         }
     }
-}
-
-static int cpix_init_uninit(djvu_ctx *ctx, djvu_cpix *p, int w, int h)
-{
-    djvu_free(ctx, p->d);
-    p->w = w; p->h = h;
-    p->d = (uint8_t *)djvu_alloc(ctx, (size_t)w * h * 3);
-    return p->d ? 0 : -1;
 }
 
 static uint8_t *scaler_dest_row(uint8_t *dst0, int stride, int outh,
@@ -501,8 +495,7 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
     uint32_t *hinfo32 = NULL;
 
     prepare_interp();
-    if (!s->hcoord) scaler_set_h(s, 0, 0);
-    if (!s->vcoord) scaler_set_v(s, 0, 0);
+    if (!s->hcoord || !s->vcoord) return -1;
     if (s->xshift == 0 && s->yshift == 0 &&
         s->hnum == 3 && s->hden == 1 && s->vnum == 3 && s->vden == 1 &&
         s->inw > 0 && s->inh > 0 &&
@@ -643,7 +636,7 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
 
 static int scaler_scale(scaler *s, const djvu_cpix *in, djvu_cpix *out)
 {
-    if (cpix_init_uninit(s->ctx, out, s->outw, s->outh) != 0) return -1;
+    if (djvu_cpix_init(s->ctx, out, s->outw, s->outh) != 0) return -1;
     return scaler_scale_into(s, in, out->d, s->outw * 3, 0);
 }
 
@@ -658,9 +651,7 @@ int djvu_cpix_init(djvu_ctx *ctx, djvu_cpix *p, int w, int h)
     djvu_free(ctx, p->d);
     p->w = w; p->h = h;
     p->d = (uint8_t *)djvu_alloc(ctx, (size_t)w * h * 3);
-    if (!p->d) return -1;
-    memset(p->d, 0, (size_t)w * h * 3);
-    return 0;
+    return p->d ? 0 : -1;
 }
 
 void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p)
@@ -677,16 +668,10 @@ int djvu_compute_red(int w, int h, int rw, int rh)
     return 0;
 }
 
-int djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
-                    int outw, int outh, int red)
-{
-    return djvu_cpix_scale_ratio(ctx, in, out, outw, outh, red, 1);
-}
-
 /* Scale by an arbitrary rational factor: output = input * numer/denom.
-   Generalizes djvu_cpix_scale (whose upscale factor `red` is numer/1) so a
-   reduced IW44 layer (reduction `red` vs the page) can be scaled straight to a
-   subsampled target with numer=red, denom=subsample -- including fractional
+   A reduced IW44 layer (reduction `red` vs the page) can be scaled straight to a
+   subsampled target with numer=red, denom=subsample (denom=1 is the plain
+   integer upscale by `red`) -- including fractional
    ratios (red=3, subsample=2) and downscales (subsample > red, handled by the
    scaler's power-of-two pre-reduction). */
 int djvu_cpix_scale_ratio(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
@@ -699,9 +684,9 @@ int djvu_cpix_scale_ratio(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
     s.inh = in->h;
     s.outw = outw;
     s.outh = outh;
-    scaler_set_h(&s, numer, denom);
-    scaler_set_v(&s, numer, denom);
-    if (scaler_scale(&s, in, out) != 0) { scaler_free(&s); return -1; }
+    if (scaler_set_h(&s, numer, denom) != 0 ||
+        scaler_set_v(&s, numer, denom) != 0 ||
+        scaler_scale(&s, in, out) != 0) { scaler_free(&s); return -1; }
     scaler_free(&s);
     return 0;
 }
@@ -717,9 +702,8 @@ int djvu_cpix_scale_to_topdown_rgb(djvu_ctx *ctx, const djvu_cpix *in,
     s.inh = in->h;
     s.outw = outw;
     s.outh = outh;
-    scaler_set_h(&s, red, 1);
-    scaler_set_v(&s, red, 1);
-    if (scaler_scale_into(&s, in, dst, stride, 1) != 0) {
+    if (scaler_set_h(&s, red, 1) != 0 || scaler_set_v(&s, red, 1) != 0 ||
+        scaler_scale_into(&s, in, dst, stride, 1) != 0) {
         scaler_free(&s);
         return -1;
     }

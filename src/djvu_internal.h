@@ -20,9 +20,7 @@
  * set. Amalgamation consumers may compile with plain `clang -std=c11 -c`.
  * Declare what we need when the system headers omit them. */
 #if !defined(CLOCK_MONOTONIC)
-#ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 1
-#endif
 int clock_gettime(int clock_id, struct timespec *tp);
 #endif
 #endif
@@ -291,24 +289,12 @@ iw_pixmap *djvu_doc_iw44_by_form_acquire(djvu_doc *doc, uint32_t form_off,
 /* Like djvu_doc_iw44_acquire but caller already holds djvu_cache_lock. */
 iw_pixmap *djvu_doc_iw44_acquire_under_lock(djvu_doc *doc, djvu_page_int *pg,
                                             const char *chunk_id);
-iw_pixmap *djvu_doc_iw44(djvu_doc *doc, int page_no, const char *chunk_id);
-iw_pixmap *djvu_doc_iw44_by_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id);
 jb2_image *djvu_doc_jb2_mask_acquire(djvu_doc *doc, int page_no, int *owned_out);
 void djvu_doc_jb2_mask_release(djvu_doc *doc, jb2_image *mask, int owned);
-void djvu_doc_drop_page_iw44(djvu_doc *doc, int page_no);
 /* Public wrappers also declared in djvu.h. */
 void djvu_doc_drop_page_cache(djvu_doc *doc, int page_no);
 size_t djvu_doc_page_cache_size(djvu_doc *doc, int page_no);
-void djvu_doc_preload_iw44_range(djvu_doc *doc, int lo0, int hi0);
-void djvu_doc_preload_jb2_range(djvu_doc *doc, int lo0, int hi0);
-void djvu_doc_preload_jb2_masks_range(djvu_doc *doc, int lo0, int hi0);
-void djvu_doc_preload_compose_bg_range(djvu_doc *doc, int lo0, int hi0);
 
-/* Cached JB2 dictionaries (read-only during render; freed in djvu_doc_close). */
-jb2_image *djvu_doc_jb2_mask(djvu_doc *doc, int page_no);
-jb2_image *djvu_doc_jb2_dict(djvu_doc *doc, const char *incl_id);
-jb2_image *djvu_doc_jb2_dict_inline(djvu_doc *doc, uint32_t form_off);
-jb2_image *djvu_doc_jb2_dict_for_form(djvu_doc *doc, uint32_t form_off);
 /* Resolve an INCL component id to its FORM file offset; 0 if not found. */
 uint32_t djvu_doc_component_offset(djvu_doc *doc, const char *id);
 
@@ -641,9 +627,6 @@ int djvu_bm_set_min_border(djvu_ctx *ctx, djvu_bitmap *bm, int value);
 /* tight bounding box of non-zero pixels; if empty, returns xmin>xmax. */
 void djvu_bm_bbox(const djvu_bitmap *bm, int *xmin, int *ymin, int *xmax, int *ymax);
 
-/* OR-blit src into dst at (dx,dy) (bottom-up coords), clamping to maxval. */
-void djvu_bm_blit(djvu_bitmap *dst, const djvu_bitmap *src, int dx, int dy, int maxval);
-
 /* DjVuLibre GBitmap::compress — drop raw bytes, keep RLE only. */
 void djvu_bm_compress(djvu_ctx *ctx, djvu_bitmap *bm);
 /* DjVuLibre GBitmap::uncompress — expand RLE to raw bytes. */
@@ -654,10 +637,8 @@ void djvu_bm_ensure_bytes(djvu_ctx *ctx, djvu_bitmap *bm);
    shapes, which concurrent renders read lock-free). Free with djvu_bm_free. */
 int djvu_bm_uncompress_copy(djvu_ctx *ctx, const djvu_bitmap *src, djvu_bitmap *dst);
 
-/* Call fn(user, px, py) for each ink pixel at page offset (left, bottom). */
-void djvu_bm_visit_ink(const djvu_bitmap *src, int left, int bottom,
-                       void (*fn)(void *user, int px, int py), void *user);
-/* Call fn(user, x0, x1, py) for each contiguous ink run [x0,x1). */
+/* Call fn(user, x0, x1, py) for each contiguous ink run [x0,x1) of src
+   placed at page offset (left, bottom). */
 void djvu_bm_visit_ink_runs(const djvu_bitmap *src, int left, int bottom,
                             void (*fn)(void *user, int x0, int x1, int py),
                             void *user);
@@ -768,8 +749,6 @@ int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray);
 int  djvu_cpix_init(djvu_ctx *ctx, djvu_cpix *p, int w, int h);
 void djvu_cpix_free(djvu_ctx *ctx, djvu_cpix *p);
 int  djvu_compute_red(int w, int h, int rw, int rh);
-int  djvu_cpix_scale(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
-                     int outw, int outh, int red);
 /* Scale by an arbitrary rational factor numer/denom (e.g. an IW44 layer at
    reduction `red` to a subsampled target: numer=red, denom=subsample). */
 int  djvu_cpix_scale_ratio(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,

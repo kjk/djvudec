@@ -77,6 +77,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         djvu_page_info info;
         djvu_image *img;
         char *text;
+        djvu_page_text_zones *zones;
+        djvu_page_links *links;
 
         djvu_doc_page_info(doc, i, &info);
 
@@ -88,6 +90,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
         text = djvu_page_text(doc, i);
         if (text) djvu_text_destroy(ctx, text);
+
+        /* separate parsers from the plain-text path above */
+        zones = djvu_page_text_get_zones(doc, i);
+        if (zones) djvu_text_zones_destroy(ctx, zones);
+
+        links = djvu_page_get_links(doc, i);
+        if (links) djvu_page_links_destroy(ctx, links);
     }
 
     outline = djvu_doc_outline(doc);

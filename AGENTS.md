@@ -232,7 +232,7 @@ bun cmd/build-prof.ts
   `buildFuzz()` uses `/opt/homebrew/opt/llvm/bin/clang` (override with
   `DJVUDEC_FUZZ_CLANG`). `test/fuzz_target.c` opens each input as a `.djvu`
   and drives the full decode surface (page info, render at full + 4x
-  subsample, page text, outline), capped at 20 pages/input. Builds into
+  subsample, page text + zone tree, links, outline), capped at 20 pages/input. Builds into
   `out/fuzz/djvudec_fuzz` (`.exe` on Windows) via `buildFuzz()`. First run
   seeds `fuzz/corpus/` from the deps/ corpus (files over `-max-len` skipped);
   the corpus dir **is** the checkpoint — kill to stop, rerun to resume.
@@ -348,7 +348,7 @@ Paths relative to `deps/DjvuNet/DjvuNet/`.
 | `iw44.c` | `Wavelet/InterWavePixelMapDecoder.cs`, `InterWaveMapDecoder.cs`, `InterWaveCodec.cs`, `InterWaveMap.cs`, `InterWaveBlock.cs`, `InterWaveBucket.cs`, `InterWaveImage.cs`; transform from `Wavelet/InterWaveTransform.cs` |
 | `iw44_zigzag.c` | zigzag/quant tables from `Wavelet/InterWaveCodec.cs` / `InterWaveMap.cs` |
 | `text.c` | `Text/PageText.cs`, `PageTextItem.cs`; chunks `DataChunks/TxtzChunk.cs`, `TxtaChunk.cs`; zone tree from `DataChunks/Text/TextChunk.cs`, `TextZone.cs` |
-| `outline.c` | `DataChunks/NavmChunk.cs`, `Navigation/Bookmark.cs` |
+| `outline.c` | `DataChunks/NavmChunk.cs`, `DataChunks/Navigation/Bookmark.cs` |
 | `annot.c` | annotation chunks (`DataChunks/AntaChunk.cs`, `AntzChunk.cs`); maparea S-expr parsing (DjVuLibre `ddjvu_anno_get_hyperlinks` equivalent) |
 | `scaler.c` | `Graphics/PixelMapScaler.cs` (`GPixmapScaler`) |
 | `compose.c` | `DjvuImage.cs` (composite/`GetPixmap`); pixel ops from `Graphics/PixelMap.cs`, `Pixel.cs` |

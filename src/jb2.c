@@ -67,7 +67,7 @@ typedef struct {
 
 /* ---------- jb2_image (dictionary + image) ---------- */
 
-jb2_image *jb2_image_new(djvu_ctx *ctx)
+static jb2_image *jb2_image_new(djvu_ctx *ctx)
 {
     jb2_image *im = (jb2_image *)djvu_alloc(ctx, sizeof(jb2_image));
     if (!im) return NULL;
@@ -477,10 +477,21 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
 
 /* ---------- library bookkeeping ---------- */
 
+/* Push onto one of the codec's library arrays; allocation failure fails the
+   decode (the arrays are indexed in lockstep, so a short one would be read
+   out of bounds). */
+static void lib_push(jb2_codec *c, int **arr, int *n, int *cap, int v)
+{
+    if (iarr_push(c->ctx, arr, n, cap, v) != 0)
+        c->error = 1;
+}
+
 static void shape2lib_set(jb2_codec *c, int shapeno, int libno)
 {
-    while (c->nshape2lib <= shapeno)
-        iarr_push(c->ctx, &c->shape2lib, &c->nshape2lib, &c->cap_shape2lib, -1);
+    while (c->nshape2lib <= shapeno) {
+        lib_push(c, &c->shape2lib, &c->nshape2lib, &c->cap_shape2lib, -1);
+        if (c->error) return;
+    }
     c->shape2lib[shapeno] = libno;
 }
 
@@ -508,13 +519,13 @@ static int add_library(jb2_codec *c, int shapeno, jb2_shape *jshp)
 {
     int libno = c->nlib2shape;
     int xmin, ymin, xmax, ymax;
-    iarr_push(c->ctx, &c->lib2shape, &c->nlib2shape, &c->cap_lib2shape, shapeno);
+    lib_push(c, &c->lib2shape, &c->nlib2shape, &c->cap_lib2shape, shapeno);
     shape2lib_set(c, shapeno, libno);
     shape_bbox(jshp, 1, &xmin, &ymin, &xmax, &ymax);
-    iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmin);
-    iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymin);
-    iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmax);
-    iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymax);
+    lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmin);
+    lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymin);
+    lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmax);
+    lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymax);
     return libno;
 }
 
@@ -526,17 +537,17 @@ static void init_library(jb2_codec *c, jb2_image *jim)
     for (i = 0; i < nshape; i++) {
         jb2_shape *jshp = djvu_jb2_get_shape(jim, i);
         int xmin, ymin, xmax, ymax;
-        iarr_push(c->ctx, &c->shape2lib, &c->nshape2lib, &c->cap_shape2lib, i);
-        iarr_push(c->ctx, &c->lib2shape, &c->nlib2shape, &c->cap_lib2shape, i);
+        lib_push(c, &c->shape2lib, &c->nshape2lib, &c->cap_shape2lib, i);
+        lib_push(c, &c->lib2shape, &c->nlib2shape, &c->cap_lib2shape, i);
         /* read-only: inherited shapes may be shared across threads. A crafted
            stream repeating StartOfData re-runs init_library, so the cached
            bbox also bounds that from O(records * shapes * pixels) rescans
            (fuzz slow-unit-32a1cc..., 77k SODs). */
         shape_bbox(jshp, 0, &xmin, &ymin, &xmax, &ymax);
-        iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmin);
-        iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymin);
-        iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmax);
-        iarr_push(c->ctx, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymax);
+        lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmin);
+        lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymin);
+        lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, xmax);
+        lib_push(c, &c->libinfo, &c->nlibinfo, &c->cap_libinfo, ymax);
     }
 }
 
@@ -707,8 +718,7 @@ static void code_rel_location(jb2_codec *c, jb2_blit *jblt, int rows, int column
 static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
 {
     int rectype = code_record_type(c);
-    int shape_parent_init = -1;
-    int have_shape = 0, have_blit = 0;
+    int have_shape = 0;
     int need_add_library = 0, need_add_blit = 0;
     jb2_shape tmp_shape;     /* working shape (bitmap) before insertion */
     jb2_blit blit;
@@ -718,22 +728,17 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
     memset(&tmp_shape, 0, sizeof(tmp_shape));
     memset(&blit, 0, sizeof(blit));
 
-    /* allocate working shape bitmap for record types that need one */
+    /* record types that decode a new shape bitmap */
     switch (rectype) {
     case REC_NewMark:
     case REC_NewMarkImageOnly:
     case REC_MatchedRefine:
     case REC_MatchedRefineImageOnly:
     case REC_NonMarkData:
-        have_blit = 1; /* fallthrough */
     case REC_NewMarkLibraryOnly:
     case REC_MatchedRefineLibraryOnly:
-        shape_parent_init = (rectype == REC_NonMarkData) ? -2 : -1;
-        tmp_shape.parent = shape_parent_init;
+        tmp_shape.parent = (rectype == REC_NonMarkData) ? -2 : -1;
         have_shape = 1;
-        break;
-    case REC_MatchedCopy:
-        have_blit = 1;
         break;
     }
 
@@ -847,10 +852,7 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
     if (c->error) { if (have_shape) djvu_bm_free(c->ctx, &tmp_shape.bm); return rectype; }
 
     /* commit shape / blit */
-    if (have_shape && (rectype == REC_NewMark || rectype == REC_NewMarkLibraryOnly ||
-                       rectype == REC_MatchedRefine || rectype == REC_MatchedRefineLibraryOnly ||
-                       rectype == REC_NewMarkImageOnly || rectype == REC_MatchedRefineImageOnly ||
-                       rectype == REC_NonMarkData)) {
+    if (have_shape) {
         int shapeno = img_add_shape(jim, tmp_shape.parent);
         if (shapeno < 0) { c->error = 1; djvu_bm_free(c->ctx, &tmp_shape.bm); return rectype; }
         jim->shapes[jim->nshapes - 1].bm = tmp_shape.bm;  /* move bitmap */
@@ -859,12 +861,12 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
             add_library(c, shapeno, &jim->shapes[jim->nshapes - 1]);
         if (need_add_blit) {
             blit.shapeno = shapeno;
-            img_add_blit(jim, blit);
+            /* a dropped blit would shift every later FGbz color index */
+            if (img_add_blit(jim, blit) != 0) c->error = 1;
         }
     } else if (rectype == REC_MatchedCopy) {
-        img_add_blit(jim, blit);
+        if (img_add_blit(jim, blit) != 0) c->error = 1;
     }
-    (void)have_blit;
 
     return rectype;
 }

@@ -132,6 +132,30 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- whole-project audit pass. Decoder fixes: stack overflow on crafted input in
+  the NAVM outline parser (chain of single-child bookmarks; a 78-byte file)
+  and the ANTa/ANTz s-expression parser (run of `(`; a 54-byte file) -- both
+  now depth-limited to 64, with regression seeds in `fuzz/crashes/`
+  (`crash-deep-navm-outline`, `crash-deep-antz-links`); bitonal subsample >= 16
+  used an 8-bit per-cell coverage counter that saturated (a 25%-covered cell
+  rendered black at subsample 32) -- now 16-bit (vs ddjvu at subsample 24 on
+  djvu2spec p2: mean abs diff 22.9 -> 8.1; the remainder is ddjvu's own
+  scaled path above subsample 12); FG44 layer leaked from `compose_to_bg`
+  when its pixmap alloc/render failed; `djvu_page_render_info(NULL, ...)`
+  dereferenced NULL; JB2 library-array allocation failure looped forever in
+  `shape2lib_set` / could leave `libinfo` short; scaler coord-table
+  allocation was unchecked; two left-shifts of negative values (zpcodec init
+  on empty input, BZZ BWT position packing). Removed unreferenced internals
+  (`djvu_doc_preload_*_range`, `djvu_doc_iw44{,_by_form}`,
+  `djvu_doc_drop_page_iw44`, `djvu_doc_jb2_{mask,dict,dict_inline,dict_for_form}`,
+  `djvu_bm_blit`, `djvu_bm_visit_ink`, `djvu_cpix_scale`), deduplicated the
+  FGbz palette parse, dropped redundant zero-fills (IW44 planes, cpix,
+  RLE white runs) and took `djvu_page_get_type` from the open-time chunk
+  index. Fuzz target now also drives `djvu_page_text_get_zones` and
+  `djvu_page_get_links`. `tests.ts`: a leak-only exit (4) is reported as a
+  leak instead of a retried "crash", and leaks/crashes now fail the run's
+  exit status. Corpus unchanged: render MATCH=2489 (+ the nasa001C oracle
+  quirk), text MATCH=1933; ASan `-rand 12` and `fuzz.ts -check-crashes` clean.
 - red=3 background-expansion speed pass on `deps/artifacts/test041C.djvu`
   (14 palette-compound pages, mostly 9094x5630): whole-document winperf
   profiling put `scaler_expand_row3` at 17.1% self / 31.9% inclusive, ahead

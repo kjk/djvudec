@@ -1,5 +1,5 @@
-/* render.c -- page rendering. Milestone 3: JB2 bitonal composite.
- * (color IW44 = milestone 5). */
+/* render.c -- page rendering: layer selection (JB2 mask / IW44 composite),
+ * bitonal rasterization, rotation, and the public render entry points. */
 #include "djvu_internal.h"
 #include <stdlib.h>
 #include <string.h>
@@ -120,16 +120,17 @@ static void bitonal_stamp_run(void *user, int x0, int x1, int py)
 }
 
 typedef struct {
-    uint8_t *acc;   /* per output-cell ink coverage count (capped at 255) */
+    uint16_t *acc;  /* per output-cell ink pixel count (saturating) */
     int sw, sh;     /* output (subsampled) dimensions */
     int h;          /* full-res height (for bottom-up -> top-down flip) */
     int sub;        /* subsample factor */
 } bitonal_acc_ctx;
 
-static void acc_add(uint8_t *cell, int n)
+/* Overlapping blits can count a pixel twice, so saturate. */
+static void acc_add(uint16_t *cell, int n)
 {
     int v = *cell + n;
-    *cell = (uint8_t)(v > 255 ? 255 : v);
+    *cell = (uint16_t)(v > 65535 ? 65535 : v);
 }
 
 /* Accumulate one ink run [x0, x1) into its subsampled output cells. Cells
@@ -141,7 +142,7 @@ static void bitonal_accum_run(void *user, int x0, int x1, int py)
 {
     bitonal_acc_ctx *c = (bitonal_acc_ctx *)user;
     int cy, cx0, cx1, xmax;
-    uint8_t *row;
+    uint16_t *row;
 
     if (py < 0 || py >= c->h) return;
     cy = c->sh - 1 - py / c->sub;
@@ -203,20 +204,17 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
        instead of O(full-res): the old path built and box-filtered a full-res
        bitmap, which was ~5x slower than the subsample==1 stamp. */
     {
-        uint8_t *acc;
+        uint16_t *acc;
         bitonal_acc_ctx c;
-        unsigned char lut[256];
-        int sub2 = subsample * subsample;
+        /* pixels per full cell; beyond subsample 255 the 16-bit counter
+           saturates, so cap the denominator with it */
+        long long cell = (long long)subsample * subsample;
+        int sub2 = cell > 65535 ? 65535 : (int)cell;
         size_t n = (size_t)sw * sh, k;
 
-        if (sub2 > 255) sub2 = 255; /* cap so a full cell maps to pure black */
-        acc = (uint8_t *)djvu_alloc(ctx, n);
+        acc = (uint16_t *)djvu_alloc(ctx, n * sizeof(uint16_t));
         if (!acc) { djvu_free(ctx, out->data); djvu_free(ctx, out); return NULL; }
-        memset(acc, 0, n);
-        for (k = 0; k < 256; k++) {
-            int cov = (int)k < sub2 ? (int)k : sub2;
-            lut[k] = (unsigned char)(255 - cov * 255 / sub2);
-        }
+        memset(acc, 0, n * sizeof(uint16_t));
         c.acc = acc; c.sw = sw; c.sh = sh; c.h = img->height; c.sub = subsample;
         for (i = 0; i < img->nblits; i++) {
             jb2_blit *b = &img->blits[i];
@@ -231,22 +229,36 @@ static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
                 djvu_bm_visit_ink_runs(&s->bm, b->left, b->bottom,
                                         bitonal_accum_run, &c);
         }
-        for (k = 0; k < n; k++) out->data[k] = lut[acc[k]];
+        if (sub2 <= 255) {
+            unsigned char lut[256];
+            for (k = 0; k < 256; k++) {
+                int cov = (int)k < sub2 ? (int)k : sub2;
+                lut[k] = (unsigned char)(255 - cov * 255 / sub2);
+            }
+            for (k = 0; k < n; k++)
+                out->data[k] = lut[acc[k] < 255 ? acc[k] : 255];
+        } else {
+            /* a cell holds more than 255 pixels: an 8-bit count (the old
+               accumulator) saturated and turned part-covered cells black */
+            for (k = 0; k < n; k++) {
+                int cov = acc[k] < sub2 ? acc[k] : sub2;
+                out->data[k] = (uint8_t)(255 - cov * 255 / sub2);
+            }
+        }
         djvu_free(ctx, acc);
     }
     return out;
 }
 
+/* INFO rotation applies at every subsample (tiled, cheap). */
 static djvu_image *apply_page_rotation(djvu_ctx *ctx, djvu_doc *doc, int page_no,
-                                       djvu_image *img, int subsample,
-                                       djvu_render_timings *t)
+                                       djvu_image *img, djvu_render_timings *t)
 {
     djvu_page_info pi;
     int k;
     djvu_image *r;
     double t0 = 0.0;
 
-    (void)subsample; /* rotation applies at every subsample (tiled, cheap) */
     if (!img) return img;
     if (djvu_doc_page_info(doc, page_no, &pi) != 0 || pi.rotation == 0) return img;
     k = rotation_quarter_turns(pi.rotation);
@@ -317,7 +329,7 @@ static djvu_image *page_render_timed_impl(djvu_doc *doc, int page_no, int subsam
 
 done:
     djvu_doc_jb2_mask_release(doc, mask, mask_owned);
-    return apply_page_rotation(ctx, doc, page_no, out, subsample, t);
+    return apply_page_rotation(ctx, doc, page_no, out, t);
 }
 
 djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
@@ -357,14 +369,16 @@ static int render_plan(djvu_doc *doc, int page_no, int subsample,
                        int *pw, int *ph, djvu_format *pfmt, int *pcolor,
                        int *protation)
 {
-    djvu_ctx *ctx = doc->ctx;
+    djvu_ctx *ctx;
     uint32_t form_off, sz;
     djvu_page_type type;
     djvu_page_info pi;
     int info_ok, has_bg, has_mask, color, w, h, k;
     djvu_format fmt;
 
+    /* djvu_page_render_info reaches here with an unchecked doc */
     if (!doc || page_no < 0 || page_no >= doc->npages) return -1;
+    ctx = doc->ctx;
     if (subsample < 1) subsample = 1;
     form_off = doc->pages[page_no].form_off;
     type = djvu_page_get_type(doc, page_no);
