@@ -1340,17 +1340,20 @@ static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
     return 0;
 }
 
-int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
-{
-    return iw44_render_rgb_impl(pm, rgb, 1);
-}
 int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb)
 {
     return iw44_render_rgb_impl(pm, rgb, 0);
 }
 
-/* debug: render a single plane (0=Y,1=Cb,2=Cr) as gray (value+128), using the
-   same fast flag the pixmap would use for that plane. */
+/* DJVU_DEBUG_ONLY_BEGIN */
+/* Test-harness only (src/debug.c); not in dist/djvu.c. */
+int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
+{
+    return iw44_render_rgb_impl(pm, rgb, 1);
+}
+
+/* Render a single plane (0=Y,1=Cb,2=Cr) as gray (value+128), using the same
+   fast flag the pixmap would use for that plane. */
 int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray)
 {
     djvu_ctx *ctx; int w, h, i; int8_t *bytes; iw_map *m; int fast;
@@ -1367,4 +1370,4 @@ int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray)
     djvu_free(ctx, bytes);
     return 0;
 }
-
+/* DJVU_DEBUG_ONLY_END */

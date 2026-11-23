@@ -115,10 +115,12 @@ bun cmd/build-prof.ts
   runs its `-bench` mode to compare our per-page render speed against
   DjVuLibre's (`ddjvuapi` `page_render`: decode + composite + rotation; same
   `steady_clock` both sides). The amalgamation is generated into
-  `out/amalg/djvu.{h,c}` (refreshed when `src/` is newer) and the harness is
+  `out/amalg_debug/djvu.{h,c}` (the *debug* amalgamation: all modules incl.
+  `src/debug.c`, `DJVU_DEBUG_ONLY` regions kept; refreshed when `src/` is
+  newer) and the harness is
   `out/msvc_bench/djvu_bench_msvc.exe` / `out/clang_bench/djvu_bench_clang`;
   bench never reads or writes `dist/`, never builds WASM, and does not share
-  an exe with `build()`. `-clean` removes only `out/amalg` and the bench dir.
+  an exe with `build()`. `-clean` removes only `out/amalg_debug` and the bench dir.
   The harness prints a table (`op libdjvu djvudec diff %diff`, rows open / page
   N / close / total; `+` diff = we're slower); `bench.ts` condenses it to
   per-file totals plus the 10 slowest pages (`-verbose` for every page).
@@ -312,6 +314,12 @@ bun cmd/build-prof.ts
   per-page caching off and on; checks no partial image, no leak, and that the
   next render still matches). Also covers `djvu_ctx_set_no_compose` /
   `djvu_ctx_set_iw_max_chunks`.
+- `bun cmd/thread.ts -abort [-cpu N] [-nops N] [-tsan] file.djvu` — cross-thread
+  abort test (`djvudec_thread -abort`; see thread-safety.md): token and
+  ctx-wide aborts plus page-cache drops from another thread while workers
+  render; every render must be "aborted" or identical to a reference, and the
+  document must render identically afterwards. In CI on Windows and Linux
+  (and under TSan on Linux).
 - `bun cmd/test-cache-race.ts <file.djvu ... | -rand N | -all> [-secs N]
   [-sub N] [-cpu N] [-no-asan] [-tsan] [-clang]` — builds `test/crash_cache_race.c`
   (clang + ASan by default: `out/clang_asan/crash_cache_race_asan`) and races
@@ -341,9 +349,14 @@ Known oracle-only differences (not decode bugs; CI skips both files under `CI=tr
 - `bun cmd/build-dist.ts` — generates an SQLite-style amalgamation in `dist/`:
   `dist/djvu.h` (public header) and `dist/djvu.c` (the public header +
   `djvu_internal.h` + every `src/*.c` except `src/debug.c` concatenated into
-  one translation unit (`DIST_SRCS` in `cmd/util.ts`; the `djvu_debug_*`
-  dumps are harness-only and not shipped -- the bench harness, which builds
-  from the amalgamation, links `src/debug.c` as a separate object),
+  one translation unit (`DIST_SRCS` in `cmd/util.ts`). Test-harness-only code
+  is not shipped: `src/debug.c` is left out, and every region between
+  `/* DJVU_DEBUG_ONLY_BEGIN */` and `/* DJVU_DEBUG_ONLY_END */` lines (the
+  `djvu_debug_*` declarations in `djvu_internal.h`, the IW44 helpers only
+  `debug.c` calls) is removed; unbalanced markers fail the build. Mark any new
+  harness-only code the same way. (The bench harness builds from a *debug*
+  amalgamation instead -- `writeAmalgamation(dir, { debug: true })` -- which
+  keeps both.)
   with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped,
   comments removed, LF only, trailing whitespace stripped, and at most one
   blank line in a row). The script verifies the result with `clang -c` (and

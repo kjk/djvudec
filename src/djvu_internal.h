@@ -759,16 +759,21 @@ int djvu_iw44_is_color(iw_pixmap *pm);
 /* Approximate heap bytes owned by pm (maps + codecs). */
 size_t djvu_iw44_mem_size(const iw_pixmap *pm);
 
-/* Render full-resolution. `rgb` must hold width*height*3 bytes (R,G,B order).
-   Gray images are expanded to gray RGB. Returns 0 on success. */
-int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb);
-
-/* Like render_rgb but bottom-up (row 0 = bottom), matching DjVuLibre's internal
-   GPixmap orientation; used by the compositor. */
+/* Render full-resolution, bottom-up (row 0 = bottom), matching DjVuLibre's
+   internal GPixmap orientation; used by the compositor. `rgb` must hold
+   width*height*3 bytes (R,G,B order). Gray images are expanded to gray RGB.
+   Returns 0 on success. */
 int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb);
 
-/* debug: render plane 0=Y,1=Cb,2=Cr as gray (value+128). */
+/* DJVU_DEBUG_ONLY_BEGIN */
+/* Test-harness only (src/debug.c). Everything between the DJVU_DEBUG_ONLY
+   markers -- here and in the .c files -- is removed from the shipped
+   amalgamation (dist/djvu.c) by cmd/build-dist.ts. */
+/* Like render_rgb_raw but top-down. */
+int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb);
+/* Render plane 0=Y,1=Cb,2=Cr as gray (value+128). */
 int djvu_iw44_render_plane(iw_pixmap *pm, int plane, uint8_t *gray);
+/* DJVU_DEBUG_ONLY_END */
 
 /* ===================================================================== */
 /* scaler.c -- GPixmapScaler bilinear upsampler (compose background path) */
@@ -827,8 +832,10 @@ int djvu_compose_page_into(djvu_doc *doc, int page_no, jb2_image *mask,
 djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
                                    djvu_render_timings *t);
 
+/* DJVU_DEBUG_ONLY_BEGIN */
 /* ===================================================================== */
-/* debug.c -- test-harness helpers (not part of the public API)           */
+/* debug.c -- test-harness helpers (not part of the public API; not in    */
+/* dist/djvu.c, see DJVU_DEBUG_ONLY above)                                */
 /* ===================================================================== */
 
 void djvu_debug_dump_comps(djvu_doc *doc);
@@ -839,5 +846,6 @@ int djvu_debug_dump_iw(djvu_doc *doc, int page_no, int kind, const char *path);
 
 /* Per-page verify memory snapshot (stderr; test harness only). */
 void djvu_debug_verify_mem(djvu_doc *doc, int page_no, const char *stage, FILE *out);
+/* DJVU_DEBUG_ONLY_END */
 
 #endif /* DJVU_INTERNAL_H */

@@ -270,6 +270,21 @@ static djvu_image *apply_page_rotation(djvu_ctx *ctx, djvu_doc *doc, int page_no
     return img;
 }
 
+/* Abort safety net, applied at every public render exit: if an abort was
+   requested at any point during the render, report the render as aborted even
+   if it ran to the end. A layer decode that stops at an abort checkpoint
+   returns NULL, which some callers cannot tell from "this page has no such
+   layer" (e.g. a missing FG44 would composite as black ink); without this the
+   render could return a wrong image instead of failing. */
+static djvu_image *render_discard_if_aborted(djvu_ctx *ctx, djvu_image *img)
+{
+    if (img && djvu_aborted(ctx)) {
+        djvu_image_destroy(ctx, img);
+        return NULL;
+    }
+    return img;
+}
+
 /* Body of djvu_page_render_timed; the public entry points wrap it in
    djvu_render_begin/djvu_render_end (which scope the per-render abort token). */
 static djvu_image *page_render_timed_impl(djvu_doc *doc, int page_no, int subsample,
@@ -340,6 +355,7 @@ djvu_image *djvu_page_render_timed(djvu_doc *doc, int page_no, int subsample,
     if (!doc) return NULL;
     djvu_render_begin(doc->ctx, NULL);
     out = page_render_timed_impl(doc, page_no, subsample, t);
+    out = render_discard_if_aborted(doc->ctx, out);
     djvu_render_end();
     return out;
 }
@@ -357,6 +373,7 @@ djvu_image *djvu_page_render_abortable(djvu_doc *doc, int page_no, int subsample
     if (!doc) return NULL;
     djvu_render_begin(doc->ctx, ab);
     out = page_render_timed_impl(doc, page_no, subsample, NULL);
+    out = render_discard_if_aborted(doc->ctx, out);
     djvu_render_end();
     return out;
 }
@@ -493,6 +510,7 @@ int djvu_page_render_into(djvu_doc *doc, int page_no, int subsample,
     if (!dst || !doc || !doc->ctx) return -1;
     djvu_render_begin(doc->ctx, NULL);
     rc = page_render_into_impl(doc, page_no, subsample, dst, stride);
+    if (rc == 0 && djvu_aborted(doc->ctx)) rc = -1;   /* see render_discard_if_aborted */
     djvu_render_end();
     return rc;
 }
@@ -506,6 +524,7 @@ int djvu_page_render_into_abortable(djvu_doc *doc, int page_no, int subsample,
     if (!dst || !doc || !doc->ctx) return -1;
     djvu_render_begin(doc->ctx, ab);
     rc = page_render_into_impl(doc, page_no, subsample, dst, stride);
+    if (rc == 0 && djvu_aborted(doc->ctx)) rc = -1;   /* see render_discard_if_aborted */
     djvu_render_end();
     return rc;
 }

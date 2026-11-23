@@ -12,7 +12,7 @@
 //                src/*.c compiled per file -- the verifier (tests.ts)
 //   buildBench() out/msvc_bench/djvu_bench_msvc.exe |
 //                out/clang_bench/djvu_bench_clang[.exe]
-//                the single-file amalgamation, generated into out/amalg/ (NOT
+//                the single-file amalgamation, generated into out/amalg_debug/ (NOT
 //                dist/) -- the benchmark (bench.ts)
 //   buildAsan()  out/clang_asan/djvu_test_clang_asan[.exe] -- tests.ts -asan
 //
@@ -27,7 +27,6 @@ import { DJVULIBRE_DIR, getDeps } from "./get-deps";
 import {
   binName,
   clangCFlags,
-  DEBUG_SRC,
   defaultUseClang,
   DJVUDEC_MSVC_CL_C,
   headerDeps,
@@ -148,7 +147,9 @@ const stepStale = (s: Step) => needsRebuild(s.out, ...s.inputs);
 
 type Harness = { name: string; dir: string; exe: string; steps: Step[] };
 
-const AMALG_DIR = `${OUT_ROOT}/amalg`;
+// Debug amalgamation for the bench harness (see harnessPlan): its own dir so a
+// shipped-style amalgamation left in out/amalg by an older build is never reused.
+const AMALG_DIR = `${OUT_ROOT}/amalg_debug`;
 const TEST_C = `${ROOT}/test/djvu_test.c`;
 const SHIM_CPP = `${ROOT}/test/bench_ddjvu.cpp`;
 
@@ -204,13 +205,12 @@ function harnessPlan(flavour: Flavour, useClang: boolean): Harness {
 
   // The decoder: src/*.c one object each, or the amalgamation as one object.
   // djvu_test.c also includes djvu_internal.h (debug + BZZ hooks), from src/.
-  // The amalgamation does not contain src/debug.c (consumers don't ship the
-  // djvu_debug_* dumps), so the bench build compiles it as a separate object
-  // against the same headers the amalgamation was generated from.
+  // The bench build uses the *debug* amalgamation (out/amalg_debug: all modules
+  // incl. src/debug.c, DJVU_DEBUG_ONLY regions kept), because djvu_test calls
+  // the djvu_debug_* hooks; the shipped dist/djvu.c has none of that.
   if (flavour === "bench") {
     const a = { h: `${AMALG_DIR}/djvu.h`, c: `${AMALG_DIR}/djvu.c` };
     compileC(a.c, `${dir}/djvu.${ext}`, [AMALG_DIR], [a.h]);
-    compileC(`${ROOT}/${DEBUG_SRC}`, `${dir}/${objBase(DEBUG_SRC)}.${ext}`, [`${ROOT}/src`], LIB_HEADERS);
     compileC(TEST_C, `${dir}/djvu_test.${ext}`, [AMALG_DIR, `${ROOT}/src`], [a.h, ...headerDeps(TEST_C)]);
   } else {
     for (const s of LIB_SRCS) {
@@ -261,7 +261,7 @@ async function buildHarness(flavour: Flavour, useClang: boolean): Promise<string
     throw new Error("MSVC build requires Windows; use clang on Unix");
   }
   await buildLibDjvu();
-  if (flavour === "bench") ensureAmalgamation(AMALG_DIR);
+  if (flavour === "bench") ensureAmalgamation(AMALG_DIR, { debug: true });
   const h = harnessPlan(flavour, useClang);
   mkdirSync(h.dir, { recursive: true });
 
@@ -269,7 +269,7 @@ async function buildHarness(flavour: Flavour, useClang: boolean): Promise<string
     console.log(`${h.name} up to date`);
   } else {
     const what = flavour === "asan" ? "clang+asan" : useClang ? "clang" : "msvc";
-    const from = flavour === "bench" ? ", out/amalg amalgamation" : "";
+    const from = flavour === "bench" ? ", out/amalg_debug amalgamation" : "";
     console.log(`building ${h.name} (${what}${from})...`);
     // Re-check each step as we reach it: a recompiled object makes the link stale.
     for (const s of h.steps) {
@@ -291,14 +291,14 @@ export function build(useClang = defaultUseClang): Promise<string> {
 // Build the same harness from the single-file amalgamation, for bench.ts
 // (`-bench` / `-bench-sum`): the amalgamation is what consumers ship, and one
 // translation unit is what the optimizer sees there. The amalgamation is
-// generated into out/amalg/ by the same code as build-dist.ts and refreshed
+// generated into out/amalg_debug/ by the same code as build-dist.ts and refreshed
 // when src/ is newer; the tracked dist/ files are never read or written, and
 // no WASM build is triggered.
 export function buildBench(useClang = defaultUseClang): Promise<string> {
   return buildHarness("bench", useClang);
 }
 
-/** Remove only the bench build (out/amalg + this toolchain's bench dir). */
+/** Remove only the bench build (out/amalg_debug + this toolchain's bench dir). */
 export function cleanBenchOutput(useClang = defaultUseClang): void {
   rmSync(AMALG_DIR, { recursive: true, force: true });
   rmSync(harnessDir("bench", useClang), { recursive: true, force: true });

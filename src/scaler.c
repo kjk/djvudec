@@ -323,7 +323,12 @@ static int scaler_scale_red3_into(scaler *s, const djvu_cpix *in,
                        scaler_dest_row(dst0, stride, s->outh, topdown, 0));
     for (y = 0; y < h - 1; y++) {
         const uint8_t *lower = in->d + (size_t)y * row;
-        const uint8_t *upper = lower + row;
+        const uint8_t *upper;
+        if ((y & 31) == 0 && djvu_aborted(ctx)) {   /* 3 output rows per y */
+            djvu_free(ctx, tmp);
+            return -1;
+        }
+        upper = lower + row;
 
         scaler_expand_row3(lower, w, outw,
                            scaler_dest_row(dst0, stride, s->outh, topdown,
@@ -544,7 +549,16 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
     }
 
     for (y = 0; y < s->outh; y++) {
-        int fy = s->vcoord[y];
+        int fy;
+        /* abort checkpoint: scaling a cached background is the bulk of a
+           cached photo-page render */
+        if ((y & 63) == 0 && djvu_aborted(ctx)) {
+            djvu_free(ctx, hinfo16);
+            djvu_free(ctx, hinfo32);
+            djvu_free(ctx, lbuf); djvu_free(ctx, p1); djvu_free(ctx, p2);
+            return -1;
+        }
+        fy = s->vcoord[y];
         int fy1 = fy >> FRACBITS, fy2 = fy1 + 1;
         const uint8_t *lower, *upper;
         uint8_t *dest;
@@ -686,7 +700,13 @@ int djvu_cpix_scale_ratio(djvu_ctx *ctx, const djvu_cpix *in, djvu_cpix *out,
     s.outh = outh;
     if (scaler_set_h(&s, numer, denom) != 0 ||
         scaler_set_v(&s, numer, denom) != 0 ||
-        scaler_scale(&s, in, out) != 0) { scaler_free(&s); return -1; }
+        scaler_scale(&s, in, out) != 0) {
+        /* never leave a half-written pixmap behind: the page cache treats a
+           non-NULL bg_scaled as complete */
+        djvu_cpix_free(ctx, out);
+        scaler_free(&s);
+        return -1;
+    }
     scaler_free(&s);
     return 0;
 }

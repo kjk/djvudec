@@ -6,10 +6,10 @@
 //
 // Builds the bench harness with buildBench() (cmd/build.ts): the djvu_test
 // sources compiled against the single-file amalgamation, which is generated
-// into out/amalg/ (refreshed when src/ is newer) and linked with DjVuLibre via
+// into out/amalg_debug/ (refreshed when src/ is newer) and linked with DjVuLibre via
 // test/bench_ddjvu.cpp -> out/<msvc|clang>_bench/djvu_bench_<msvc|clang>[.exe].
 // Nothing under dist/ is read or written and no WASM build is triggered; only
-// `bun cmd/build-dist.ts` touches dist/. `-clean` removes out/amalg and the
+// `bun cmd/build-dist.ts` touches dist/. `-clean` removes out/amalg_debug and the
 // toolchain's bench dir first (not the rest of out/).
 //
 // Then runs `djvu_bench -bench` on each selected file. Session benchmark: open
@@ -113,7 +113,7 @@ options:
                   instead of the bare full-res djvu_page_render
   -verbose        print full per-file table (open/pages/close/total + allocs)
   -clang          build with clang instead of MSVC
-  -clean          rebuild the bench harness from scratch (out/amalg + bench dir)
+  -clean          rebuild the bench harness from scratch (out/amalg_debug + bench dir)
 
 Default: dir headers (deps/...), then basename lines (libdjvu djvudec diff %diff file),
 ends with a "total" line (sum of per-file totals), then elapsed and top 10
@@ -123,7 +123,7 @@ ${corpusSummary()}`,
 );
 
 if (doClean) {
-  console.log("clean: removing the bench build (out/amalg + bench dir)...");
+  console.log("clean: removing the bench build (out/amalg_debug + bench dir)...");
   cleanBenchOutput(useClang);
 }
 await buildRef();

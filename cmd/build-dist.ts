@@ -33,6 +33,7 @@ import {
   INTERNAL_H,
   isWindows,
   DIST_SRCS,
+  LIB_SRCS,
   msvcFd,
   needsRebuild,
   PUBLIC_H,
@@ -48,15 +49,43 @@ export function amalgPaths(dir: string): { h: string; c: string } {
   return { h: `${dir}/djvu.h`, c: `${dir}/djvu.c` };
 }
 
+// An amalgamation is either the shipped one (dist/: DIST_SRCS, i.e. no
+// src/debug.c, with every DJVU_DEBUG_ONLY region removed) or a debug one
+// (all of LIB_SRCS, debug regions kept) -- the bench harness builds from the
+// latter because djvu_test calls the djvu_debug_* hooks.
+export type AmalgOpts = { debug?: boolean };
+
+function amalgSrcs(opts: AmalgOpts): string[] {
+  return opts.debug ? LIB_SRCS : DIST_SRCS;
+}
+
 // Inputs, in concatenation order: public header, internal header, then the
-// modules in DIST_SRCS order (see util.ts -- the order is the layout of
-// djvu.c). src/debug.c (test-harness dumps) is deliberately not shipped.
-const AMALG_INPUTS = [PUBLIC_H, INTERNAL_H, ...DIST_SRCS.map((s) => `${ROOT}/${s}`)];
+// modules in source-list order (see util.ts -- the order is the layout of
+// djvu.c).
+function amalgInputs(opts: AmalgOpts): string[] {
+  return [PUBLIC_H, INTERNAL_H, ...amalgSrcs(opts).map((s) => `${ROOT}/${s}`)];
+}
 
 /** True when dir/djvu.h or dir/djvu.c is missing or older than any src/ input. */
-export function amalgOutdated(dir: string): boolean {
+export function amalgOutdated(dir: string, opts: AmalgOpts = {}): boolean {
   const { h, c } = amalgPaths(dir);
-  return needsRebuild(h, ...AMALG_INPUTS) || needsRebuild(c, ...AMALG_INPUTS);
+  const inputs = amalgInputs(opts);
+  return needsRebuild(h, ...inputs) || needsRebuild(c, ...inputs);
+}
+
+// Remove test-harness-only code: everything between a
+// `/* DJVU_DEBUG_ONLY_BEGIN */` and the next `/* DJVU_DEBUG_ONLY_END */` line
+// (djvu_debug_* declarations, IW44 helpers only src/debug.c calls). Runs on
+// each file before comments are stripped, since the markers are comments.
+function stripDebugOnly(text: string, file: string): string {
+  const out = text.replace(
+    /^[ \t]*\/\* DJVU_DEBUG_ONLY_BEGIN \*\/[ \t]*\r?\n[\s\S]*?^[ \t]*\/\* DJVU_DEBUG_ONLY_END \*\/[ \t]*\r?\n?/gm,
+    "",
+  );
+  if (/DJVU_DEBUG_ONLY_(BEGIN|END)/.test(out)) {
+    throw new Error(`${file}: unbalanced DJVU_DEBUG_ONLY markers`);
+  }
+  return out;
 }
 
 // Drop a local-quote include of one of the named headers (system <...>
@@ -165,7 +194,7 @@ function stripCComments(code: string): string {
 const rel = (p: string) => relative(ROOT, p).replaceAll("\\", "/");
 
 /** Generate the amalgamation (djvu.h + djvu.c) into `dir`. Writes nothing else. */
-export function writeAmalgamation(dir: string): { h: string; c: string } {
+export function writeAmalgamation(dir: string, opts: AmalgOpts = {}): { h: string; c: string } {
   mkdirSync(dir, { recursive: true });
   const { h, c } = amalgPaths(dir);
 
@@ -173,10 +202,11 @@ export function writeAmalgamation(dir: string): { h: string; c: string } {
   writeFileSync(h, publicHeader);
 
   const parts: string[] = [publicHeader];
-  parts.push(stripIncludes(readFileSync(INTERNAL_H, "utf8"), ["djvu\.h"]));
-  for (const src of DIST_SRCS) {
+  const prep = (text: string, file: string) => (opts.debug ? text : stripDebugOnly(text, file));
+  parts.push(prep(stripIncludes(readFileSync(INTERNAL_H, "utf8"), ["djvu\.h"]), INTERNAL_H));
+  for (const src of amalgSrcs(opts)) {
     const code = readFileSync(`${ROOT}/${src}`, "utf8");
-    parts.push(stripIncludes(code, ["djvu_internal\.h", "djvu\.h"]));
+    parts.push(prep(stripIncludes(code, ["djvu_internal\.h", "djvu\.h"]), src));
   }
 
   // Final pass also collapses blank runs left at module boundaries.
@@ -185,14 +215,14 @@ export function writeAmalgamation(dir: string): { h: string; c: string } {
 
   console.log(`wrote ${rel(h)} (${publicHeader.split("\n").length} lines)`);
   console.log(
-    `wrote ${rel(c)} (${amalgamated.split("\n").length} lines, ${DIST_SRCS.length} modules)`,
+    `wrote ${rel(c)} (${amalgamated.split("\n").length} lines, ${amalgSrcs(opts).length} modules${opts.debug ? ", debug" : ""})`,
   );
   return { h, c };
 }
 
 /** Regenerate dir/djvu.{h,c} only when src/ is newer (no verify, no WASM). */
-export function ensureAmalgamation(dir: string): { h: string; c: string } {
-  if (amalgOutdated(dir)) return writeAmalgamation(dir);
+export function ensureAmalgamation(dir: string, opts: AmalgOpts = {}): { h: string; c: string } {
+  if (amalgOutdated(dir, opts)) return writeAmalgamation(dir, opts);
   return amalgPaths(dir);
 }
 

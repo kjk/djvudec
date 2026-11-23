@@ -70,7 +70,10 @@ static int compose_bg_native_build(djvu_doc *doc, djvu_page_int *pg)
     h = pg->info.height;
     if (!pg->bg_scaled.d &&
         compose_background_from_native(ctx, &pg->bg_native, w, h, 1, &pg->bg_scaled) != 0) {
+        /* drop both: a later render must rebuild from scratch, never reuse a
+           partial bg_scaled (e.g. a scale stopped at an abort checkpoint) */
         djvu_cpix_free(ctx, &pg->bg_native);
+        djvu_cpix_free(ctx, &pg->bg_scaled);
         return -1;
     }
     return 0;
@@ -281,6 +284,10 @@ static int compose_stencil_sub(djvu_ctx *ctx, djvu_cpix *bg, jb2_image *mask,
         jb2_blit *b = &mask->blits[i];
         jb2_shape *s = djvu_jb2_get_shape(mask, b->shapeno);
         compose_acc_ctx c;
+        if ((i & 63) == 0 && djvu_aborted(ctx)) {   /* like the subsample-1 loop */
+            djvu_free(ctx, acc);
+            return -1;
+        }
         int bx0, by0, bx1, by1, cx0, cy0, tw, th, tx, ty;
         int has_pal = 0, palr = 0, palg = 0, palb = 0;
 
@@ -754,9 +761,14 @@ static int compose_to_bg(djvu_doc *doc, int page_no, jb2_image *mask,
                      djvu_iw44_render_rgb_raw(fgpm, fgnat.d) == 0;
         }
         if (t) t->iw44_ms += djvu_bench_now_ms() - tfg;
+        /* An aborted FG44 decode also comes back NULL / unrendered; it must
+           fail the composite, not composite the page without its foreground. */
+        if (djvu_aborted(ctx)) stencil_rc = -1;
     }
 
-    if (subsample > 1) {
+    if (stencil_rc != 0) {
+        /* aborted above: skip the stencil, clean up below */
+    } else if (subsample > 1) {
         stencil_rc = compose_stencil_sub(ctx, &bg, mask, width, height, subsample,
                                          pal, palsize, colordata, ncolor,
                                          &fgnat, fgred, has_fg);

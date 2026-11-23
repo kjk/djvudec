@@ -103,7 +103,12 @@ every 64 blits in the bitonal and composite loops, at composite entry, once
 per IW44 slice and around each IW44 plane's inverse transform), so a late
 request may let the render complete. JB2 decode polls once per record and
 every 64 rows inside a shape bitmap (mask and lazily decoded shared
-dictionaries alike). An aborted JB2 or IW44 decode
+dictionaries alike); the scaler polls every 64 output rows, so renders from
+cached layers are abortable too. Safety net: every public render entry point
+reports the render as aborted if an abort was requested at any point during
+it, even if it ran to the end -- a decode that stops at a checkpoint returns
+NULL, which a caller could otherwise mistake for "this page has no such
+layer" and composite without it. An aborted JB2 or IW44 decode
 is partial and is never stored in the page or dictionary cache; the next
 render decodes it again.
 `djvu_aborted` only reports an abort on a thread that is inside a render call
@@ -127,6 +132,20 @@ then runs `-nops` random operations (default 256) across `-cpu` worker threads
 (default `processor_count / 2`). Each op picks a random page and one of: render,
 text, text zones, links. Exits 0 if all operations succeed, 1 otherwise.
 
+`djvudec_thread -abort` (`bun cmd/thread.ts -abort file.djvu`) is the
+cross-thread abort test, modelled on SumatraPDF cancelling renders from its UI
+thread: workers render random pages (subsample 1 and 3, `render` and
+`render_into`) through the `_abortable` variants, while an aborter thread
+requests aborts on in-flight tokens, calls `djvu_request_abort(ctx)` once
+per 50 renders started, and evicts random pages with `djvu_doc_drop_page_cache`
+(forcing re-decodes, so aborts land inside layer decodes). Every render must
+return "aborted" or output identical to a reference rendered up front; after
+the run every sampled page must render identically again; and both outcomes
+must occur, so the test cannot pass vacuously. It found two bugs on its first
+runs: an abort during the FG44 decode made the compositor treat the page as
+having no foreground and return a wrong image, and a scale stopped by an abort
+left a half-written background in the page cache that later renders reused.
+
 `bun cmd/stress-test.ts <dir | file.djvu ... | -rand N>` (`djvudec_stress`,
 ASan by default) renders every page of the selected files from N threads with
 per-page caching, the way SumatraPDF's render threads do.
@@ -137,6 +156,6 @@ for the cached-layer refcounts).
 ThreadSanitizer: `stress-test.ts -tsan`, `thread.ts -tsan` and
 `test-cache-race.ts -tsan` build those harnesses with clang
 `-fsanitize=thread` (`out/clang_tsan/`). Linux/macOS only (clang has no TSan
-on Windows); CI runs all three on Linux. Not yet covered: a render aborted
-from another thread (the abort-token flag is accessed with atomic builtins
-for this reason, but no harness requests an abort cross-thread).
+on Windows); CI runs all three on Linux, including `thread.ts -tsan -abort`
+(the abort-token flag is accessed with atomic builtins so that a request from
+another thread is not a data race).

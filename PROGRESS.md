@@ -137,6 +137,30 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- cross-thread abort test (`djvudec_thread -abort`, `bun cmd/thread.ts -abort`):
+  workers render through the `_abortable` variants while another thread fires
+  token aborts, ctx-wide aborts and page-cache drops; renders must be "aborted"
+  or identical to a reference. It found two bugs on its first runs:
+  * an abort during the FG44 decode (IW44 checkpoints, 05c9e48 -- already in
+    the pushed dist/) made `compose_to_bg` treat the page as having no
+    foreground: at subsample > 1 (no stencil checkpoint) the render returned
+    a WRONG image instead of failing. Fixed by an explicit check after the FG
+    acquire, a checkpoint in `compose_stencil_sub`, and a safety net at every
+    public render exit (a render that saw an abort reports aborted);
+  * once the scaler got an abort checkpoint, a background scale stopped
+    midway left a half-written `bg_scaled` in the page cache (non-NULL =
+    "complete"), so later renders of that page were wrong for good. Before
+    this change that path was reachable only on out-of-memory. Fixed:
+    `djvu_cpix_scale_ratio` frees its output on failure and
+    `compose_bg_native_build` drops both cached backgrounds.
+  Also new: abort checkpoint every 64 rows in the scaler (renders from cached
+  layers were not abortable). Under TSan (WSL, clang 21): no reports. CI runs
+  it on Windows, Linux, and under TSan on Linux.
+- dist/djvu.c no longer carries test-harness declarations or helpers:
+  `DJVU_DEBUG_ONLY_BEGIN/END` regions (the `djvu_debug_*` declarations, the
+  debug-only `djvu_iw44_render_rgb` / `djvu_iw44_render_plane`) are stripped by
+  build-dist; the bench harness builds from a debug amalgamation in
+  out/amalg_debug that keeps them and includes src/debug.c.
 - the 62 "cosmetic" corpus pages, investigated: not decoder bugs, and NOT the
   1998_compression fg-stencil quirk the docs had blamed. All are palette
   (FGbz) pages; on each, our JB2 mask equals DjVuLibre's (ddjvu -mode=mask, 0
