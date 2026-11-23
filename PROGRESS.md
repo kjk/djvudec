@@ -137,6 +137,12 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- JB2 abort checkpoint: `jb2_decode_into` polls `djvu_aborted` once per
+  record, covering the page mask and shared dictionaries decoded lazily
+  inside a render (lock hooks). An aborted decode returns NULL, is not
+  cached, and logs neither "JB2: decode failed" nor the preload warnings.
+  Dict pre-decode at `djvu_doc_open` is unaffected (`djvu_aborted` is only
+  true inside a render).
 - IW44 abort checkpoints: `djvu_iw44_decode_chunk` polls `djvu_aborted` once
   per slice and `iw44_render_rgb_impl` around each plane's inverse transform,
   so photo pages (and the IW44 phase of compound pages) can be aborted

@@ -644,8 +644,10 @@ static void preload_jb2_dict_incl(djvu_doc *doc, const char *incl_id)
     if (!djbz) return;
     dict = djvu_jb2_decode_dict(doc->ctx, djbz, sz);
     if (!dict) {
-        djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
-                    "JB2 dict preload failed (INCL %s)", incl_id);
+        /* an aborted (lazy, in-render) decode is retried by the next render */
+        if (!djvu_aborted(doc->ctx))
+            djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
+                        "JB2 dict preload failed (INCL %s)", incl_id);
         return;
     }
     jb2_dict_cache_add(doc, incl_id, dict);
@@ -762,8 +764,9 @@ static void preload_jb2_mask(djvu_doc *doc, djvu_page_int *pg)
     dict = jb2_dict_for_form_unlocked(doc, pg->form_off);
     mask = djvu_jb2_decode(doc->ctx, sjbz, sz, dict);
     if (!mask) {
-        djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
-                    "JB2 mask preload failed (form %u)", pg->form_off);
+        if (!djvu_aborted(doc->ctx))
+            djvu_errorf(doc->ctx, DJVU_SEVERITY_WARNING,
+                        "JB2 mask preload failed (form %u)", pg->form_off);
         return;
     }
     pg->jb2_mask = mask;

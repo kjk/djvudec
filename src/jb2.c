@@ -63,6 +63,7 @@ typedef struct {
 
     jb2_image *zdict;
     int error;
+    int aborted;   /* stopped at an abort checkpoint (also sets error) */
 } jb2_codec;
 
 /* ---------- jb2_image (dictionary + image) ---------- */
@@ -943,6 +944,10 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
         int hist[12]; int k; int dbg = getenv("DJVU_JB2_DEBUG") != NULL;
         for (k = 0; k < 12; k++) hist[k] = 0;
         do {
+            /* Abort checkpoint, once per record (a record is at most one
+               shape bitmap). The image is partial, so it fails the decode:
+               callers get NULL and never cache it. */
+            if (djvu_aborted(ctx)) { c->error = c->aborted = 1; break; }
             rectype = code_record(c, jim, is_image);
             if (rectype >= 0 && rectype < 12) hist[rectype]++;
             if (c->error) break;
@@ -998,7 +1003,8 @@ static jb2_image *jb2_decode_into(djvu_ctx *ctx, const uint8_t *data, size_t len
     }
 
     if (c->error || !c->got_start_record) {
-        djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "JB2: decode failed");
+        if (!c->aborted)
+            djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "JB2: decode failed");
         codec_free(c);
         djvu_free(ctx, c);
         djvu_jb2_free(ctx, jim);

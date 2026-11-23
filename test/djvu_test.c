@@ -660,8 +660,8 @@ static int run_verify_into(djvu_doc *doc)
  * (djvu_request_abort, djvu_abort tokens, the *_abortable render variants).
  *
  * Abort is cooperative: the decoder polls djvu_aborted() at a few checkpoints
- * (render.c after the JB2 mask is acquired and every 64 blits of the bitonal
- * loops; compose.c at composite entry and every 64 blits of the stencil loop;
+ * (jb2.c once per decoded record; render.c after the JB2 mask is acquired and
+ * every 64 blits of the bitonal loops; compose.c at composite entry and every 64 blits of the stencil loop;
  * iw44.c once per decoded slice and around each plane's inverse transform).
  * So what an abort request may do depends on the page:
  *   - bitonal / compound / photo: a request made before the call, or early

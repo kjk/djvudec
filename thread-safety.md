@@ -101,8 +101,10 @@ INFO is now parsed for all pages inside `djvu_doc_open`.
 Abort is cooperative: a render polls at checkpoints (after the mask decode,
 every 64 blits in the bitonal and composite loops, at composite entry, once
 per IW44 slice and around each IW44 plane's inverse transform), so a late
-request may let the render complete. JB2 decode itself has no checkpoint. An
-aborted IW44 decode is partial and is never stored in the page cache.
+request may let the render complete. JB2 decode polls once per record (mask
+and lazily decoded shared dictionaries alike). An aborted JB2 or IW44 decode
+is partial and is never stored in the page or dictionary cache; the next
+render decodes it again.
 `djvu_aborted` only reports an abort on a thread that is inside a render call
 on that ctx, so `djvu_doc_open` and the non-render APIs are unaffected by
 earlier `djvu_request_abort` calls. An aborted render returns NULL / -1,
