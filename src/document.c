@@ -98,14 +98,13 @@ __thread const djvu_ctx *djvu_render_ctx_tls;
 
 void djvu_abort_init(djvu_abort *ab)
 {
-    if (ab) ab->requested = 0;
+    if (ab) djvu_abort_flag_store(ab, 0);
 }
 
 void djvu_abort_request(djvu_abort *ab)
 {
-    /* a plain store to an aligned volatile int is atomic on every platform we
-       target; readers poll it cooperatively (relaxed, like abort_epoch) */
-    if (ab) ab->requested = 1;
+    /* relaxed atomic store; renders poll it cooperatively (like abort_epoch) */
+    if (ab) djvu_abort_flag_store(ab, 1);
 }
 
 /* ---- INFO chunk ---- */

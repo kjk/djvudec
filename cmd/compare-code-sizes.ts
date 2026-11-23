@@ -21,7 +21,7 @@ import {
   isMac,
   isWindows,
   headerDeps,
-  LIB_SRCS,
+  DIST_SRCS,
   MSVC_CL_CXX,
   MSVC_LINK,
   msvcFd,
@@ -34,7 +34,8 @@ import {
 const DJVULIBRE = DJVULIBRE_DIR.replaceAll("\\", "/");
 const OUT = `${ROOT}/out/code_size`;
 
-const DJVU_SRCS = LIB_SRCS.filter((s) => s !== "src/debug.c");
+// What consumers ship (the amalgamation's modules; no src/debug.c).
+const DJVU_SRCS = DIST_SRCS;
 
 const PROBE_DJVUDEC = `${ROOT}/test/size_probe_djvudec.c`;
 const PROBE_LIBDJVU = `${ROOT}/test/size_probe_libdjvu.cpp`;

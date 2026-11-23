@@ -5,6 +5,7 @@
 //     -sub N     render subsample (default: the harness's own default)
 //     -cpu N     render threads (default: the harness's own default)
 //     -no-asan   plain release build (default: clang + AddressSanitizer)
+//     -tsan      clang + ThreadSanitizer instead (Linux/macOS only)
 //     -clang     clang release (with -no-asan; MSVC is the Windows default)
 //     -clean     rebuild the test exe from scratch
 //
@@ -25,7 +26,8 @@ const VALUE_FLAGS = ["-rand", "-secs", "-sub", "-cpu"];
 
 const args = process.argv.slice(2);
 const useClang = args.includes("-clang") || defaultUseClang;
-const useAsan = !args.includes("-no-asan");
+const useTsan = args.includes("-tsan");
+const useAsan = !useTsan && !args.includes("-no-asan");
 const clean = args.includes("-clean");
 
 // Positive integer value of a flag, or null when the flag is absent.
@@ -55,6 +57,7 @@ options:
   -sub N          render subsample (default: harness default)
   -cpu N          render threads (default: harness default)
   -no-asan        plain release build (default: clang + ASan)
+  -tsan           clang + ThreadSanitizer instead (Linux/macOS only)
   -clang          clang release (with -no-asan)
   -clean          rebuild the test exe from scratch
 
@@ -62,7 +65,12 @@ ${corpusSummary()}`,
   VALUE_FLAGS,
 );
 
-const exe = await buildLibTool(CACHE_RACE_TARGET, useClang, useAsan, clean);
+const exe = await buildLibTool(
+  CACHE_RACE_TARGET,
+  useClang,
+  useTsan ? "tsan" : useAsan ? "asan" : "none",
+  clean,
+);
 const fwd = ["-secs", String(secs)];
 if (sub != null) fwd.push("-sub", String(sub));
 if (cpu != null) fwd.push("-cpu", String(cpu));

@@ -63,14 +63,35 @@ function exeFile(base: string, useClang: boolean): string {
   return useClang && !isWindows ? base : `${base}.exe`;
 }
 
-// ASan exes get a distinct name (foo_asan) so a stale plain exe is never
-// mistaken for an instrumented one, and vice versa.
-function exeBase(target: LibToolTarget, asan: boolean): string {
-  return asan ? `${target.exeBase}_asan` : target.exeBase;
+/** Sanitizer for a library-tool build. `true` / `false` mean asan / none. */
+export type Sanitizer = "none" | "asan" | "tsan";
+type SanArg = Sanitizer | boolean;
+
+function sanOf(s: SanArg): Sanitizer {
+  return s === true ? "asan" : s === false ? "none" : s;
 }
 
-function toolDir(target: LibToolTarget, useClang: boolean, asan = false): string {
-  return `${target.outRoot}/${asan ? "clang_asan" : useClang ? "clang" : "msvc"}`;
+// Sanitized exes get a distinct name (foo_asan / foo_tsan) and directory
+// (out/clang_asan, out/clang_tsan) so a stale plain exe is never mistaken for
+// an instrumented one, and vice versa.
+function exeBase(target: LibToolTarget, san: SanArg): string {
+  const s = sanOf(san);
+  return s === "none" ? target.exeBase : `${target.exeBase}_${s}`;
+}
+
+function toolDir(target: LibToolTarget, useClang: boolean, san: SanArg = "none"): string {
+  const s = sanOf(san);
+  return `${target.outRoot}/${s !== "none" ? `clang_${s}` : useClang ? "clang" : "msvc"}`;
+}
+
+// clang supports ThreadSanitizer only on Linux / macOS (not the Windows MSVC
+// target), so -tsan fails fast there instead of with a cryptic link error.
+export function assertTsanSupported(): void {
+  if (isWindows) {
+    throw new Error(
+      "ThreadSanitizer is not supported by clang on Windows; run -tsan on Linux or macOS (CI runs it on Linux)",
+    );
+  }
 }
 
 type CompileUnit = { src: string; obj: string };
@@ -92,15 +113,15 @@ function cUnits(dir: string, ext: string, testSrc: string): CompileUnit[] {
   ];
 }
 
-async function buildClang(target: LibToolTarget, asan = false): Promise<string> {
-  const dir = toolDir(target, true, asan);
-  const exePath = `${dir}/${exeFile(exeBase(target, asan), true)}`;
+async function buildClang(target: LibToolTarget, san: SanArg = "none"): Promise<string> {
+  const s = sanOf(san);
+  const dir = toolDir(target, true, s);
+  const exePath = `${dir}/${exeFile(exeBase(target, s), true)}`;
   mkdirSync(dir, { recursive: true });
 
-  // ASan: -O1 for readable traces, like buildAsan in build.ts.
-  const cflags = asan
-    ? `-fsanitize=address ${clangCFlags("-g -O1")}`
-    : clangCFlags();
+  // Sanitizers: -O1 for readable traces, like buildAsan in build.ts.
+  const sanFlag = s === "none" ? "" : `-fsanitize=${s === "asan" ? "address" : "thread"} `;
+  const cflags = s === "none" ? clangCFlags() : `${sanFlag}${clangCFlags("-g -O1")}`;
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
   const units = cUnits(dir, "o", testSrc);
   for (const u of units) {
@@ -112,10 +133,9 @@ async function buildClang(target: LibToolTarget, asan = false): Promise<string> 
   if (needsRebuild(exePath, ...objs)) {
     // Non-Windows/macOS: -lm (compose.c uses pow) + -lpthread (threaded
     // harnesses), the same libs build.ts links djvu_test with on Linux.
-    const link = asan ? "-fsanitize=address " : "";
-    await $`clang ${{ raw: link }}${{ raw: objs.join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${exePath}`;
+    await $`clang ${{ raw: sanFlag }}${{ raw: objs.join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${exePath}`;
   }
-  if (asan && isWindows) await copyAsanRuntimeDll(dir);
+  if (s === "asan" && isWindows) await copyAsanRuntimeDll(dir);
   return exePath;
 }
 
@@ -194,22 +214,25 @@ export async function buildFuzz(clean = false): Promise<string> {
 export function libToolExePath(
   target: LibToolTarget,
   useClang = defaultUseClang,
-  asan = false,
+  san: SanArg = "none",
 ): string {
-  return `${toolDir(target, useClang, asan)}/${exeFile(exeBase(target, asan), useClang || asan)}`;
+  const s = sanOf(san);
+  return `${toolDir(target, useClang, s)}/${exeFile(exeBase(target, s), useClang || s !== "none")}`;
 }
 
 export async function buildLibTool(
   target: LibToolTarget,
   useClang = defaultUseClang,
-  asan = false,
+  sanArg: SanArg = "none",
   clean = false,
 ): Promise<string> {
-  if (asan) useClang = true; // ASan builds always use clang
-  const name = exeFile(exeBase(target, asan), useClang);
-  const exePath = libToolExePath(target, useClang, asan);
+  const san = sanOf(sanArg);
+  if (san === "tsan") assertTsanSupported();
+  if (san !== "none") useClang = true; // sanitizer builds always use clang
+  const name = exeFile(exeBase(target, san), useClang);
+  const exePath = libToolExePath(target, useClang, san);
   const testSrc = target.testSrc ?? `${ROOT}/test/djvudec_dump.c`;
-  const units = cUnits(toolDir(target, useClang, asan), useClang ? "o" : "obj", testSrc);
+  const units = cUnits(toolDir(target, useClang, san), useClang ? "o" : "obj", testSrc);
   if (clean) {
     for (const u of units) rmSync(u.obj, { force: true });
     rmSync(exePath, { force: true });
@@ -222,8 +245,9 @@ export async function buildLibTool(
     return exePath;
   }
 
-  console.log(`building ${name} (${asan ? "clang+asan" : useClang ? "clang" : "msvc"})...`);
-  const exe = useClang ? await buildClang(target, asan) : await buildMsvc(target);
+  const what = san !== "none" ? `clang+${san}` : useClang ? "clang" : "msvc";
+  console.log(`building ${name} (${what})...`);
+  const exe = useClang ? await buildClang(target, san) : await buildMsvc(target);
   console.log(`built ${name}`);
   return exe;
 }

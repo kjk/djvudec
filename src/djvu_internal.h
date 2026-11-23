@@ -156,10 +156,32 @@ static inline void djvu_render_end(void)
    code shared with non-render paths (djvu_doc_open's dict preload, the debug
    hooks) polls this too; outside a render the thread's epoch snapshot is
    stale, so it must never report an abort there. */
+/* djvu_abort.requested is written by any thread (djvu_abort_request) while a
+   render polls it. A plain volatile access is a data race in C11 (and is
+   reported by ThreadSanitizer), so go through atomic builtins where the
+   compiler has them; MSVC's volatile already has acquire/release semantics. */
+static inline int djvu_abort_flag_load(const djvu_abort *ab)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    return __atomic_load_n(&ab->requested, __ATOMIC_RELAXED);
+#else
+    return ab->requested;
+#endif
+}
+
+static inline void djvu_abort_flag_store(djvu_abort *ab, int v)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    __atomic_store_n(&ab->requested, v, __ATOMIC_RELAXED);
+#else
+    ab->requested = v;
+#endif
+}
+
 static inline int djvu_aborted(djvu_ctx *ctx)
 {
     if (!ctx || djvu_render_ctx_tls != ctx) return 0;
-    if (djvu_render_abort_tls && djvu_render_abort_tls->requested) return 1;
+    if (djvu_render_abort_tls && djvu_abort_flag_load(djvu_render_abort_tls)) return 1;
     return djvu_atomic_epoch_load(&ctx->abort_epoch) != djvu_render_epoch_tls;
 }
 

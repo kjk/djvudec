@@ -32,7 +32,7 @@ import {
   DJVUDEC_MSVC_CL_C,
   INTERNAL_H,
   isWindows,
-  LIB_SRCS,
+  DIST_SRCS,
   msvcFd,
   needsRebuild,
   PUBLIC_H,
@@ -49,8 +49,9 @@ export function amalgPaths(dir: string): { h: string; c: string } {
 }
 
 // Inputs, in concatenation order: public header, internal header, then the
-// modules in LIB_SRCS order (see util.ts -- the order is the layout of djvu.c).
-const AMALG_INPUTS = [PUBLIC_H, INTERNAL_H, ...LIB_SRCS.map((s) => `${ROOT}/${s}`)];
+// modules in DIST_SRCS order (see util.ts -- the order is the layout of
+// djvu.c). src/debug.c (test-harness dumps) is deliberately not shipped.
+const AMALG_INPUTS = [PUBLIC_H, INTERNAL_H, ...DIST_SRCS.map((s) => `${ROOT}/${s}`)];
 
 /** True when dir/djvu.h or dir/djvu.c is missing or older than any src/ input. */
 export function amalgOutdated(dir: string): boolean {
@@ -173,7 +174,7 @@ export function writeAmalgamation(dir: string): { h: string; c: string } {
 
   const parts: string[] = [publicHeader];
   parts.push(stripIncludes(readFileSync(INTERNAL_H, "utf8"), ["djvu\.h"]));
-  for (const src of LIB_SRCS) {
+  for (const src of DIST_SRCS) {
     const code = readFileSync(`${ROOT}/${src}`, "utf8");
     parts.push(stripIncludes(code, ["djvu_internal\.h", "djvu\.h"]));
   }
@@ -184,7 +185,7 @@ export function writeAmalgamation(dir: string): { h: string; c: string } {
 
   console.log(`wrote ${rel(h)} (${publicHeader.split("\n").length} lines)`);
   console.log(
-    `wrote ${rel(c)} (${amalgamated.split("\n").length} lines, ${LIB_SRCS.length} modules)`,
+    `wrote ${rel(c)} (${amalgamated.split("\n").length} lines, ${DIST_SRCS.length} modules)`,
   );
   return { h, c };
 }

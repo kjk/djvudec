@@ -101,8 +101,9 @@ INFO is now parsed for all pages inside `djvu_doc_open`.
 Abort is cooperative: a render polls at checkpoints (after the mask decode,
 every 64 blits in the bitonal and composite loops, at composite entry, once
 per IW44 slice and around each IW44 plane's inverse transform), so a late
-request may let the render complete. JB2 decode polls once per record (mask
-and lazily decoded shared dictionaries alike). An aborted JB2 or IW44 decode
+request may let the render complete. JB2 decode polls once per record and
+every 64 rows inside a shape bitmap (mask and lazily decoded shared
+dictionaries alike). An aborted JB2 or IW44 decode
 is partial and is never stored in the page or dictionary cache; the next
 render decodes it again.
 `djvu_aborted` only reports an abort on a thread that is inside a render call
@@ -133,5 +134,9 @@ per-page caching, the way SumatraPDF's render threads do.
 `djvu_doc_drop_page_cache` against renders of the same pages (regression test
 for the cached-layer refcounts).
 
-No script builds with Thread Sanitizer yet (clang `-fsanitize=thread`); that
-would be the next step for deeper validation.
+ThreadSanitizer: `stress-test.ts -tsan`, `thread.ts -tsan` and
+`test-cache-race.ts -tsan` build those harnesses with clang
+`-fsanitize=thread` (`out/clang_tsan/`). Linux/macOS only (clang has no TSan
+on Windows); CI runs all three on Linux. Not yet covered: a render aborted
+from another thread (the abort-token flag is accessed with atomic builtins
+for this reason, but no harness requests an abort cross-thread).

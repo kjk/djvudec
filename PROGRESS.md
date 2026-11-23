@@ -137,6 +137,18 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- ThreadSanitizer build: `-tsan` on `stress-test.ts`, `thread.ts`,
+  `test-cache-race.ts` (`out/clang_tsan/`, Linux/macOS only); CI runs all
+  three on Linux. Local run in WSL (clang 21) on djvu3spec, djvu2spec,
+  test001C, test043C: no reports. The `djvu_abort.requested` flag is now
+  read/written with atomic builtins (a plain volatile int is a C11 data race
+  when the token is requested from another thread).
+- JB2 abort checkpoint inside shape bitmaps: `code_bitmap_directly` and
+  `code_bitmap_cross` poll every 64 rows, so a single huge shape (up to
+  65535x65535) no longer delays an abort until its whole bitmap is decoded.
+- `src/debug.c` is no longer in the amalgamation or the WASM drop
+  (`DIST_SRCS` in cmd/util.ts); the bench harness links it as a separate
+  object. The per-file builds (`build.ts`, `build-lib.ts`) still include it.
 - CI fixes (runs 45212217901 / 45238626650). Windows: the runner's clang is
   older than its MSVC STL accepts (STL1000 "expected Clang 22 or newer")
   when building the DjVuLibre reference; the Windows DjVuLibre flags now

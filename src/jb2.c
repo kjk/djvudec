@@ -333,7 +333,14 @@ static void code_bitmap_directly(jb2_codec *c, djvu_bitmap *bm)
     up1 = (dy + 1 < h) ? row_base + (dy + 1) * bpr : guard;
     up0 = row_base + dy * bpr;
     while (dy >= 0) {
-        int context = jb2_get_direct_context(up2, up1, up0, 0);
+        int context;
+        /* abort checkpoint every 64 rows, so one huge shape (up to
+           65535x65535) cannot delay an abort for the whole bitmap */
+        if ((dy & 63) == 0 && djvu_aborted(c->ctx)) {
+            c->error = c->aborted = 1;
+            break;
+        }
+        context = jb2_get_direct_context(up2, up1, up0, 0);
         int dx = 0;
         while (dx < dw) {
             if (context == 0 && (bd[0] & 1) == 0) {
@@ -458,7 +465,12 @@ static void code_bitmap_cross(jb2_codec *c, djvu_bitmap *bm, djvu_bitmap *cbm, i
     xdn1 = (cy - 1 >= 0 && cy - 1 < ch) ? cbm_base + (cy - 1) * cbm_bpr + xd2c : cbm_guard + xd2c;
 
     while (dy >= 0) {
-        int context = jb2_get_cross_context(up1, up0, xup1, xup0, xdn1, 0);
+        int context;
+        if ((dy & 63) == 0 && djvu_aborted(c->ctx)) {   /* see code_bitmap_directly */
+            c->error = c->aborted = 1;
+            break;
+        }
+        context = jb2_get_cross_context(up1, up0, xup1, xup0, xdn1, 0);
         int dx = 0;
         while (dx < dw) {
             int n = jb2_zp_decode_pixel(zp, &a, &fence, &bd[context]);

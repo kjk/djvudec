@@ -42,6 +42,14 @@ export const LIB_SRCS = [
   "src/debug.c",
 ];
 
+// The test-harness helpers (djvu_debug_*: stdout/file dumps). Built into the
+// harnesses but NOT shipped in the amalgamation or the WASM drop.
+export const DEBUG_SRC = "src/debug.c";
+
+// What consumers ship: every decoder module except DEBUG_SRC, in LIB_SRCS
+// order (the order is the layout of dist/djvu.c).
+export const DIST_SRCS = LIB_SRCS.filter((s) => s !== DEBUG_SRC);
+
 // Every .c includes these; treat them as inputs so a header edit forces a
 // recompile. Without this, changing a struct layout in djvu_internal.h leaves
 // stale objects compiled against the old layout -> ABI mismatch at link time.

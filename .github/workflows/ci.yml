@@ -126,6 +126,15 @@ jobs:
         run: bun cmd/test-oversize-iw44.ts -asan
       - name: Page-cache drop vs render race (clang + ASan)
         run: bun cmd/test-cache-race.ts -secs 5 deps/artifacts/test001C.djvu
+      # ThreadSanitizer (Linux only: clang has no TSan on Windows). Recent
+      # kernels randomize mmap more than older TSan runtimes accept
+      # ("unexpected memory mapping"); 28 bits is the documented workaround.
+      - name: ThreadSanitizer (stress, thread, cache race)
+        run: |
+          sudo sysctl vm.mmap_rnd_bits=28 || true
+          bun cmd/stress-test.ts -tsan -cpu 8 deps/DjVuLibre/doc/djvu3spec.djvu deps/DjVuLibre/doc/djvu2spec.djvu deps/artifacts/test001C.djvu deps/artifacts/test043C.djvu
+          bun cmd/thread.ts -tsan -cpu 8 -nops 400 deps/artifacts/test001C.djvu
+          bun cmd/test-cache-race.ts -tsan -secs 5 -cpu 8 deps/artifacts/test001C.djvu
       # Generates dist/djvu.{h,c} and compiles them. No WASM here: the wasm job
       # builds and smoke-tests that.
       - name: Amalgamation

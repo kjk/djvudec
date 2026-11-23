@@ -5,6 +5,7 @@
 //
 //   bun cmd/stress-test.ts <dir | file.djvu ... | -rand N>
 //     -no-asan   plain release build (default: clang + ASan)
+//     -tsan      clang + ThreadSanitizer instead (Linux/macOS only)
 //     -clang     clang release (with -no-asan)
 //     -clean     rebuild the stress exe from scratch
 //     -cpu N     thread count (default: os.cpus().length - 2, at least 2)
@@ -23,7 +24,8 @@ function defaultThreadCount(): number {
 
 const args = process.argv.slice(2);
 const useClang = args.includes("-clang") || defaultUseClang;
-const useAsan = !args.includes("-no-asan");
+const useTsan = args.includes("-tsan");
+const useAsan = !useTsan && !args.includes("-no-asan");
 const clean = args.includes("-clean");
 const cpuArg = args.indexOf("-cpu");
 const cpuOverride = cpuArg >= 0 ? Number.parseInt(args[cpuArg + 1] ?? "", 10) : 0;
@@ -42,6 +44,7 @@ selection (required; default prints this help):
   -all            stress every corpus file
 options:
   -no-asan        plain release build (default: clang + ASan)
+  -tsan           clang + ThreadSanitizer instead (Linux/macOS only)
   -clang          clang release (with -no-asan)
   -clean          rebuild the stress exe from scratch
   -cpu N          thread count (default: cores - 2, at least 2)
@@ -51,7 +54,7 @@ ${corpusSummary()}`,
 );
 
 const ncpu = cpuOverride > 0 ? cpuOverride : defaultThreadCount();
-const exe = await buildStress(useClang, useAsan, clean);
+const exe = await buildStress(useClang, useTsan ? "tsan" : useAsan ? "asan" : "none", clean);
 const proc = Bun.spawn([exe, "-cpu", String(ncpu), ...paths.map((p) => resolve(p))], {
   stdout: "inherit",
   stderr: "inherit",

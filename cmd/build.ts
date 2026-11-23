@@ -27,6 +27,7 @@ import { DJVULIBRE_DIR, getDeps } from "./get-deps";
 import {
   binName,
   clangCFlags,
+  DEBUG_SRC,
   defaultUseClang,
   DJVUDEC_MSVC_CL_C,
   headerDeps,
@@ -203,9 +204,13 @@ function harnessPlan(flavour: Flavour, useClang: boolean): Harness {
 
   // The decoder: src/*.c one object each, or the amalgamation as one object.
   // djvu_test.c also includes djvu_internal.h (debug + BZZ hooks), from src/.
+  // The amalgamation does not contain src/debug.c (consumers don't ship the
+  // djvu_debug_* dumps), so the bench build compiles it as a separate object
+  // against the same headers the amalgamation was generated from.
   if (flavour === "bench") {
     const a = { h: `${AMALG_DIR}/djvu.h`, c: `${AMALG_DIR}/djvu.c` };
     compileC(a.c, `${dir}/djvu.${ext}`, [AMALG_DIR], [a.h]);
+    compileC(`${ROOT}/${DEBUG_SRC}`, `${dir}/${objBase(DEBUG_SRC)}.${ext}`, [`${ROOT}/src`], LIB_HEADERS);
     compileC(TEST_C, `${dir}/djvu_test.${ext}`, [AMALG_DIR, `${ROOT}/src`], [a.h, ...headerDeps(TEST_C)]);
   } else {
     for (const s of LIB_SRCS) {

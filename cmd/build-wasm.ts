@@ -15,8 +15,9 @@
 // rebuilds when src/ is newer than dist/wasm/.
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { DIST_SRCS } from "./util";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const SRC = path.join(ROOT, "src");
@@ -148,14 +149,19 @@ const EXPORTS = [
 
 const RUNTIME = ["HEAP8", "HEAPU8", "HEAP32", "HEAPU32"];
 
+// src/*.c for a non-amalgamation WASM build: the same modules the
+// amalgamation ships (DIST_SRCS), i.e. without the src/debug.c harness dumps.
+function wasmSrcFiles(): string[] {
+  return DIST_SRCS.map((s) => path.basename(s));
+}
+
 function wasmInputMtime(useDist: boolean): number {
   if (useDist) {
     if (!existsSync(DIST_C)) throw new Error("dist/djvu.c missing — run build-dist first");
     return statSync(DIST_C).mtimeMs;
   }
   let newest = 0;
-  for (const f of readdirSync(SRC)) {
-    if (!f.endsWith(".c")) continue;
+  for (const f of wasmSrcFiles()) {
     newest = Math.max(newest, statSync(path.join(SRC, f)).mtimeMs);
   }
   for (const h of ["djvu.h", "djvu_internal.h"]) {
@@ -194,12 +200,10 @@ function compile(prefix: string, useDist: boolean) {
     inputs = q(DIST_C);
     console.log("• compiling dist/djvu.c → dist/wasm/djvu.js + djvu.wasm");
   } else {
-    const cfiles = readdirSync(SRC)
-      .filter((f) => f.endsWith(".c"))
-      .map((f) => q(path.join(SRC, f)))
-      .join(" ");
+    const files = wasmSrcFiles();
+    const cfiles = files.map((f) => q(path.join(SRC, f))).join(" ");
     inputs = `${cfiles} -I ${q(SRC)}`;
-    const n = readdirSync(SRC).filter((f) => f.endsWith(".c")).length;
+    const n = files.length;
     console.log(`• compiling ${n} C files → dist/wasm/djvu.js + djvu.wasm`);
   }
 

@@ -247,7 +247,9 @@ bun cmd/build-prof.ts
   concurrent render path. Finds thread-safety
   bugs the single-threaded verifier can't. **ASan build is the default**
   (`out/clang_asan/djvudec_stress_asan.exe`); `-no-asan` gives a plain release
-  build (`out/msvc/djvudec_stress.exe`), `-cpu N` sets threads (default
+  build (`out/msvc/djvudec_stress.exe`), `-tsan` a clang + ThreadSanitizer
+  build (`out/clang_tsan/djvudec_stress_tsan`; Linux/macOS only -- clang has
+  no TSan on Windows), `-cpu N` sets threads (default
   `cores-2`, min 2), `-clean` rebuilds from scratch. Files that open to zero
   pages are reported as `skipped`; a file that cannot be read or opened is
   `FAILED` (exit 1). Threads are joined one handle at a time, so `-cpu` above
@@ -278,6 +280,8 @@ bun cmd/build-prof.ts
   `build-dist.ts -no-wasm` (only the wasm job builds WASM) and also run
   `djvu_test -verify-into` on two small files, `test-abort.ts`,
   `test-oversize-iw44.ts` and (Windows, Linux) `test-cache-race.ts -secs 5`.
+  Linux also runs ThreadSanitizer: `stress-test.ts -tsan`, `thread.ts -tsan`
+  and `test-cache-race.ts -tsan`.
   deps/ and ref_build/ are cached per OS. Under `CI=true`,
   `tests.ts -all` skips known DjVuLibre oracle quirks that are not decoder
   bugs: `1998_compression.djvu` (ddjvu fg-stencil quirk on p19) and
@@ -300,7 +304,7 @@ bun cmd/build-prof.ts
   next render still matches). Also covers `djvu_ctx_set_no_compose` /
   `djvu_ctx_set_iw_max_chunks`.
 - `bun cmd/test-cache-race.ts <file.djvu ... | -rand N | -all> [-secs N]
-  [-sub N] [-cpu N] [-no-asan] [-clang]` — builds `test/crash_cache_race.c`
+  [-sub N] [-cpu N] [-no-asan] [-tsan] [-clang]` — builds `test/crash_cache_race.c`
   (clang + ASan by default: `out/clang_asan/crash_cache_race_asan`) and races
   `djvu_doc_drop_page_cache` against renders for N seconds (default 5).
   Regression test for the cached-layer refcounts.
@@ -327,7 +331,10 @@ Known oracle-only differences (not decode bugs; CI skips both files under `CI=tr
 ### Amalgamation (single-file distribution)
 - `bun cmd/build-dist.ts` — generates an SQLite-style amalgamation in `dist/`:
   `dist/djvu.h` (public header) and `dist/djvu.c` (the public header +
-  `djvu_internal.h` + every `src/*.c` concatenated into one translation unit,
+  `djvu_internal.h` + every `src/*.c` except `src/debug.c` concatenated into
+  one translation unit (`DIST_SRCS` in `cmd/util.ts`; the `djvu_debug_*`
+  dumps are harness-only and not shipped -- the bench harness, which builds
+  from the amalgamation, links `src/debug.c` as a separate object),
   with the local `#include "djvu.h"` / `"djvu_internal.h"` lines stripped,
   comments removed, LF only, trailing whitespace stripped, and at most one
   blank line in a row). The script verifies the result with `clang -c` (and
