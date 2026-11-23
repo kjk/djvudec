@@ -371,10 +371,18 @@ Known oracle-only differences (not decode bugs; CI skips both files under `CI=tr
   explicitly asks.
 
 ### Helper tests / scripts
-Write one-off helper tests, probes, and verification scripts in TypeScript and
-run them with **bun**, placed in the **`cmd/`** directory (e.g.
-`bun cmd/<name>.ts`). Prefer this over throwaway Python or shell scripts —
-bun + TypeScript is the standard tooling for ad-hoc tooling here.
+**All helper scripts — saved and temporary — are written in TypeScript and run
+with bun.** That covers helper tests, probes, verification and analysis
+scripts, and throwaway scripts used once while working (e.g. a scripted
+multi-file source edit, a log parser, a corpus scan). Do not use Python, shell
+scripts, PowerShell scripts or `bun -e`/`python -c` one-liners for anything
+beyond trivial single commands.
+- Scripts worth keeping go in **`cmd/`** (`bun cmd/<name>.ts`) and follow the
+  script conventions above (do nothing by default; select files explicitly).
+- Temporary scripts go in the session scratchpad (outside the repo) and are
+  run with `bun <path>.ts`; delete or ignore them afterwards.
+- Small C probes that must link the decoder are the exception (they are C by
+  necessity); drive their build and analysis from a bun script.
 
 ### Windows gotchas
 - `test/djvu_test.c` uses `fopen` → ASCII paths only. The **library** takes an
