@@ -62,7 +62,13 @@ HU_UNUSED static int page_palette_rgb(djvu_doc *doc, int page0, uint8_t **out)
     if (!fg || sz < 3) return 0;
     n = (fg[1] << 8) | fg[2];
     if (n <= 0 || 3 + (size_t)n * 3 > sz) return 0;
-    if (info && isz >= 9 && info[8] != 0) corr = 2.2 / ((double)info[8] / 10.0);
+    if (info && isz >= 9) {
+        /* gamma as compose.c page_gamma / DjVuInfo::decode: clamp [0.3, 5] */
+        double g = (double)info[8] / 10.0;
+        if (g < 0.3) g = 0.3;
+        if (g > 5.0) g = 5.0;
+        corr = 2.2 / g;
+    }
     if (corr < 0.1) corr = 0.1; else if (corr > 10.0) corr = 10.0;
     for (i = 0; i < 256; i++) {
         int v = i;

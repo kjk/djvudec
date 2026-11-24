@@ -156,13 +156,18 @@ static int build_gamma_lut(double corr, unsigned char lut[256])
     return 1;
 }
 
+/* INFO gamma as DjVuInfo::decode reads it: byte 8 / 10, clamped to
+   [0.3, 5.0] (so a 0 byte is 0.3, not "unset"); 2.2 when the chunk is
+   shorter than 9 bytes. */
 static double page_gamma(djvu_doc *doc, uint32_t form_off)
 {
     uint32_t sz;
     const uint8_t *info = djvu_form_find_chunk(doc, form_off, "INFO", &sz, NULL);
-    if (info && sz >= 9 && info[8] != 0)
-        return (double)info[8] / 10.0;
-    return 2.2;
+    double g = 2.2;
+    if (info && sz >= 9) g = (double)info[8] / 10.0;
+    if (g < 0.3) g = 0.3;
+    if (g > 5.0) g = 5.0;
+    return g;
 }
 
 typedef struct {

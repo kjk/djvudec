@@ -119,7 +119,9 @@ static int parse_info(const uint8_t *p, size_t len, djvu_page_info *info)
     info->version = p[4];                       /* minor version */
     info->dpi = 300;
     info->rotation = 0;
-    if (len >= 8) info->dpi = (int)djvu_rd_u16le(p + 6);  /* DPI is little-endian */
+    /* DPI is little-endian; like DjVuInfo::decode, a 0xff high byte means
+       "not set" and values outside 25..6000 fall back to 300. */
+    if (len >= 8 && p[7] != 0xff) info->dpi = (int)djvu_rd_u16le(p + 6);
     if (len >= 10) {
         flag = p[9] & 0x7;
         switch (flag) {
@@ -129,7 +131,7 @@ static int parse_info(const uint8_t *p, size_t len, djvu_page_info *info)
             default: info->rotation = 0; break;
         }
     }
-    if (info->dpi <= 0) info->dpi = 300;
+    if (info->dpi < 25 || info->dpi > 6000) info->dpi = 300;
     return 0;
 }
 

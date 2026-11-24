@@ -137,6 +137,12 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- INFO gamma/dpi read like `DjVuInfo::decode` (diff-fuzz finding): gamma is
+  byte 8 / 10 clamped to [0.3, 5.0] (a 0 byte is 0.3, not "unset"); dpi is
+  ignored when its high byte is 0xff and falls back to 300 outside 25..6000.
+  We left gamma unclamped (a mutated 22.3 gave corr 0.1 vs DjVuLibre's 0.44).
+  `oracle_compare.h`'s palette-overlap colours use the same clamp.
+  Regression seeds: fuzz/crashes/diff (3).
 - colour composite only when DjVuLibre would (diff-fuzz finding):
   `DjVuImage::get_pixmap` + `stencil` require a background with reduction
   1..12 and, with a mask, a page-sized mask plus a foreground (FGbz palette
