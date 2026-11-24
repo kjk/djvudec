@@ -150,6 +150,44 @@ static uint8_t *scaler_dest_row(uint8_t *dst0, int stride, int outh,
     return dst0 + (size_t)(topdown ? (outh - 1 - y) : y) * stride;
 }
 
+#ifdef DJVU_SCALER_NEON
+static uint16x8_t scaler_interp_sum_neon(uint8x8_t a, uint8x8_t b,
+                                         uint16_t phase)
+{
+    return vmlaq_n_u16(vshll_n_u8(a, FRACBITS), vsubl_u8(b, a), phase);
+}
+#endif
+
+#if defined(DJVU_SCALER_NEON) && (defined(__aarch64__) || defined(__arm64__))
+#define DJVU_SCALER_NEON_TABLE 1
+
+static uint8x16_t scaler_round_interp(uint16x8_t lo, uint16x8_t hi)
+{
+    return vrshrn_high_n_u16(vrshrn_n_u16(lo, FRACBITS), hi, FRACBITS);
+}
+
+/* Compute ((16 - phase) * a + phase * b + 8) >> 4 for each byte.
+   The unsigned difference can wrap; the weighted sum is always 0..4080. */
+static uint8x16_t scaler_interp_neon(uint8x16_t a, uint8x16_t b,
+                                    uint16_t phase)
+{
+    uint16x8_t dhi = vsubl_high_u8(b, a);
+    return scaler_round_interp(
+        scaler_interp_sum_neon(vget_low_u8(a), vget_low_u8(b), phase),
+        vmlaq_n_u16(vshll_high_n_u8(a, FRACBITS), dhi, phase));
+}
+
+static uint8x16_t scaler_interp_phases_neon(uint8x16_t a, uint8x16_t b,
+                                           uint8x16_t phase)
+{
+    uint8x16_t inv = vsubq_u8(vdupq_n_u8(FRACSIZE), phase);
+    return scaler_round_interp(
+        vmlal_u8(vmull_u8(vget_low_u8(a), vget_low_u8(inv)),
+                 vget_low_u8(b), vget_low_u8(phase)),
+        vmlal_high_u8(vmull_high_u8(a, inv), b, phase));
+}
+#endif
+
 /* Expand one row w -> outw for the ceil-3x upscale (outw in [3w-2, 3w]).
    Emits the exact prepare_coord(red=3) sample sequence: src[0] once, then
    per input pixel the (0, 6/16, 11/16) interpolation triple, then the last
@@ -166,55 +204,43 @@ static void scaler_expand_row3(const uint8_t *src, int w, int outw, uint8_t *dst
     d += 3;
 
     x = 0;
-#ifdef DJVU_SCALER_NEON
-    /* 8 source pairs: vld3 loads planar R/G/B for a[x..x+7] and b[x+1..x+8].
-       mid/far use the same (diff*k+8)>>4 recipe as s_interp3_delta[k=6,11].
-       Dominant cost on compound 3× BG pages (e.g. test008C p1). */
-    for (; x + 8 <= w - 1; x += 8) {
-        uint8x8x3_t pa = vld3_u8(src + (size_t)x * 3);
-        uint8x8x3_t pb = vld3_u8(src + (size_t)(x + 1) * 3);
-        uint8x8_t ar = pa.val[0], ag = pa.val[1], ab = pa.val[2];
-        int16x8_t ars = vreinterpretq_s16_u16(vmovl_u8(ar));
-        int16x8_t ags = vreinterpretq_s16_u16(vmovl_u8(ag));
-        int16x8_t abs16 = vreinterpretq_s16_u16(vmovl_u8(ab));
-        int16x8_t dr = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(pb.val[0])), ars);
-        int16x8_t dg = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(pb.val[1])), ags);
-        int16x8_t db = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(pb.val[2])), abs16);
-        int16x8_t bias = vdupq_n_s16(FRACSIZE2);
-        int16x8_t d6r = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dr, 6), bias), FRACBITS);
-        int16x8_t d6g = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dg, 6), bias), FRACBITS);
-        int16x8_t d6b = vshrq_n_s16(vaddq_s16(vmulq_n_s16(db, 6), bias), FRACBITS);
-        int16x8_t d11r = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dr, 11), bias), FRACBITS);
-        int16x8_t d11g = vshrq_n_s16(vaddq_s16(vmulq_n_s16(dg, 11), bias), FRACBITS);
-        int16x8_t d11b = vshrq_n_s16(vaddq_s16(vmulq_n_s16(db, 11), bias), FRACBITS);
-        /* mid = a + (d*6+8)>>4 ; far = a + (d*11+8)>>4 (in 0..255 for RGB). */
-        uint8x8_t mr = vqmovun_s16(vaddq_s16(ars, d6r));
-        uint8x8_t mg = vqmovun_s16(vaddq_s16(ags, d6g));
-        uint8x8_t mb = vqmovun_s16(vaddq_s16(abs16, d6b));
-        uint8x8_t fr = vqmovun_s16(vaddq_s16(ars, d11r));
-        uint8x8_t fg = vqmovun_s16(vaddq_s16(ags, d11g));
-        uint8x8_t fb = vqmovun_s16(vaddq_s16(abs16, d11b));
-        {
-            /* vst3 → interleaved RGB for a/mid/far, then merge a,m,f per pixel. */
-            uint8_t abuf[24], mbuf[24], fbuf[24];
-            uint8x8x3_t va, vm, vf3;
-            int i;
-            va.val[0] = ar; va.val[1] = ag; va.val[2] = ab;
-            vm.val[0] = mr; vm.val[1] = mg; vm.val[2] = mb;
-            vf3.val[0] = fr; vf3.val[1] = fg; vf3.val[2] = fb;
-            vst3_u8(abuf, va);
-            vst3_u8(mbuf, vm);
-            vst3_u8(fbuf, vf3);
-            for (i = 0; i < 8; i++) {
-                const uint8_t *aa = abuf + i * 3;
-                const uint8_t *mm = mbuf + i * 3;
-                const uint8_t *ff = fbuf + i * 3;
-                d[0] = aa[0]; d[1] = aa[1]; d[2] = aa[2];
-                d[3] = mm[0]; d[4] = mm[1]; d[5] = mm[2];
-                d[6] = ff[0]; d[7] = ff[1]; d[8] = ff[2];
-                d += 9;
-            }
-        }
+#ifdef DJVU_SCALER_NEON_TABLE
+    /* Each table vector holds one phase in RGB byte order. Gather five
+       triples (45 bytes), overlapping bytes 29..31 in the final store.
+       Both 16-byte loads fit when at least seven input pixels remain. */
+    const uint8x16_t first =
+        { 0, 1, 2, 16, 17, 18, 32, 33, 34, 3, 4, 5, 19, 20, 21, 35 };
+    const uint8x16_t second =
+        { 36, 37, 6, 7, 8, 22, 23, 24, 38, 39, 40, 9, 10, 11, 25, 26 };
+    const uint8x16_t third =
+        { 11, 25, 26, 27, 41, 42, 43, 12, 13, 14, 28, 29, 30, 44, 45, 46 };
+    for (; x + 7 <= w; x += 5, d += 45) {
+        const uint8_t *s = src + (size_t)x * 3;
+        uint8x16_t a = vld1q_u8(s);
+        uint8x16_t b = vld1q_u8(s + 3);
+        uint8x16x3_t phases = { { a, scaler_interp_neon(a, b, 6),
+                                  scaler_interp_neon(a, b, 11) } };
+        vst1q_u8(d, vqtbl3q_u8(phases, first));
+        vst1q_u8(d + 16, vqtbl3q_u8(phases, second));
+        vst1q_u8(d + 29, vqtbl3q_u8(phases, third));
+    }
+#elif defined(DJVU_SCALER_NEON)
+    /* The 16-lane table form is unavailable on 32-bit Arm. Gather two
+       triples (18 bytes) from the narrower phase vectors. */
+    const uint8x8_t first = { 0, 1, 2, 8, 9, 10, 16, 17 };
+    const uint8x8_t second = { 18, 3, 4, 5, 11, 12, 13, 19 };
+    const uint8x8_t third = { 4, 5, 11, 12, 13, 19, 20, 21 };
+    for (; x + 4 <= w; x += 2, d += 18) {
+        const uint8_t *s = src + (size_t)x * 3;
+        uint8x8_t a = vld1_u8(s);
+        uint8x8_t b = vld1_u8(s + 3);
+        uint8x8x3_t phases = {
+            { a, vrshrn_n_u16(scaler_interp_sum_neon(a, b, 6), FRACBITS),
+                 vrshrn_n_u16(scaler_interp_sum_neon(a, b, 11), FRACBITS) }
+        };
+        vst1_u8(d, vtbl3_u8(phases, first));
+        vst1_u8(d + 8, vtbl3_u8(phases, second));
+        vst1_u8(d + 10, vtbl3_u8(phases, third));
     }
 #endif
     for (; x < w - 1; x++) {
@@ -276,25 +302,15 @@ static void scaler_interp_row(const uint8_t *lower, const uint8_t *upper,
         }
     }
 #endif
-#ifdef DJVU_SCALER_NEON
-    if (n >= 16) {
-        const int16x8_t vvf = vdupq_n_s16((int16_t)vf);
-        const int16x8_t bias = vdupq_n_s16(FRACSIZE2);
-        for (; i + 16 <= n; i += 16) {
-            uint8x16_t lo8 = vld1q_u8(lower + i);
-            uint8x16_t up8 = vld1q_u8(upper + i);
-            int16x8_t lo_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(lo8)));
-            int16x8_t lo_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(lo8)));
-            int16x8_t up_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(up8)));
-            int16x8_t up_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(up8)));
-            int16x8_t d_lo = vsubq_s16(up_lo, lo_lo);
-            int16x8_t d_hi = vsubq_s16(up_hi, lo_hi);
-            d_lo = vshrq_n_s16(vmlaq_s16(bias, d_lo, vvf), FRACBITS);
-            d_hi = vshrq_n_s16(vmlaq_s16(bias, d_hi, vvf), FRACBITS);
-            vst1q_u8(dst + i, vcombine_u8(vqmovun_s16(vaddq_s16(lo_lo, d_lo)),
-                                          vqmovun_s16(vaddq_s16(lo_hi, d_hi))));
-        }
-    }
+#ifdef DJVU_SCALER_NEON_TABLE
+    for (; i + 16 <= n; i += 16)
+        vst1q_u8(dst + i, scaler_interp_neon(vld1q_u8(lower + i),
+                                             vld1q_u8(upper + i), (uint16_t)vf));
+#elif defined(DJVU_SCALER_NEON)
+    for (; i + 8 <= n; i += 8)
+        vst1_u8(dst + i, vrshrn_n_u16(
+            scaler_interp_sum_neon(vld1_u8(lower + i), vld1_u8(upper + i),
+                                   (uint16_t)vf), FRACBITS));
 #endif
     for (; i < n; i++) {
         int lo = lower[i];
@@ -403,7 +419,30 @@ static void scaler_expand_row4(const uint8_t *src, int w, int outw, uint8_t *dst
     }
     groups = (outw - x) / 4;
     if (groups > w - 1) groups = w - 1;
-    for (sx = 0; sx < groups; sx++) {
+    sx = 0;
+#ifdef DJVU_SCALER_NEON_TABLE
+    /* Gather four RGB source pairs at the four interpolation phases.
+       As in the 3x loop, the shifted 16-byte load needs seven input pixels. */
+    const uint8x16_t first =
+        { 0, 1, 2, 16, 17, 18, 32, 33, 34, 48, 49, 50, 3, 4, 5, 19 };
+    const uint8x16_t second =
+        { 20, 21, 35, 36, 37, 51, 52, 53, 6, 7, 8, 22, 23, 24, 38, 39 };
+    const uint8x16_t third =
+        { 40, 54, 55, 56, 9, 10, 11, 25, 26, 27, 41, 42, 43, 57, 58, 59 };
+    for (; sx + 4 <= groups && sx + 7 <= w; sx += 4, dst += 48) {
+        const uint8_t *s = src + (size_t)sx * 3;
+        uint8x16_t a = vld1q_u8(s);
+        uint8x16_t b = vld1q_u8(s + 3);
+        uint8x16x4_t phases = { { scaler_interp_neon(a, b, 2),
+                                  scaler_interp_neon(a, b, 6),
+                                  scaler_interp_neon(a, b, 10),
+                                  scaler_interp_neon(a, b, 14) } };
+        vst1q_u8(dst, vqtbl4q_u8(phases, first));
+        vst1q_u8(dst + 16, vqtbl4q_u8(phases, second));
+        vst1q_u8(dst + 32, vqtbl4q_u8(phases, third));
+    }
+#endif
+    for (; sx < groups; sx++) {
         const uint8_t *a = src + (size_t)sx * 3;
         const uint8_t *b = a + 3;
         int ar = a[0], ag = a[1], ab = a[2];
@@ -449,7 +488,28 @@ static void scaler_expand_row12(const uint8_t *src, int w, int outw, uint8_t *ds
     }
     groups = (outw - x) / 12;
     if (groups > w - 1) groups = w - 1;
-    for (sx = 0; sx < groups; sx++) {
+    sx = 0;
+#ifdef DJVU_SCALER_NEON_TABLE
+    /* Repeat each three-byte pixel across the vector. Each phase vector
+       emits four RGB pixels; the first two stores can overlap their successor. */
+    const uint8x16_t rgb = { 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 };
+    const uint8x16_t first = { 0, 0, 0, 1, 1, 1, 2, 2, 2, 4, 4, 4 };
+    const uint8x16_t second = { 5, 5, 5, 6, 6, 6, 8, 8, 8, 9, 9, 9 };
+    const uint8x16_t third = { 10, 10, 10, 12, 12, 12, 13, 13, 13, 14, 14, 14 };
+    for (; sx < groups && sx + 2 < w; sx++, dst += 36) {
+        uint8x8_t bytes = vld1_u8(src + (size_t)sx * 3);
+        uint8x16_t pair = vcombine_u8(bytes, bytes);
+        uint8x16_t a = vqtbl1q_u8(pair, rgb);
+        uint8x16_t b = vqtbl1q_u8(pair, vaddq_u8(rgb, vdupq_n_u8(3)));
+        uint8x16_t tail = scaler_interp_phases_neon(a, b, third);
+        uint32_t last_word = vgetq_lane_u32(vreinterpretq_u32_u8(tail), 2);
+        vst1q_u8(dst, scaler_interp_phases_neon(a, b, first));
+        vst1q_u8(dst + 12, scaler_interp_phases_neon(a, b, second));
+        vst1_u8(dst + 24, vget_low_u8(tail));
+        memcpy(dst + 32, &last_word, sizeof(last_word));
+    }
+#endif
+    for (; sx < groups; sx++) {
         const uint8_t *a = src + (size_t)sx * 3;
         const uint8_t *b = a + 3;
         int ar = a[0], ag = a[1], ab = a[2];
@@ -585,12 +645,7 @@ static int scaler_scale_into(scaler *s, const djvu_cpix *in,
             upper = in->d + (size_t)fy2 * in->w * 3;
         }
         vf = fy & FRACMASK;
-        for (x = 0; x < bufw; x++) {
-            int lr = lower[x*3+0], lg = lower[x*3+1], lb = lower[x*3+2];
-            lbuf[(x+1)*3+0] = (uint8_t)(lr + (((upper[x*3+0] - lr) * vf + FRACSIZE2) >> FRACBITS));
-            lbuf[(x+1)*3+1] = (uint8_t)(lg + (((upper[x*3+1] - lg) * vf + FRACSIZE2) >> FRACBITS));
-            lbuf[(x+1)*3+2] = (uint8_t)(lb + (((upper[x*3+2] - lb) * vf + FRACSIZE2) >> FRACBITS));
-        }
+        scaler_interp_row(lower, upper, bufw, vf, lbuf + 3);
         lbuf[0]=lbuf[3]; lbuf[1]=lbuf[4]; lbuf[2]=lbuf[5];
         lbuf[(bufw+1)*3+0]=lbuf[bufw*3+0]; lbuf[(bufw+1)*3+1]=lbuf[bufw*3+1]; lbuf[(bufw+1)*3+2]=lbuf[bufw*3+2];
         dest = dst0 + (size_t)(topdown ? (s->outh - 1 - y) : y) * stride;

@@ -189,6 +189,26 @@ NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
   caps full-res rendered pixels per input (`FUZZ_MAX_FULLRES_PIXELS`, 128 Mpx);
   later pages still get the subsample-4 render, text, zones and links. Now
   2.9 s / 6.3 s. Artifacts deleted (duplicates of corpus files).
+- Apple Silicon background scaling: Instruments Time Profiler attributed 39%
+  of leaf samples to 3x horizontal expansion on `test008C.djvu` p1.
+  macOS `sample` put 4x and 12x expansion at 49% and 79% on
+  `test003C.djvu` p1 and `test008C.djvu` p2, respectively. The NEON kernels
+  pack interpolated RGB bytes in registers, and the general scaler uses the
+  existing SIMD row-interpolation entry point for its vertical pass.
+  Apple M3 Pro median full-page render time, from six alternating
+  before/after trials with five warmups and 20 timed renders per trial:
+
+  | Page | Scale | Before | After | Time saved |
+  |---|---:|---:|---:|---:|
+  | `test008C.djvu` p1 | 3x | 64.72 ms | 48.32 ms | 25.3% |
+  | `test003C.djvu` p1 | 4x | 34.81 ms | 22.32 ms | 35.9% |
+  | `test008C.djvu` p2 | 12x | 27.06 ms | 14.89 ms | 45.0% |
+
+  A direct scaler comparison matched 13,000 baseline outputs under ASan
+  and UBSan across upscales, fractional scales, clipped edges and padded
+  strides. The DjVuLibre CI corpus run matched 2,464 renders (including the
+  62 accepted palette overlaps), with zero mismatches. The two sample files
+  also passed 333 render-into comparisons at subsamples 1–3.
 - cross-thread abort test (`djvudec_thread -abort`, `bun cmd/thread.ts -abort`):
   workers render through the `_abortable` variants while another thread fires
   token aborts, ctx-wide aborts and page-cache drops; renders must be "aborted"
