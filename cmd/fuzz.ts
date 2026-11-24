@@ -45,6 +45,8 @@
 // fuzz/afl/<t>/*/queue as extra corpus dirs. AFL crashes are copied into
 // fuzz/crashes/<t>/ (afl-<hash>) so -repro / -check-crashes replay them on
 // the libFuzzer build. -afl runs only AFL++; -no-afl leaves it out.
+// A long AFL++ campaign (until killed, -cmin, -import, macOS shm) is
+// bun cmd/fuzz-afl.ts; it uses the same binaries and fuzz/afl/<t>/ state.
 //
 // The fuzzers are always rebuilt from scratch. build-lib.ts does track sources
 // and the shared headers, but not the compile FLAGS, and this build's flags
@@ -88,9 +90,11 @@ import {
   llvmTool,
   msanSupported,
   aflAvailable,
+  aflTool,
   type FuzzSan,
   type FuzzTarget,
 } from "./build-lib";
+import { baseAflEnv, coverageMapSize, shmProblem } from "./fuzz-afl";
 import { getDeps } from "./get-deps";
 import { corpusFiles } from "./corpus";
 import { isWindows } from "./util";
@@ -150,7 +154,8 @@ function usage(): never {
   -asan / -msan    only the ASan+UBSan / MemorySanitizer build (default on
                    Linux: alternate rounds; elsewhere ASan only)
   -afl / -no-afl   only AFL++ / no AFL++ rounds (default: AFL++ rounds join
-                   the rotation when afl-fuzz is installed)
+                   the rotation when afl-fuzz is installed). A long campaign
+                   is bun cmd/fuzz-afl.ts
   -repro FILE      replay one artifact (target from fuzz/crashes/<target>/)
   -check-crashes   replay every fuzz/crashes/<target>/* artifact (CI)
   -minimize        shrink each selected target's corpus (-merge=1)
@@ -463,35 +468,47 @@ function collectAflCrashes(t: FuzzTarget): void {
 // One AFL++ round for target t: main (-M) + secondaries (-S) over -jobs
 // cores, each stopping after secs (-V). A secondary that fails
 // to start is reported (its output is otherwise discarded).
+// Resumes with -i - once that instance has a queue (AFL++ rejects -i <dir>
+// when the output directory already exists). Shares fuzz/afl/<t>/ with
+// bun cmd/fuzz-afl.ts, whose main instance is also named "main".
 async function runAfl(t: FuzzTarget, secs: number): Promise<number> {
+  const aflFuzz = aflTool("afl-fuzz");
+  if (!aflFuzz) {
+    console.error("afl-fuzz not found");
+    return 1;
+  }
   const out = aflDir(t);
   mkdirSync(out, { recursive: true });
   const dict = join(DICTS, `${inputKind(t)}.dict`);
-  const env = {
-    ...process.env,
-    AFL_NO_UI: "1",
-    AFL_AUTORESUME: "1",
-    AFL_SKIP_CPUFREQ: "1",
-    AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: "1",
-    AFL_IMPORT_FIRST: "1",
-  };
+  const exe = fuzzExe(t, "afl");
+  const cmplog = fuzzExe(t, "aflcmp");
+  const mapSize = await coverageMapSize([exe, cmplog]);
+  const problem = shmProblem(mapSize);
+  if (problem) {
+    console.error(problem);
+    console.error("skipping AFL++ round");
+    return 0;
+  }
+  const env = { ...baseAflEnv(mapSize), AFL_NO_UI: "1", AFL_IMPORT_FIRST: "1" };
   const procs = [];
   for (let i = 0; i < jobs; i++) {
+    const name = i === 0 ? "main" : `s${i}`;
+    const resume = existsSync(join(out, name, "queue"));
     const args = [
-      "-i", corpusDir(t), "-o", out,
-      i === 0 ? "-M" : "-S", i === 0 ? "main" : `s${i}`,
+      "-i", resume ? "-" : corpusDir(t), "-o", out,
+      i === 0 ? "-M" : "-S", name,
       // -F (import libFuzzer's corpus) is main-only; the secondaries get
       // it through the main's queue. CmpLog on the main only too: AFL++
       // recommends one or two CmpLog instances, not all.
-      ...(i === 0 ? ["-F", corpusDir(t), "-c", fuzzExe(t, "aflcmp")] : []),
+      ...(i === 0 ? ["-F", corpusDir(t), "-c", cmplog] : []),
       "-V", String(secs),
       "-t", `${CFG[t].timeout * 1000}+`,
       "-m", "none",
       ...(existsSync(dict) ? ["-x", dict] : []),
-      "--", fuzzExe(t, "afl"),
+      "--", exe,
     ];
     procs.push(
-      Bun.spawn(["afl-fuzz", ...args], {
+      Bun.spawn([aflFuzz, ...args], {
         env,
         stdout: i === 0 ? "inherit" : "ignore",
         stderr: i === 0 ? "inherit" : "ignore",

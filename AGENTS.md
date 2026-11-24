@@ -354,18 +354,25 @@ bun cmd/build-prof.ts
   `out/fuzz_cov/html/`; `llvmTool()` finds the tools next to the fuzz clang,
   on PATH, or versioned (`llvm-cov-18`). Use it to see what fuzzing never
   reaches (first run: 85.6% of lines; weakest bitmap.c, scaler.c,
-  compose.c). **AFL++** (Linux/macOS, when `afl-fuzz` + `afl-clang-fast`
-  are on PATH, e.g. `apt install afl++`): the default rotation becomes
-  asan / msan / afl rounds. The AFL++ round builds the same harnesses with
-  `afl-clang-fast` (`out/fuzz_afl/`: ASan+UBSan, persistent mode via
-  libAFLDriver; `out/fuzz_aflcmp/`: CmpLog companion for the main
-  instance), runs one `-M` + `-S` instances over `-jobs` cores with the
-  same dictionaries, state in `fuzz/afl/<target>/` (gitignored). Finds flow
-  both ways: the main instance imports `fuzz/corpus/<t>` (`-F`), libFuzzer
-  reads `fuzz/afl/<t>/*/queue` as extra read-only corpus dirs. AFL crashes
-  are copied to `fuzz/crashes/<t>/afl-<hash>` and replay with `-repro` /
-  `-check-crashes` on the libFuzzer build. `-afl` = AFL++ only,
-  `-no-afl` = leave it out. Not in CI. `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
+  compose.c). **AFL++** (Linux/macOS, `brew install afl++` or `apt install afl++`):
+  two entry points, same harnesses. `bun cmd/fuzz-afl.ts [-target T]` is the
+  long campaign (default target `doc`; also `jb2`, `iw44`, `bzz`, `text`,
+  `annot`, `outline` — not `diff`). It builds with `afl-clang-fast`
+  (`out/fuzz_afl/`: ASan+UBSan, persistent mode via libAFLDriver;
+  `out/fuzz_aflcmp/`: CmpLog companion, `-c` on the main and, from 3 jobs,
+  one secondary), runs until killed, and resumes. Flags: `-jobs`, `-repro`,
+  `-import` (also on exit: new queue entries → `fuzz/corpus/<T>/afl-<hash>`,
+  crashes → `fuzz/crashes/<T>/afl-<hash>`), `-cmin`, `-V SEC`, `-no-asan`,
+  `-no-cmplog`, `-clean`. On macOS, stock `kern.sysv.shmmax` is 4 MiB; the
+  script sets `AFL_MAP_SIZE` from the binary, and bails with instructions
+  when that still does not fit (`sudo afl-system-config` once). When
+  `afl-fuzz` is installed, `bun cmd/fuzz.ts` also adds an AFL++ round to its
+  rotation (asan / msan / afl; `-afl` only that, `-no-afl` leaves it out):
+  one `-M main` + `-S` instances over `-jobs` cores for the slice, `-F` to
+  import `fuzz/corpus/<t>`, and libFuzzer reads `fuzz/afl/<t>/*/queue` as
+  extra corpus dirs. State for both is `fuzz/afl/<target>/` (gitignored).
+  Crashes replay with `-repro` / `-check-crashes` on the libFuzzer build.
+  Not in CI. `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
   is tracked so crash inputs become regression seeds.
   **slow-unit / timeout artifacts:** replay each one first
   (`bun cmd/fuzz.ts -repro <file>`, timing it). Commit it only if it exposed a

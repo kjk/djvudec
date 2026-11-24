@@ -2,7 +2,7 @@
 // DjVuLibre (djvudec_dump, djvudec_thread, djvudec_stress, oversize_iw44,
 // crash_cache_race, bench_before / bench_after, the libFuzzer target).
 import { $ } from "bun";
-import { existsSync, mkdirSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { buildFuzzOracle, copyAsanRuntimeDll } from "./build";
 import {
   CLANG_C_LINK_LIBS,
@@ -195,9 +195,31 @@ export const isFuzzTarget = (s: string): s is FuzzTarget =>
 //   Neither builds the diff target.
 export type FuzzSan = "asan" | "msan" | "cov" | "afl" | "aflcmp";
 const isAflSan = (s: FuzzSan) => s === "afl" || s === "aflcmp";
-// AFL++ is Linux/macOS only; use it when afl-fuzz + afl-clang-fast are on PATH.
-export const aflAvailable = (): boolean =>
-  !isWindows && !!Bun.which("afl-fuzz") && !!Bun.which("afl-clang-fast");
+/** Prefer Homebrew AFL++ wrappers (afl-clang-fast → Homebrew LLVM). */
+export function aflTool(name: string): string | null {
+  const envKey = name.toUpperCase().replaceAll("-", "_");
+  const env = process.env[envKey];
+  if (env && existsSync(env)) return env;
+  for (const base of ["/opt/homebrew/bin", "/usr/local/bin"]) {
+    const p = `${base}/${name}`;
+    if (existsSync(p)) return p;
+  }
+  return Bun.which(name);
+}
+
+export function findAflCc(): string {
+  const env = process.env.AFL_CC || process.env.AFL_CLANG_FAST;
+  if (env && existsSync(env)) return env;
+  return aflTool("afl-clang-fast") || aflTool("afl-cc") || "afl-clang-fast";
+}
+
+// AFL++ is Linux/macOS only. Homebrew's binaries live outside the default
+// PATH of some shells, so look there before `which`.
+export const aflAvailable = (): boolean => {
+  if (isWindows || !aflTool("afl-fuzz")) return false;
+  const cc = findAflCc();
+  return cc.includes("/") ? existsSync(cc) : !!Bun.which(cc);
+};
 export const msanSupported = !isWindows && !isMac;
 const fuzzDir = (san: FuzzSan) => `${ROOT}/out/${san === "asan" ? "fuzz" : `fuzz_${san}`}`;
 const FUZZ_DIR = fuzzDir("asan");
@@ -220,13 +242,20 @@ export async function buildFuzz(
   clean = false,
   targets: readonly FuzzTarget[] = FUZZ_TARGETS,
   san: FuzzSan = "asan",
+  // asan: ASan+UBSan on the AFL++ harness (default). Ignored for aflcmp,
+  // which AFL++ wants unsanitized. A stamp file rebuilds when this flips.
+  opts: { asan?: boolean } = {},
 ): Promise<void> {
   if (san === "msan") {
     if (!msanSupported) throw new Error("MemorySanitizer needs Linux (clang has no MSan on Windows/macOS)");
     targets = targets.filter((t) => t !== "diff");
   }
   if (isAflSan(san)) {
-    if (!aflAvailable()) throw new Error("AFL++ not found (afl-fuzz / afl-clang-fast on PATH; e.g. apt install afl++)");
+    if (!aflAvailable()) {
+      throw new Error(
+        "AFL++ not found (afl-fuzz / afl-clang-fast). macOS: brew install afl++; Debian/Ubuntu: sudo apt install afl++",
+      );
+    }
     targets = targets.filter((t) => t !== "diff");
   }
   const FUZZ_DIR = fuzzDir(san);
@@ -243,17 +272,38 @@ export async function buildFuzz(
     obj: `${FUZZ_DIR}/fuzz_${t}.o`,
     extra: "",
   }));
-  if (clean) {
+  // afl-clang-fast reads its mode from the environment (at compile AND link)
+  // and turns -fsanitize=fuzzer into its own driver.
+  const clang = isAflSan(san) ? findAflCc() : resolveFuzzClang();
+  const aflAsan = san === "afl" && opts.asan !== false;
+  const env: Record<string, string | undefined> = { ...process.env, AFL_QUIET: "1" };
+  let stampChanged = false;
+  let stampPath = "";
+  let stampWant = "";
+  if (isAflSan(san)) {
+    // AFL plugin warnings become errors under -Werror on some LLVM versions.
+    env.AFL_LLVM_NO_ERROR = process.env.AFL_LLVM_NO_ERROR ?? "1";
+    if (aflAsan) {
+      env.AFL_USE_ASAN = "1";
+      if (ubsanEnabled()) env.AFL_USE_UBSAN = "1";
+      else delete env.AFL_USE_UBSAN;
+    } else {
+      delete env.AFL_USE_ASAN;
+      delete env.AFL_USE_UBSAN;
+    }
+    if (san === "aflcmp") env.AFL_LLVM_CMPLOG = "1";
+    else delete env.AFL_LLVM_CMPLOG;
+    stampWant =
+      `asan=${aflAsan ? 1 : 0};ubsan=${aflAsan && ubsanEnabled() ? 1 : 0};` +
+      `cmplog=${san === "aflcmp" ? 1 : 0};cc=${clang}`;
+    stampPath = `${FUZZ_DIR}/.afl_features`;
+    const stampPrev = existsSync(stampPath) ? readFileSync(stampPath, "utf8").trim() : "";
+    stampChanged = stampPrev !== stampWant;
+  }
+  if (clean || stampChanged) {
     for (const u of [...libUnits, ...tgtUnits]) rmSync(u.obj, { force: true });
     for (const t of targets) rmSync(fuzzExeS(t), { force: true });
   }
-
-  // afl-clang-fast reads its mode from the environment (at compile AND link)
-  // and turns -fsanitize=fuzzer into its own driver.
-  const clang = isAflSan(san) ? "afl-clang-fast" : resolveFuzzClang();
-  const env: Record<string, string | undefined> = { ...process.env, AFL_QUIET: "1" };
-  if (san === "afl") { env.AFL_USE_ASAN = "1"; env.AFL_USE_UBSAN = "1"; }
-  if (san === "aflcmp") env.AFL_LLVM_CMPLOG = "1";
   // UBSan non-recoverable so a finding aborts and libFuzzer saves the input
   // (recoverable UBSan only logs, which a fuzzer never notices).
   const sanitize =
@@ -302,6 +352,7 @@ export async function buildFuzz(
     await $`${clang} -fsanitize=${{ raw: sanitize }} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExeS(u.t)}`.env(env);
   }
   if (isWindows && san === "asan") await copyAsanRuntimeDll(FUZZ_DIR);
+  if (stampPath) writeFileSync(stampPath, stampWant);
   console.log("built fuzz targets");
 }
 

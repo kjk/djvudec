@@ -33,6 +33,7 @@ bun cmd/build.ts        # build reference tools + the C library and test harness
                         # (Windows: out/msvc/djvu_test_msvc.exe; -clang: out/clang/djvu_test_clang)
 bun cmd/tests.ts -all   # build, then verify render + text against DjVuLibre
 bun cmd/fuzz.ts -check-crashes  # replay tracked fuzz/crashes under ASan (CI)
+bun cmd/fuzz-afl.ts              # AFL++ campaign (Linux/macOS; shares the corpora)
 ```
 
 CI (GitHub Actions): `.github/workflows/ci.yml` — full oracle tests + amalgamation

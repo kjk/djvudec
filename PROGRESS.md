@@ -177,6 +177,13 @@ NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
   Tried and dropped: one fused vertical+horizontal SIMD kernel over
   per-source-row gathers for every ratio -- byte-exact and good at subsample 2,
   but 5-8% slower at subsample 1 than the 4-byte-copy interleave.
+- `bun cmd/fuzz-afl.ts` is a long-running AFL++ campaign (the shape used by
+  jxldec / heicdec), next to the rotation inside `fuzz.ts`: one target until
+  killed (default `doc`), CmpLog, dictionary, `-jobs`, `-repro`, `-import`,
+  `-cmin`, `-V`, `-no-asan`. Same harnesses and the same `fuzz/afl/<T>/`
+  state as the rotation. Resumes with `-i -` once a queue exists, and on
+  macOS sets `AFL_MAP_SIZE` from the binary when `kern.sysv.shmmax` is still
+  the stock 4 MiB (`sudo afl-system-config` once to raise it).
 - AFL++ joins the default fuzz rotation when installed (asan / msan / afl
   rounds): afl-clang-fast builds of the same harnesses (ASan+UBSan +
   a CmpLog companion), main + secondaries over all cores, corpus shared
