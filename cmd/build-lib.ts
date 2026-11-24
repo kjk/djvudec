@@ -3,7 +3,7 @@
 // crash_cache_race, bench_before / bench_after, the libFuzzer target).
 import { $ } from "bun";
 import { existsSync, mkdirSync, rmSync } from "fs";
-import { copyAsanRuntimeDll } from "./build";
+import { buildFuzzOracle, copyAsanRuntimeDll } from "./build";
 import {
   CLANG_C_LINK_LIBS,
   clangCFlags,
@@ -170,7 +170,8 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
 // Driven by cmd/fuzz.ts. The per-codec targets exist for throughput: a whole
 // multi-MB document runs at < 1 exec/s under ASan, a JB2/IW44/BZZ chunk at
 // hundreds to thousands.
-export const FUZZ_TARGETS = ["doc", "jb2", "iw44", "bzz", "text", "annot", "outline"] as const;
+// diff = differential (ours vs DjVuLibre on the same input; links libdjvu).
+export const FUZZ_TARGETS = ["doc", "jb2", "iw44", "bzz", "text", "annot", "outline", "diff"] as const;
 export type FuzzTarget = (typeof FUZZ_TARGETS)[number];
 export const isFuzzTarget = (s: string): s is FuzzTarget =>
   (FUZZ_TARGETS as readonly string[]).includes(s);
@@ -218,12 +219,18 @@ export async function buildFuzz(
     process.env.DJVU_FUZZ_UBSAN === "1" || process.env.DJVU_FUZZ_UBSAN === "true";
   const sanitize =
     wantUbsan && !isWindows ? "address,undefined,fuzzer" : "address,fuzzer";
-  const cflags = `-fsanitize=${sanitize} ${clangCFlags("-g -O1")}`;
+  // DJVU_FUZZ_HOOKS: test-only instrumentation in the library (debug.c /
+  // DJVU_DEBUG_ONLY regions), e.g. the ZP EndOfFile counter fuzz_diff uses.
+  const cflags = `-fsanitize=${sanitize} -DDJVU_FUZZ_HOOKS ${clangCFlags("-g -O1")}`;
   const all = [...libUnits, ...tgtUnits];
   const stale = all.filter(objStale);
   const libObjs = libUnits.map((u) => u.obj);
   const staleExes = tgtUnits.filter(
-    (u) => stale.length > 0 || needsRebuild(fuzzExe(u.t), u.obj, ...libObjs) || !existsSync(fuzzExe(u.t)),
+    (u) =>
+      stale.length > 0 ||
+      needsRebuild(fuzzExe(u.t), u.obj, ...libObjs) ||
+      (u.t === "diff" && needsRebuild(fuzzExe(u.t), `${ROOT}/test/fuzz_ddjvu.cpp`)) ||
+      !existsSync(fuzzExe(u.t)),
   );
   if (staleExes.length === 0) {
     // Ensure the runtime DLL even on the up-to-date path: a prior run may have
@@ -238,6 +245,13 @@ export async function buildFuzz(
     stale.map((u) => $`${clang} ${{ raw: cflags }} ${{ raw: u.extra }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`),
   );
   for (const u of staleExes) {
+    if (u.t === "diff") {
+      // C++ link: the DjVuLibre oracle (uninstrumented shim + libdjvu).
+      const oracle = await buildFuzzOracle(FUZZ_DIR);
+      const clangxx = clang.replace(/clang(\.exe)?$/, "clang++$1");
+      await $`${clangxx} -fsanitize=${sanitize} ${{ raw: [...libObjs, u.obj, ...oracle.objs].join(" ") }} ${{ raw: oracle.linkLibs }} -o ${fuzzExe(u.t)}`;
+      continue;
+    }
     await $`${clang} -fsanitize=${sanitize} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExe(u.t)}`;
   }
   if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);

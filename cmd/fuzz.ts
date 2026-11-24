@@ -16,6 +16,11 @@
 //   text     TXTa payload (text + zone tree)
 //   annot    ANTa S-expressions -> hyperlinks
 //   outline  decoded NAVM payload
+//   diff     whole .djvu, rendered by us AND DjVuLibre (linked libdjvu): any
+//            output difference beyond the palette-overlap rule aborts, so
+//            this finds wrong output, not just memory errors. Not in the
+//            default set on Windows (libdjvu + libFuzzer link untested there;
+//            pass -target diff to try).
 // A whole multi-MB document runs at < 1 exec/s under ASan; the per-codec
 // targets get hundreds to thousands, so most codec bugs are found there. The
 // default run gives every target a time slice per round (weighted toward the
@@ -65,6 +70,7 @@ import {
 } from "./build-lib";
 import { getDeps } from "./get-deps";
 import { corpusFiles } from "./corpus";
+import { isWindows } from "./util";
 
 const ROOT = resolve(import.meta.dir, "..");
 const FUZZ = join(ROOT, "fuzz");
@@ -75,12 +81,13 @@ const SEEDS = join(ROOT, "out", "fuzz-seeds");
 // encodings and annotation keywords the byte mutators would never guess.
 const DICTS = join(FUZZ, "dict");
 const dictArg = (t: FuzzTarget) => {
-  const f = join(DICTS, `${t}.dict`);
+  const f = join(DICTS, `${inputKind(t)}.dict`);
   return existsSync(f) ? [`-dict=${f}`] : [];
 };
 
 type TargetCfg = {
   maxLen: number; // libFuzzer -max_len
+  extra?: string[]; // more libFuzzer flags
   timeout: number; // -timeout (s): a hang
   slow: number; // -report_slow_units (s)
   weight: number; // relative time slice per round
@@ -98,7 +105,14 @@ const CFG: Record<FuzzTarget, TargetCfg> = {
   text: { maxLen: 100_000, timeout: 10, slow: 5, weight: 1 },
   annot: { maxLen: 100_000, timeout: 10, slow: 5, weight: 1 },
   outline: { maxLen: 100_000, timeout: 10, slow: 5, weight: 1 },
+  // DjVuLibre leaks on some error paths: LeakSanitizer would report the
+  // oracle's leaks as findings (ours are still caught by the budgeted
+  // allocator's per-input check).
+  diff: { maxLen: 300_000, timeout: 30, slow: 15, weight: 2, extra: ["-detect_leaks=0"] },
 };
+
+// Inputs, seeds and dictionary are shared: diff takes whole documents like doc.
+const inputKind = (t: FuzzTarget): FuzzTarget => (t === "diff" ? "doc" : t);
 
 function usage(): never {
   console.error(
@@ -126,7 +140,7 @@ let repro = "";
 let checkCrashes = false;
 let minimize = false;
 let reseed = false;
-let targets: FuzzTarget[] = [...FUZZ_TARGETS];
+let targets: FuzzTarget[] = FUZZ_TARGETS.filter((t) => !(isWindows && t === "diff"));
 
 function intArg(v: string | undefined, name: string): number {
   const n = Number.parseInt(v ?? "", 10);
@@ -187,7 +201,7 @@ if (repro) {
   const t: FuzzTarget = isFuzzTarget(parent) ? parent : targets.length === 1 ? targets[0] : "doc";
   await buildFuzz(true, [t]);
   console.log(`replaying ${path} on target ${t}`);
-  process.exit(await run(fuzzExe(t), [path]));
+  process.exit(await run(fuzzExe(t), [...(CFG[t].extra ?? []), path]));
 }
 
 await buildFuzz(true, targets);
@@ -204,7 +218,7 @@ if (checkCrashes) {
   for (const t of targets) {
     for (const path of listArtifacts(t)) {
       n++;
-      const rc = await run(fuzzExe(t), [path]);
+      const rc = await run(fuzzExe(t), [...(CFG[t].extra ?? []), path]);
       const name = `${t}/${basename(path)}`;
       if (rc !== 0) {
         fail++;
@@ -270,13 +284,13 @@ if (needSeed.length > 0) {
   }
   for (const t of needSeed) {
     let n = 0;
-    const src = join(SEEDS, t);
+    const src = join(SEEDS, inputKind(t));
     for (const f of readdirSync(src)) {
       if (statSync(join(src, f)).size > maxLen(t)) continue;
       copyFileSync(join(src, f), join(corpusDir(t), f));
       n++;
     }
-    if (t === "doc") {
+    if (inputKind(t) === "doc") {
       // whole documents too (multi-page structure, DIRM, INCL, shared dicts)
       for (const f of files) {
         if (statSync(f).size > maxLen(t)) continue;
@@ -308,6 +322,7 @@ function fuzzArgs(t: FuzzTarget, secs: number): string[] {
     "-rss_limit_mb=4096",
     `-timeout=${c.timeout}`,
     `-report_slow_units=${c.slow}`,
+    ...(c.extra ?? []),
     `-max_total_time=${secs}`,
     "-print_final_stats=1",
     // -fork: N child processes, corpus merged back into corpusDir after each

@@ -480,6 +480,17 @@ typedef struct {
 /* Initialize a decoder over [data, data+len). */
 void djvu_zp_init(djvu_zp *zp, const uint8_t *data, size_t len);
 
+/* DJVU_DEBUG_ONLY_BEGIN */
+#if defined(DJVU_FUZZ_HOOKS)
+/* Fuzz builds only (single-threaded; defined in debug.c): bumped each time a
+   ZP stream reads past DjVuLibre's EndOfFile point (25 bytes beyond the
+   data, where ZPCodec::preload throws). The differential fuzz target skips
+   such inputs: DjVuLibre stops decoding that stream there, we pad with 0xff
+   and decode on. */
+extern int djvu_fuzz_zp_eof;
+#endif
+/* DJVU_DEBUG_ONLY_END */
+
 /* ZP fast path (static inline so JB2/BZZ/IW44 loops can inline djvu_zp_decode). */
 static inline int zp_read_byte(djvu_zp *zp)
 {
@@ -498,8 +509,14 @@ static inline void zp_preload(djvu_zp *zp)
         int b = zp_read_byte(zp);
         if (b == -1) {
             zbyte = 255;
-            if (--zp->delay < 1)
+            if (--zp->delay < 1) {
                 zp->eof = 1;
+/* DJVU_DEBUG_ONLY_BEGIN */
+#if defined(DJVU_FUZZ_HOOKS)
+                djvu_fuzz_zp_eof++;
+#endif
+/* DJVU_DEBUG_ONLY_END */
+            }
         } else {
             zbyte = b;
         }

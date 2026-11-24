@@ -283,7 +283,8 @@ bun cmd/build-prof.ts
   .djvu → full public API, ≤20 pages/input), `jb2` (Sjbz + Djbz + FGbz →
   internal decode + synthesized page render), `iw44` (BG44/PM44 chunk
   sequence), `bzz`, `text` (TXTa payload), `annot` (ANTa), `outline`
-  (decoded NAVM via `djvu_outline_parse`). Shared helpers (budgeted
+  (decoded NAVM via `djvu_outline_parse`), `diff` (differential, below).
+  Shared helpers (budgeted
   allocator + leak check, in-memory page synthesizer, length-prefixed input
   splitting, per-page API workout) are in `test/fuzz_util.h`. The per-codec
   targets exist for throughput: a whole multi-MB document runs at < 1 exec/s
@@ -307,7 +308,27 @@ bun cmd/build-prof.ts
   duplicates / swaps / retags chunks, and re-serializes with correct sizes,
   padding and (90% of the time) recomputed bundled-DIRM offsets; 20% of calls
   stay plain byte mutation. In a 10-minute A/B from the same corpus it
-  reached ~10% more edges than byte mutation alone. `fuzz/corpus/` **is** the checkpoint — kill
+  reached ~10% more edges than byte mutation alone.
+  **Differential target (`diff`, `test/fuzz_diff.c`):** renders each input
+  with our decoder AND DjVuLibre (in-memory ddjvuapi shim
+  `test/fuzz_ddjvu.cpp`, uninstrumented, + the cached libdjvu; built by
+  `buildFuzzOracle()` in build.ts) and aborts when full-res output differs
+  beyond the palette-overlap rule (`test/oracle_compare.h`, shared with
+  `djvu_test -verify-render`). Pages <= 4 Mpx, first 4 pages. Compared only
+  when **neither** decoder reported anything: no djvu error-callback
+  diagnostic, no `DDJVU_ERROR`, same page count, and no ZP stream ran past
+  DjVuLibre's EndOfFile point (`djvu_fuzz_zp_eof`, a `-DDJVU_FUZZ_HOOKS`
+  counter in a `DJVU_DEBUG_ONLY` region: DjVuLibre's ZPCodec throws 25
+  bytes past the end of a truncated stream and keeps what it decoded; we pad
+  with 0xff -- a known divergence on truncated data, not re-reported). So a
+  finding means both decoders accepted the input and still disagree. Triage
+  aids: `FUZZ_DIFF_DUMP=prefix` writes both renders as PNM,
+  `FUZZ_DIFF_VERBOSE=1` prints DjVuLibre's messages. Run with
+  `-detect_leaks=0` (DjVuLibre leaks on error paths; ours are caught by the
+  per-input budget check). A crash/hang with a libdjvu stack is a DjVuLibre
+  bug. Not in the default target list on Windows (libdjvu + libFuzzer link
+  untested there; `-target diff` to try). Its first runs found five decoder
+  divergences, all fixed (PROGRESS.md). `fuzz/corpus/` **is** the checkpoint — kill
   to stop, rerun to resume. Flags: `-target a,b`, `-repro FILE` (target
   inferred from `fuzz/crashes/<target>/`), `-check-crashes` (CI: replay every
   `fuzz/crashes/<target>/*`, expect exit 0), `-minimize` (`-merge=1` per

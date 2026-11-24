@@ -312,6 +312,22 @@ export function buildAsan(): Promise<string> {
   return buildHarness("asan", true);
 }
 
+// DjVuLibre oracle for the differential fuzz target (test/fuzz_diff.c):
+// compiles the in-memory ddjvuapi shim test/fuzz_ddjvu.cpp UNinstrumented
+// (it is the oracle, like bench_ddjvu.cpp in the ASan harness) and ensures
+// the prebuilt libdjvu. Returns what the fuzz link needs.
+export async function buildFuzzOracle(
+  dir: string,
+): Promise<{ objs: string[]; linkLibs: string }> {
+  await buildLibDjvu();
+  const src = `${ROOT}/test/fuzz_ddjvu.cpp`;
+  const obj = `${dir}/fuzz_ddjvu.o`;
+  if (needsRebuild(obj, src)) {
+    await runCmd(`clang++ ${DJVU_CXXFLAGS} -c -o ${obj} ${src}`);
+  }
+  return { objs: [obj, LIBDJVU], linkLibs: DJVU_LINK_LIBS };
+}
+
 // The exe links the DYNAMIC asan runtime (clang_rt.asan_dynamic-x86_64.dll),
 // which lives in clang's resource dir (lib/clang/<ver>/lib/windows), not on
 // PATH; without a copy next to the exe the loader fails (bash exit 127 /

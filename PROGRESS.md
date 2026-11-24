@@ -137,6 +137,24 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- fuzzing overhaul (`bun cmd/fuzz.ts` with no args now does the best default):
+  per-codec libFuzzer targets (`test/fuzz_<name>.c`: doc, jb2, iw44, bzz,
+  text, annot, outline, diff) seeded by `test/fuzz_seeds.c` from the corpus,
+  round-robin `-fork` over all cores; cheap per-input cost (doc corpus =
+  standalone pages + small files, adaptive subsample, no trace-cmp in the
+  numeric kernels: doc target from < 1 to ~15 exec/s, codec targets
+  20-3000/s); per-target dictionaries (`fuzz/dict/`); an IFF-aware custom
+  mutator for whole documents (`test/fuzz_mutator.h`, ~10% more edges in an
+  A/B); a differential target vs DjVuLibre (`test/fuzz_diff.c`, see AGENTS.md)
+  whose first runs found the five divergences below.
+- fuzz slow-unit triage (slow-unit-321bf8…, slow-unit-2e9c53…): byte-identical
+  copies of the seeds `test041C.djvu` (14 × 9094x5630) and `test076C.djvu`
+  (18 × 4960x7015), not mutations and not decoder bugs — ~700 Mpixels of
+  full-res composite per input, 10-12 s under ASan on a 2-core Linux box, over
+  the 20 s threshold under `-jobs` load. Fix in the harness: `fuzz_target.c`
+  caps full-res rendered pixels per input (`FUZZ_MAX_FULLRES_PIXELS`, 128 Mpx);
+  later pages still get the subsample-4 render, text, zones and links. Now
+  2.9 s / 6.3 s. Artifacts deleted (duplicates of corpus files).
 - cross-thread abort test (`djvudec_thread -abort`, `bun cmd/thread.ts -abort`):
   workers render through the `_abortable` variants while another thread fires
   token aborts, ctx-wide aborts and page-cache drops; renders must be "aborted"
@@ -416,14 +434,6 @@ NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
   `Mcguffey's_Primer.djvu` whose clean seed already costs ~5s under ASan —
   not bugs; deleted, and `fuzz.ts` now passes `-report_slow_units=20` so the
   big seed's honest cost stops tripping libFuzzer's 10s default.
-- fuzz slow-unit triage (slow-unit-321bf8…, slow-unit-2e9c53…): byte-identical
-  copies of the seeds `test041C.djvu` (14 × 9094x5630) and `test076C.djvu`
-  (18 × 4960x7015), not mutations and not decoder bugs — ~700 Mpixels of
-  full-res composite per input, 10-12 s under ASan on a 2-core Linux box, over
-  the 20 s threshold under `-jobs` load. Fix in the harness: `fuzz_target.c`
-  caps full-res rendered pixels per input (`FUZZ_MAX_FULLRES_PIXELS`, 128 Mpx);
-  later pages still get the subsample-4 render, text, zones and links. Now
-  2.9 s / 6.3 s. Artifacts deleted (duplicates of corpus files).
 - subsampled color composite: `djvu_page_render(_into)` now composes
   compound/photo pages at the requested subsample instead of only at full
   resolution (previously subsample>1 fell back to the gray mask on compound

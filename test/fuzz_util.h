@@ -60,14 +60,25 @@ enum {
     FZ_OPT_MAXCHUNKS = 8  /* decode only the first IW44 chunk per layer */
 };
 
+/* Diagnostics at WARNING or above since the last fz_ctx_new (the diff
+   target only compares inputs neither decoder complained about). */
+static int fz_diag;
+
+HU_UNUSED static void fz_error(void *user, djvu_severity sev, const char *msg)
+{
+    (void)user; (void)msg;
+    if (sev >= DJVU_SEVERITY_WARNING) fz_diag++;
+}
+
 HU_UNUSED static djvu_ctx *fz_ctx_new(unsigned opts)
 {
     djvu_ctx *ctx;
     int locks = (opts & (FZ_OPT_LOCKS | FZ_OPT_CACHE)) != 0;
     djvu_init();
     fz_live = 0;
+    fz_diag = 0;
     ctx = djvu_ctx_new(fz_alloc, fz_free, locks ? fz_lock : NULL,
-                       locks ? fz_unlock : NULL, NULL, NULL);
+                       locks ? fz_unlock : NULL, fz_error, NULL);
     if (!ctx) return NULL;
     if (opts & FZ_OPT_CACHE) djvu_ctx_set_cache_per_page(ctx, 1);
     if (opts & FZ_OPT_BGR) djvu_ctx_set_bgr(ctx, 1);

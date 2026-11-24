@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(DJVU_FUZZ_HOOKS)
+int djvu_fuzz_zp_eof; /* see djvu_internal.h */
+#endif
+
 void djvu_debug_dump_comps(djvu_doc *doc)
 {
     int i;
