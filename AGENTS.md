@@ -332,8 +332,15 @@ bun cmd/build-prof.ts
   to stop, rerun to resume. Flags: `-target a,b`, `-repro FILE` (target
   inferred from `fuzz/crashes/<target>/`), `-check-crashes` (CI: replay every
   `fuzz/crashes/<target>/*`, expect exit 0), `-minimize` (`-merge=1` per
-  corpus), `-max-len N`. Linux/macOS CI may set `DJVU_FUZZ_UBSAN=1` for
-  ASan+UBSan+fuzzer. `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
+  corpus), `-max-len N`. **Sanitizers:** the fuzz build is ASan + UBSan
+  (non-recoverable, so UB aborts and the input is saved) on Linux/macOS,
+  ASan only on Windows (`DJVU_FUZZ_UBSAN=0` turns UBSan off). On Linux a
+  second MemorySanitizer build (`out/fuzz_msan/`, origin tracking, no diff
+  target) catches uninitialized reads; the default run alternates rounds
+  between the two, `-asan` / `-msan` pin one (also for `-repro`,
+  `-check-crashes`, `-minimize`). CI replays the crashes under both on
+  Linux. (MSan's first run found an uninitialized read in the BZZ inverse
+  BWT.) `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
   is tracked so crash inputs become regression seeds.
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +

@@ -137,6 +137,12 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- fuzz sanitizers: UBSan is now on by default in the Linux/macOS fuzz build
+  and non-recoverable (it used to be opt-in and only log, so libFuzzer never
+  saw a finding); a MemorySanitizer build (Linux, `out/fuzz_msan/`) alternates
+  rounds with it in the default run (`-asan` / `-msan` to pin). All corpora
+  replay clean under UBSan; MSan found the BZZ marker-slot read below. CI
+  replays the crash set under both.
 - BZZ inverse BWT: `pos[markerpos]` was never written, but a corrupt stream
   can walk onto it -- an uninitialized (fresh buffer) or stale (reused
   across blocks) read, found by the new MemorySanitizer fuzz build.

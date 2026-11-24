@@ -149,10 +149,12 @@ jobs:
       # builds and smoke-tests that.
       - name: Amalgamation
         run: bun cmd/build-dist.ts -no-wasm
+      # ASan + UBSan is the default fuzz build on Linux/macOS (UBSan
+      # non-recoverable); MSan is a separate build (Linux only).
       - name: Fuzz crashes (ASan + UBSan)
-        env:
-          DJVU_FUZZ_UBSAN: "1"
         run: bun cmd/fuzz.ts -check-crashes
+      - name: Fuzz crashes (MemorySanitizer)
+        run: bun cmd/fuzz.ts -check-crashes -msan
 
   macos:
     name: macOS clang + tests

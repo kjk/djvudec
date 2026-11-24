@@ -176,7 +176,19 @@ export type FuzzTarget = (typeof FUZZ_TARGETS)[number];
 export const isFuzzTarget = (s: string): s is FuzzTarget =>
   (FUZZ_TARGETS as readonly string[]).includes(s);
 
-const FUZZ_DIR = `${ROOT}/out/fuzz`;
+// Sanitizer builds of the fuzz targets, each in its own dir so they coexist:
+//   asan  out/fuzz       ASan (+ UBSan, non-recoverable, on Linux/macOS --
+//                        Windows ASan+UBSan is flaky with the VS clang
+//                        runtime; DJVU_FUZZ_UBSAN=0 turns UBSan off)
+//   msan  out/fuzz_msan  MemorySanitizer with origin tracking (Linux only):
+//                        uninitialized reads ASan cannot see. The diff target
+//                        is not built for it (the uninstrumented libdjvu
+//                        oracle would report false positives).
+export type FuzzSan = "asan" | "msan";
+export const msanSupported = !isWindows && !isMac;
+const fuzzDir = (san: FuzzSan) => `${ROOT}/out/${san === "msan" ? "fuzz_msan" : "fuzz"}`;
+const FUZZ_DIR = fuzzDir("asan");
+export const ubsanEnabled = () => !isWindows && process.env.DJVU_FUZZ_UBSAN !== "0";
 
 // Numeric kernels (wavelet transform, color conversion, scaling, compositing)
 // keep edge coverage but drop -fsanitize=fuzzer's comparison tracing: a perf
@@ -184,8 +196,8 @@ const FUZZ_DIR = `${ROOT}/out/fuzz`;
 // __sanitizer_cov_trace_*cmp* called from these loops, where cmp feedback
 // (solving magic values) buys nothing.
 const FUZZ_NO_TRACE_CMP = new Set(["src/iw44.c", "src/scaler.c", "src/compose.c"]);
-export function fuzzExe(t: FuzzTarget): string {
-  return `${FUZZ_DIR}/djvudec_fuzz_${t}${isWindows ? ".exe" : ""}`;
+export function fuzzExe(t: FuzzTarget, san: FuzzSan = "asan"): string {
+  return `${fuzzDir(san)}/djvudec_fuzz_${t}${isWindows ? ".exe" : ""}`;
 }
 
 // Always a clean build when clean=true (fuzz.ts passes it): build-lib tracks
@@ -194,7 +206,14 @@ export function fuzzExe(t: FuzzTarget): string {
 export async function buildFuzz(
   clean = false,
   targets: readonly FuzzTarget[] = FUZZ_TARGETS,
+  san: FuzzSan = "asan",
 ): Promise<void> {
+  if (san === "msan") {
+    if (!msanSupported) throw new Error("MemorySanitizer needs Linux (clang has no MSan on Windows/macOS)");
+    targets = targets.filter((t) => t !== "diff");
+  }
+  const FUZZ_DIR = fuzzDir(san);
+  const fuzzExeS = (t: FuzzTarget) => fuzzExe(t, san);
   mkdirSync(FUZZ_DIR, { recursive: true });
   const libUnits = LIB_SRCS.map((s) => ({
     src: `${ROOT}/${s}`,
@@ -209,16 +228,18 @@ export async function buildFuzz(
   }));
   if (clean) {
     for (const u of [...libUnits, ...tgtUnits]) rmSync(u.obj, { force: true });
-    for (const t of targets) rmSync(fuzzExe(t), { force: true });
+    for (const t of targets) rmSync(fuzzExeS(t), { force: true });
   }
 
   const clang = resolveFuzzClang();
-  // DJVU_FUZZ_UBSAN=1 adds undefined sanitizer (Linux/macOS CI; Windows
-  // ASan+UBSan together is flaky with the VS clang runtime).
-  const wantUbsan =
-    process.env.DJVU_FUZZ_UBSAN === "1" || process.env.DJVU_FUZZ_UBSAN === "true";
+  // UBSan non-recoverable so a finding aborts and libFuzzer saves the input
+  // (recoverable UBSan only logs, which a fuzzer never notices).
   const sanitize =
-    wantUbsan && !isWindows ? "address,undefined,fuzzer" : "address,fuzzer";
+    san === "msan"
+      ? "memory,fuzzer -fsanitize-memory-track-origins"
+      : ubsanEnabled()
+        ? "address,undefined,fuzzer -fno-sanitize-recover=undefined"
+        : "address,fuzzer";
   // DJVU_FUZZ_HOOKS: test-only instrumentation in the library (debug.c /
   // DJVU_DEBUG_ONLY regions), e.g. the ZP EndOfFile counter fuzz_diff uses.
   const cflags = `-fsanitize=${sanitize} -DDJVU_FUZZ_HOOKS ${clangCFlags("-g -O1")}`;
@@ -228,9 +249,9 @@ export async function buildFuzz(
   const staleExes = tgtUnits.filter(
     (u) =>
       stale.length > 0 ||
-      needsRebuild(fuzzExe(u.t), u.obj, ...libObjs) ||
-      (u.t === "diff" && needsRebuild(fuzzExe(u.t), `${ROOT}/test/fuzz_ddjvu.cpp`)) ||
-      !existsSync(fuzzExe(u.t)),
+      needsRebuild(fuzzExeS(u.t), u.obj, ...libObjs) ||
+      (u.t === "diff" && needsRebuild(fuzzExeS(u.t), `${ROOT}/test/fuzz_ddjvu.cpp`)) ||
+      !existsSync(fuzzExeS(u.t)),
   );
   if (staleExes.length === 0) {
     // Ensure the runtime DLL even on the up-to-date path: a prior run may have
@@ -249,10 +270,10 @@ export async function buildFuzz(
       // C++ link: the DjVuLibre oracle (uninstrumented shim + libdjvu).
       const oracle = await buildFuzzOracle(FUZZ_DIR);
       const clangxx = clang.replace(/clang(\.exe)?$/, "clang++$1");
-      await $`${clangxx} -fsanitize=${sanitize} ${{ raw: [...libObjs, u.obj, ...oracle.objs].join(" ") }} ${{ raw: oracle.linkLibs }} -o ${fuzzExe(u.t)}`;
+      await $`${clangxx} -fsanitize=${{ raw: sanitize }} ${{ raw: [...libObjs, u.obj, ...oracle.objs].join(" ") }} ${{ raw: oracle.linkLibs }} -o ${fuzzExeS(u.t)}`;
       continue;
     }
-    await $`${clang} -fsanitize=${sanitize} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExe(u.t)}`;
+    await $`${clang} -fsanitize=${{ raw: sanitize }} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExeS(u.t)}`;
   }
   if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
   console.log("built fuzz targets");

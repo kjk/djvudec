@@ -28,6 +28,13 @@
 // -ignore_crashes keeps a slice going after a finding, and every new artifact
 // is listed at the end.
 //
+// Sanitizers: the default build is ASan + UBSan (non-recoverable, so a UB
+// finding aborts and is saved; Linux/macOS -- Windows is ASan only). On Linux
+// the default run alternates rounds between that build and a MemorySanitizer
+// build (out/fuzz_msan/, uninitialized reads ASan cannot see; the diff target
+// is skipped there). -msan / -asan pin one; -msan also applies to -repro,
+// -check-crashes and -minimize.
+//
 // The fuzzers are always rebuilt from scratch. build-lib.ts does track sources
 // and the shared headers, but not the compile FLAGS, and this build's flags
 // vary by environment: DJVU_FUZZ_UBSAN switches the sanitizer set
@@ -66,6 +73,8 @@ import {
   FUZZ_SEEDS_TARGET,
   FUZZ_TARGETS,
   isFuzzTarget,
+  msanSupported,
+  type FuzzSan,
   type FuzzTarget,
 } from "./build-lib";
 import { getDeps } from "./get-deps";
@@ -124,6 +133,8 @@ function usage(): never {
   -slice SECS      seconds per weight unit per round (default 120)
   -max-len N       override every target's max input size
   -reseed          (re)extract seeds into every selected corpus
+  -asan / -msan    only the ASan+UBSan / MemorySanitizer build (default on
+                   Linux: alternate rounds; elsewhere ASan only)
   -repro FILE      replay one artifact (target from fuzz/crashes/<target>/)
   -check-crashes   replay every fuzz/crashes/<target>/* artifact (CI)
   -minimize        shrink each selected target's corpus (-merge=1)
@@ -140,6 +151,7 @@ let repro = "";
 let checkCrashes = false;
 let minimize = false;
 let reseed = false;
+let sanMode: FuzzSan | "auto" = "auto";
 let targets: FuzzTarget[] = FUZZ_TARGETS.filter((t) => !(isWindows && t === "diff"));
 
 function intArg(v: string | undefined, name: string): number {
@@ -160,6 +172,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "-check-crashes") checkCrashes = true;
   else if (a === "-minimize") minimize = true;
   else if (a === "-reseed") reseed = true;
+  else if (a === "-asan") sanMode = "asan";
+  else if (a === "-msan") sanMode = "msan";
   else if (a === "-target") {
     const list = (args[++i] ?? usage()).split(",").filter(Boolean);
     for (const t of list) {
@@ -190,6 +204,12 @@ async function run(exe: string, argv: string[], cwd = FUZZ): Promise<number> {
   return await proc.exited;
 }
 
+if (sanMode === "msan" && !msanSupported) {
+  console.error("-msan needs Linux (clang has no MemorySanitizer on Windows/macOS)");
+  process.exit(2);
+}
+const oneSan: FuzzSan = sanMode === "msan" ? "msan" : "asan";
+
 // -repro: infer the target from fuzz/crashes/<target>/ (or -target).
 if (repro) {
   const path = resolve(repro);
@@ -199,12 +219,18 @@ if (repro) {
   }
   const parent = basename(dirname(path));
   const t: FuzzTarget = isFuzzTarget(parent) ? parent : targets.length === 1 ? targets[0] : "doc";
-  await buildFuzz(true, [t]);
-  console.log(`replaying ${path} on target ${t}`);
-  process.exit(await run(fuzzExe(t), [...(CFG[t].extra ?? []), path]));
+  await buildFuzz(true, [t], oneSan);
+  console.log(`replaying ${path} on target ${t} (${oneSan})`);
+  process.exit(await run(fuzzExe(t, oneSan), [...(CFG[t].extra ?? []), path]));
 }
 
-await buildFuzz(true, targets);
+// Fuzzing alternates sanitizer builds by round; every other mode uses one.
+const fuzzSans: FuzzSan[] =
+  sanMode !== "auto" ? [sanMode] : msanSupported ? ["asan", "msan"] : ["asan"];
+const modeOnly = checkCrashes || minimize;
+for (const s of modeOnly ? [oneSan] : fuzzSans) await buildFuzz(true, targets, s);
+// the diff target links the uninstrumented libdjvu oracle: no MSan build
+const hasExe = (t: FuzzTarget, s: FuzzSan) => !(s === "msan" && t === "diff");
 for (const t of targets) {
   mkdirSync(corpusDir(t), { recursive: true });
   mkdirSync(crashDir(t), { recursive: true });
@@ -216,9 +242,10 @@ if (checkCrashes) {
   let n = 0;
   let fail = 0;
   for (const t of targets) {
+    if (!hasExe(t, oneSan)) continue;
     for (const path of listArtifacts(t)) {
       n++;
-      const rc = await run(fuzzExe(t), [...(CFG[t].extra ?? []), path]);
+      const rc = await run(fuzzExe(t, oneSan), [...(CFG[t].extra ?? []), path]);
       const name = `${t}/${basename(path)}`;
       if (rc !== 0) {
         fail++;
@@ -244,7 +271,8 @@ if (minimize) {
     rmSync(tmp, { recursive: true, force: true });
     mkdirSync(tmp, { recursive: true });
     console.log(`minimizing ${t} corpus (libFuzzer -merge=1)...`);
-    const rc = await run(fuzzExe(t), ["-merge=1", `-max_len=${maxLen(t)}`, tmp, dir]);
+    if (!hasExe(t, oneSan)) continue;
+    const rc = await run(fuzzExe(t, oneSan), ["-merge=1", `-max_len=${maxLen(t)}`, tmp, dir]);
     if (rc !== 0) {
       console.error(`merge failed (${rc}); leaving ${t} corpus untouched`);
       rmSync(tmp, { recursive: true, force: true });
@@ -333,7 +361,7 @@ function fuzzArgs(t: FuzzTarget, secs: number): string[] {
 
 const one = targets.length === 1;
 console.log(
-  `fuzzing [${targets.join(" ")}] with ${jobs} process(es)` +
+  `fuzzing [${targets.join(" ")}] with ${jobs} process(es), ${(one ? [fuzzSans[0]] : fuzzSans).join("/")}` +
     (one ? "" : `, ${slice}s x weight per target per round`) +
     `; corpus=${CORPUS}\n  Ctrl-C to stop; rerun to resume.`,
 );
@@ -342,12 +370,15 @@ let rc = 0;
 let round = 0;
 while (!interrupted) {
   round++;
+  // one target: a single long run on the first build; otherwise alternate
+  const san = fuzzSans[(round - 1) % fuzzSans.length];
   for (const t of targets) {
     if (interrupted) break;
+    if (!hasExe(t, san)) continue;
     // A single target just runs until killed (one very long slice).
     const secs = one ? 365 * 24 * 3600 : slice * CFG[t].weight;
-    console.log(`\n=== round ${round}: ${t} for ${secs}s ===`);
-    rc = await run(fuzzExe(t), fuzzArgs(t, secs));
+    console.log(`\n=== round ${round} (${san}): ${t} for ${secs}s ===`);
+    rc = await run(fuzzExe(t, san), fuzzArgs(t, secs));
     // With jobs == 1 libFuzzer stops at the first finding: move on to the
     // next target (the artifact is listed at the end) instead of quitting.
   }
