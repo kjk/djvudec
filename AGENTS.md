@@ -340,7 +340,14 @@ bun cmd/build-prof.ts
   between the two, `-asan` / `-msan` pin one (also for `-repro`,
   `-check-crashes`, `-minimize`). CI replays the crashes under both on
   Linux. (MSan's first run found an uninitialized read in the BZZ inverse
-  BWT.) `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
+  BWT.) **Coverage:** `bun cmd/fuzz.ts -coverage` builds the targets with
+  clang source-based coverage (`out/fuzz_cov/`, no sanitizer), replays each
+  corpus, merges with `llvm-profdata` and prints `llvm-cov report` for
+  `src/` (debug.c excluded) plus an HTML report in
+  `out/fuzz_cov/html/`; `llvmTool()` finds the tools next to the fuzz clang,
+  on PATH, or versioned (`llvm-cov-18`). Use it to see what fuzzing never
+  reaches (first run: 85.6% of lines; weakest bitmap.c, scaler.c,
+  compose.c). `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
   is tracked so crash inputs become regression seeds.
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +

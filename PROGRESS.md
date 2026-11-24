@@ -137,6 +137,10 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- `bun cmd/fuzz.ts -coverage`: source-based coverage of src/ from the fuzz
+  corpora (llvm-profdata + llvm-cov, per-file table + HTML in
+  out/fuzz_cov/html). First run: 85.6% lines / 66.9% branches; least covered
+  bitmap.c (73%), scaler.c (75%), compose.c (81%).
 - fuzz sanitizers: UBSan is now on by default in the Linux/macOS fuzz build
   and non-recoverable (it used to be opt-in and only log, so libFuzzer never
   saw a finding); a MemorySanitizer build (Linux, `out/fuzz_msan/`) alternates

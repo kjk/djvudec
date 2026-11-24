@@ -184,9 +184,14 @@ export const isFuzzTarget = (s: string): s is FuzzTarget =>
 //                        uninitialized reads ASan cannot see. The diff target
 //                        is not built for it (the uninstrumented libdjvu
 //                        oracle would report false positives).
-export type FuzzSan = "asan" | "msan";
+//   cov   out/fuzz_cov   no sanitizer; clang source-based coverage
+//                        (-fprofile-instr-generate -fcoverage-mapping), for
+//                        `fuzz.ts -coverage` reports. libFuzzer only
+//                        supplies main() to replay the corpus.
+export type FuzzSan = "asan" | "msan" | "cov";
 export const msanSupported = !isWindows && !isMac;
-const fuzzDir = (san: FuzzSan) => `${ROOT}/out/${san === "msan" ? "fuzz_msan" : "fuzz"}`;
+const fuzzDir = (san: FuzzSan) =>
+  `${ROOT}/out/${san === "msan" ? "fuzz_msan" : san === "cov" ? "fuzz_cov" : "fuzz"}`;
 const FUZZ_DIR = fuzzDir("asan");
 export const ubsanEnabled = () => !isWindows && process.env.DJVU_FUZZ_UBSAN !== "0";
 
@@ -235,7 +240,9 @@ export async function buildFuzz(
   // UBSan non-recoverable so a finding aborts and libFuzzer saves the input
   // (recoverable UBSan only logs, which a fuzzer never notices).
   const sanitize =
-    san === "msan"
+    san === "cov"
+      ? "fuzzer -fprofile-instr-generate -fcoverage-mapping"
+      : san === "msan"
       ? "memory,fuzzer -fsanitize-memory-track-origins"
       : ubsanEnabled()
         ? "address,undefined,fuzzer -fno-sanitize-recover=undefined"
@@ -256,7 +263,7 @@ export async function buildFuzz(
   if (staleExes.length === 0) {
     // Ensure the runtime DLL even on the up-to-date path: a prior run may have
     // built the exe but failed the copy (idempotent -- no-op if already there).
-    if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
+    if (isWindows && san === "asan") await copyAsanRuntimeDll(FUZZ_DIR);
     console.log("fuzz targets up to date");
     return;
   }
@@ -275,8 +282,25 @@ export async function buildFuzz(
     }
     await $`${clang} -fsanitize=${{ raw: sanitize }} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExeS(u.t)}`;
   }
-  if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
+  if (isWindows && san === "asan") await copyAsanRuntimeDll(FUZZ_DIR);
   console.log("built fuzz targets");
+}
+
+// An LLVM tool (llvm-profdata, llvm-cov) matching the fuzz clang: next to it,
+// on PATH, or versioned (Ubuntu's llvm-cov-18). null if not found.
+export function llvmTool(name: string): string | null {
+  const exe = isWindows ? ".exe" : "";
+  const clang = resolveFuzzClang();
+  const clangPath = clang.includes("/") ? clang : Bun.which(clang);
+  const cands: string[] = [];
+  if (clangPath) cands.push(`${clangPath.replace(/[^/\\]*$/, "")}${name}${exe}`);
+  cands.push(name);
+  const ver = Bun.spawnSync([clang, "-dumpversion"]).stdout.toString().trim().split(".")[0];
+  if (ver) cands.push(`${name}-${ver}`);
+  for (const c of cands) {
+    if (c.includes("/") ? existsSync(c) : Bun.which(c)) return c;
+  }
+  return null;
 }
 
 // Seed extractor (test/fuzz_seeds.c): plain build, run by fuzz.ts.

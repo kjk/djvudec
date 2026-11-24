@@ -6,6 +6,7 @@
 //   bun cmd/fuzz.ts -repro F        replay one crash artifact and exit
 //   bun cmd/fuzz.ts -check-crashes  replay fuzz/crashes/<target>/* (CI)
 //   bun cmd/fuzz.ts -minimize       shrink each target's corpus
+//   bun cmd/fuzz.ts -coverage       source coverage of src/ from the corpora
 //
 // Targets (test/fuzz_<name>.c, list in FUZZ_TARGETS in build-lib.ts):
 //   doc      whole .djvu file -> full public API (container, DIRM, INCL,
@@ -73,6 +74,7 @@ import {
   FUZZ_SEEDS_TARGET,
   FUZZ_TARGETS,
   isFuzzTarget,
+  llvmTool,
   msanSupported,
   type FuzzSan,
   type FuzzTarget,
@@ -138,6 +140,8 @@ function usage(): never {
   -repro FILE      replay one artifact (target from fuzz/crashes/<target>/)
   -check-crashes   replay every fuzz/crashes/<target>/* artifact (CI)
   -minimize        shrink each selected target's corpus (-merge=1)
+  -coverage        replay the corpora on coverage builds; print per-file
+                   coverage of src/ and write an HTML report
   -h, --help`,
   );
   process.exit(2);
@@ -150,6 +154,7 @@ let maxLenOverride = 0;
 let repro = "";
 let checkCrashes = false;
 let minimize = false;
+let coverage = false;
 let reseed = false;
 let sanMode: FuzzSan | "auto" = "auto";
 let targets: FuzzTarget[] = FUZZ_TARGETS.filter((t) => !(isWindows && t === "diff"));
@@ -171,6 +176,7 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "-repro") repro = args[++i] ?? usage();
   else if (a === "-check-crashes") checkCrashes = true;
   else if (a === "-minimize") minimize = true;
+  else if (a === "-coverage") coverage = true;
   else if (a === "-reseed") reseed = true;
   else if (a === "-asan") sanMode = "asan";
   else if (a === "-msan") sanMode = "msan";
@@ -222,6 +228,57 @@ if (repro) {
   await buildFuzz(true, [t], oneSan);
   console.log(`replaying ${path} on target ${t} (${oneSan})`);
   process.exit(await run(fuzzExe(t, oneSan), [...(CFG[t].extra ?? []), path]));
+}
+
+// -coverage: replay each corpus on a coverage build (no sanitizer), merge the
+// profiles, report per-file coverage of src/ -- where fuzzing never reaches
+// is where new seeds (or a new target) would help.
+if (coverage) {
+  const profdata = llvmTool("llvm-profdata");
+  const cov = llvmTool("llvm-cov");
+  if (!profdata || !cov) {
+    console.error("llvm-profdata / llvm-cov not found (next to the fuzz clang, on PATH, or -<version>)");
+    process.exit(2);
+  }
+  const out = join(ROOT, "out", "fuzz_cov");
+  const prof = join(out, "prof");
+  await buildFuzz(true, targets, "cov");
+  rmSync(prof, { recursive: true, force: true });
+  mkdirSync(prof, { recursive: true });
+  const exes: string[] = [];
+  for (const t of targets) {
+    const dir = corpusDir(t);
+    if (!existsSync(dir) || readdirSync(dir).length === 0) {
+      console.log(`${t}: empty corpus, skipped (run fuzz.ts once to seed it)`);
+      continue;
+    }
+    console.log(`${t}: replaying ${readdirSync(dir).length} input(s)...`);
+    // %p: one profile per process (libFuzzer may fork); timeouts generous --
+    // a coverage build is uninstrumented by sanitizers but still unoptimized.
+    const proc = Bun.spawn(
+      [fuzzExe(t, "cov"), "-runs=0", `-max_len=${maxLen(t)}`, "-rss_limit_mb=4096", "-timeout=60", ...(CFG[t].extra ?? []), dir],
+      { env: { ...process.env, LLVM_PROFILE_FILE: join(prof, `${t}-%p.profraw`) }, stdout: "ignore", stderr: "ignore" },
+    );
+    await proc.exited;
+    exes.push(fuzzExe(t, "cov"));
+  }
+  const raws = readdirSync(prof).filter((f) => f.endsWith(".profraw")).map((f) => join(prof, f));
+  if (raws.length === 0) {
+    console.error("no profiles written");
+    process.exit(1);
+  }
+  const merged = join(out, "merged.profdata");
+  let p = Bun.spawnSync([profdata, "merge", "-sparse", "-o", merged, ...raws], { stderr: "inherit" });
+  if (p.exitCode !== 0) process.exit(1);
+  const objArgs = exes.slice(1).flatMap((e) => ["-object", e]);
+  const src = join(ROOT, "src");
+  p = Bun.spawnSync([cov, "report", exes[0], ...objArgs, `-instr-profile=${merged}`, "-ignore-filename-regex=debug\\.c$", src], { stderr: "inherit" });
+  process.stdout.write(p.stdout.toString());
+  const html = join(out, "html");
+  rmSync(html, { recursive: true, force: true });
+  Bun.spawnSync([cov, "show", exes[0], ...objArgs, `-instr-profile=${merged}`, "-format=html", `-output-dir=${html}`, "-ignore-filename-regex=debug\\.c$", src], { stderr: "inherit" });
+  console.log(`\nHTML report: ${join(html, "index.html")}`);
+  process.exit(0);
 }
 
 // Fuzzing alternates sanitizer builds by round; every other mode uses one.
