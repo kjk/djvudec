@@ -87,28 +87,36 @@ static void free_items(djvu_ctx *ctx, djvu_outline_item *items, int n)
 
 djvu_outline_item *djvu_doc_outline(djvu_doc *doc)
 {
-    djvu_ctx *ctx;
     const uint8_t *navm;
     uint32_t sz;
     uint8_t *dec;
     size_t dlen;
-    nparse np;
-    int total, cap, n;
-    djvu_outline_item *items = NULL, *root;
+    djvu_outline_item *root;
 
     if (!doc) return NULL;
-    ctx = doc->ctx;
     navm = djvu_form_find_chunk(doc, doc->root_form_off, "NAVM", &sz, NULL);
     if (!navm) return NULL;
 
-    dec = djvu_bzz_decode_all(ctx, navm, sz, &dlen);
+    dec = djvu_bzz_decode_all(doc->ctx, navm, sz, &dlen);
     if (!dec) return NULL;
+    root = djvu_outline_parse(doc, dec, dlen);
+    djvu_free(doc->ctx, dec);
+    return root;
+}
+
+djvu_outline_item *djvu_outline_parse(djvu_doc *doc, const uint8_t *dec,
+                                      size_t dlen)
+{
+    djvu_ctx *ctx = doc->ctx;
+    nparse np;
+    int total, cap, n;
+    djvu_outline_item *items = NULL, *root;
 
     memset(&np, 0, sizeof(np));
     np.ctx = ctx;
     djvu_br_init(&np.br, ctx, dec, dlen);
     total = djvu_br_u16be(&np.br);
-    if (np.br.failed || total <= 0) { djvu_free(ctx, dec); return NULL; }
+    if (np.br.failed || total <= 0) return NULL;
 
     cap = 0; n = 0;
     while (!np.br.failed && np.br.pos < dlen && np.count < total) {
@@ -131,8 +139,6 @@ djvu_outline_item *djvu_doc_outline(djvu_doc *doc)
         }
         items[n++] = tmp;
     }
-
-    djvu_free(ctx, dec);
 
     if (n == 0) { djvu_free(ctx, items); return NULL; }
 

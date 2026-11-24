@@ -28,3 +28,4 @@ failures.txt
 fuzz/corpus/
 fuzz/corpus.min/
 fuzz/*.log
+fuzz/corpus.old/

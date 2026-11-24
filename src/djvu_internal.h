@@ -340,6 +340,11 @@ const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
    "PM44"/"BM44" (standalone FORM:PM44/BM44). NULL if none. */
 const char *djvu_form_bg_iw44_id(djvu_doc *doc, uint32_t form_off);
 
+/* Parse a decoded (BZZ-decompressed) NAVM payload into an outline tree
+   (outline.c; djvu_doc_outline = find NAVM + BZZ + this). */
+djvu_outline_item *djvu_outline_parse(djvu_doc *doc, const uint8_t *dec,
+                                      size_t dlen);
+
 /* Trim trailing whitespace/control from an INCL component id (in-place). */
 void djvu_trim_incl_id(char *s);
 

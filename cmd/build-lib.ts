@@ -164,19 +164,42 @@ async function buildMsvc(target: LibToolTarget): Promise<string> {
   return exePath;
 }
 
-// libFuzzer target: LIB_SRCS + test/fuzz_target.c, instrumented with ASan +
-// fuzzer (-O1 for readable traces), no main() (libFuzzer provides it). Output
-// out/fuzz/djvudec_fuzz[.exe]. Driven by cmd/fuzz.ts.
-const FUZZ_DIR = `${ROOT}/out/fuzz`;
-export const FUZZ_EXE = `${FUZZ_DIR}/${isWindows ? "djvudec_fuzz.exe" : "djvudec_fuzz"}`;
+// libFuzzer targets: LIB_SRCS compiled once + one test/fuzz_<name>.c driver
+// per target, instrumented with ASan + fuzzer (-O1 for readable traces), no
+// main() (libFuzzer provides it). Output out/fuzz/djvudec_fuzz_<name>[.exe].
+// Driven by cmd/fuzz.ts. The per-codec targets exist for throughput: a whole
+// multi-MB document runs at < 1 exec/s under ASan, a JB2/IW44/BZZ chunk at
+// hundreds to thousands.
+export const FUZZ_TARGETS = ["doc", "jb2", "iw44", "bzz", "text", "annot", "outline"] as const;
+export type FuzzTarget = (typeof FUZZ_TARGETS)[number];
+export const isFuzzTarget = (s: string): s is FuzzTarget =>
+  (FUZZ_TARGETS as readonly string[]).includes(s);
 
-export async function buildFuzz(clean = false): Promise<string> {
+const FUZZ_DIR = `${ROOT}/out/fuzz`;
+export function fuzzExe(t: FuzzTarget): string {
+  return `${FUZZ_DIR}/djvudec_fuzz_${t}${isWindows ? ".exe" : ""}`;
+}
+
+// Always a clean build when clean=true (fuzz.ts passes it): build-lib tracks
+// sources and headers but not compile FLAGS, and the fuzz flags vary by
+// environment (sanitizer set, compiler) -- see the cmd/fuzz.ts header.
+export async function buildFuzz(
+  clean = false,
+  targets: readonly FuzzTarget[] = FUZZ_TARGETS,
+): Promise<void> {
   mkdirSync(FUZZ_DIR, { recursive: true });
-  const testSrc = `${ROOT}/test/fuzz_target.c`;
-  const units = cUnits(FUZZ_DIR, "o", testSrc);
+  const libUnits = LIB_SRCS.map((s) => ({
+    src: `${ROOT}/${s}`,
+    obj: `${FUZZ_DIR}/${objBase(s)}.o`,
+  }));
+  const tgtUnits = targets.map((t) => ({
+    t,
+    src: `${ROOT}/test/fuzz_${t}.c`,
+    obj: `${FUZZ_DIR}/fuzz_${t}.o`,
+  }));
   if (clean) {
-    for (const u of units) rmSync(u.obj, { force: true });
-    rmSync(FUZZ_EXE, { force: true });
+    for (const u of [...libUnits, ...tgtUnits]) rmSync(u.obj, { force: true });
+    for (const t of targets) rmSync(fuzzExe(t), { force: true });
   }
 
   const clang = resolveFuzzClang();
@@ -187,29 +210,37 @@ export async function buildFuzz(clean = false): Promise<string> {
   const sanitize =
     wantUbsan && !isWindows ? "address,undefined,fuzzer" : "address,fuzzer";
   const cflags = `-fsanitize=${sanitize} ${clangCFlags("-g -O1")}`;
-  const staleObj = units.some(objStale);
-  const staleExe = needsRebuild(FUZZ_EXE, ...units.map((u) => u.obj));
-  if (!staleObj && !staleExe && existsSync(FUZZ_EXE)) {
+  const all = [...libUnits, ...tgtUnits];
+  const stale = all.filter(objStale);
+  const libObjs = libUnits.map((u) => u.obj);
+  const staleExes = tgtUnits.filter(
+    (u) => stale.length > 0 || needsRebuild(fuzzExe(u.t), u.obj, ...libObjs) || !existsSync(fuzzExe(u.t)),
+  );
+  if (staleExes.length === 0) {
     // Ensure the runtime DLL even on the up-to-date path: a prior run may have
     // built the exe but failed the copy (idempotent -- no-op if already there).
     if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
-    console.log("djvudec_fuzz up to date");
-    return FUZZ_EXE;
+    console.log("fuzz targets up to date");
+    return;
   }
 
-  console.log(`building djvudec_fuzz (clang+${sanitize}; ${clang})...`);
-  for (const u of units) {
-    if (!objStale(u)) continue;
-    await $`${clang} ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`;
-  }
-  const objs = units.map((u) => u.obj);
-  if (needsRebuild(FUZZ_EXE, ...objs)) {
-    await $`${clang} -fsanitize=${sanitize} ${{ raw: objs.join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${FUZZ_EXE}`;
+  console.log(`building fuzz targets [${targets.join(" ")}] (clang+${sanitize}; ${clang})...`);
+  await Promise.all(
+    stale.map((u) => $`${clang} ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`),
+  );
+  for (const u of staleExes) {
+    await $`${clang} -fsanitize=${sanitize} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExe(u.t)}`;
   }
   if (isWindows) await copyAsanRuntimeDll(FUZZ_DIR);
-  console.log("built djvudec_fuzz");
-  return FUZZ_EXE;
+  console.log("built fuzz targets");
 }
+
+// Seed extractor (test/fuzz_seeds.c): plain build, run by fuzz.ts.
+export const FUZZ_SEEDS_TARGET: LibToolTarget = {
+  outRoot: `${ROOT}/out`,
+  exeBase: "fuzz_seeds",
+  testSrc: `${ROOT}/test/fuzz_seeds.c`,
+};
 
 export function libToolExePath(
   target: LibToolTarget,

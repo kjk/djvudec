@@ -269,22 +269,36 @@ bun cmd/build-prof.ts
   JB2 shape heap-use-after-free: page renders read dict-shape RLE lock-free
   while another thread's `MatchedRefine` uncompressed the same shared shape
   in place.)
-- `bun cmd/fuzz.ts` — coverage-guided fuzzing (libFuzzer + ASan).
-  Windows: both ship with the VS clang (nothing to install). macOS: Apple
-  clang has no fuzzer runtime — install Homebrew LLVM (`brew install llvm`);
-  `buildFuzz()` uses `/opt/homebrew/opt/llvm/bin/clang` (override with
-  `DJVUDEC_FUZZ_CLANG`). `test/fuzz_target.c` opens each input as a `.djvu`
-  and drives the full decode surface (page info, render at full + 4x
-  subsample, page text + zone tree, links, outline), capped at 20 pages/input. Builds into
-  `out/fuzz/djvudec_fuzz` (`.exe` on Windows) via `buildFuzz()`. First run
-  seeds `fuzz/corpus/` from the deps/ corpus (files over `-max-len` skipped);
-  the corpus dir **is** the checkpoint — kill to stop, rerun to resume.
-  Flags: `-jobs N` (parallel workers), `-repro FILE` (replay a crash with a
-  stack trace), `-check-crashes` (CI: replay all `fuzz/crashes/*`, expect exit
-  0), `-minimize` (`-merge=1` corpus shrink), `-max-len N`. Linux/macOS CI may
-  set `DJVU_FUZZ_UBSAN=1` for ASan+UBSan+fuzzer.
-  `fuzz/corpus/` is gitignored; `fuzz/crashes/` is tracked so crash inputs
-  become regression seeds.
+- `bun cmd/fuzz.ts` — coverage-guided fuzzing (libFuzzer + ASan). With no
+  args it does the best default: builds every target, seeds empty corpora,
+  and fuzzes all targets round-robin (time slice x weight per target per
+  round, `-slice SECS`, default 120) using libFuzzer `-fork` over all cores
+  (`-jobs N`), continuing past findings, until killed; new artifacts are
+  listed at the end. Windows: libFuzzer + ASan ship with the VS clang (nothing
+  to install). macOS: Apple clang has no fuzzer runtime — install Homebrew
+  LLVM (`brew install llvm`); `buildFuzz()` uses
+  `/opt/homebrew/opt/llvm/bin/clang` (override with `DJVUDEC_FUZZ_CLANG`).
+  **Targets** (`test/fuzz_<name>.c`, list `FUZZ_TARGETS` in
+  `cmd/build-lib.ts`, exes `out/fuzz/djvudec_fuzz_<name>`): `doc` (whole
+  .djvu → full public API, ≤20 pages/input), `jb2` (Sjbz + Djbz + FGbz →
+  internal decode + synthesized page render), `iw44` (BG44/PM44 chunk
+  sequence), `bzz`, `text` (TXTa payload), `annot` (ANTa), `outline`
+  (decoded NAVM via `djvu_outline_parse`). Shared helpers (budgeted
+  allocator + leak check, in-memory page synthesizer, length-prefixed input
+  splitting, per-page API workout) are in `test/fuzz_util.h`. The per-codec
+  targets exist for throughput: a whole multi-MB document runs at < 1 exec/s
+  under ASan, the codec targets at 20-3000/s. **Per-input cost matters
+  twice**: libFuzzer replays the whole corpus at the start of every slice,
+  so keep targets' expensive full-res renders capped (they are).
+  **Seeds:** an empty `fuzz/corpus/<target>/` is filled by `fuzz_seeds`
+  (`test/fuzz_seeds.c`), which cuts every deps/ corpus file into per-target
+  inputs (`-reseed` redoes it). `fuzz/corpus/` **is** the checkpoint — kill
+  to stop, rerun to resume. Flags: `-target a,b`, `-repro FILE` (target
+  inferred from `fuzz/crashes/<target>/`), `-check-crashes` (CI: replay every
+  `fuzz/crashes/<target>/*`, expect exit 0), `-minimize` (`-merge=1` per
+  corpus), `-max-len N`. Linux/macOS CI may set `DJVU_FUZZ_UBSAN=1` for
+  ASan+UBSan+fuzzer. `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
+  is tracked so crash inputs become regression seeds.
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +
   amalgamation + UBSan crashes, macOS clang + full oracle + amalgamation, WASM
