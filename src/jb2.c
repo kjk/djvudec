@@ -823,7 +823,23 @@ static int code_record(jb2_codec *c, jb2_image *jim, int jim_is_image)
         cw = (1 + c->libinfo[match * 4 + 2]) - c->libinfo[match * 4 + 0];
         ch = (1 + c->libinfo[match * 4 + 3]) - c->libinfo[match * 4 + 1];
         code_rel_mark_size(c, &tmp_shape.bm, cw, ch, 4);
-        code_bitmap_cross(c, &tmp_shape.bm, cbm, match);
+        /* MatchedRefineLibraryOnly follows DjVuLibre's two code_record
+           variants exactly (found by the differential fuzz target):
+           - in an image (Sjbz), JB2Image's code_record codes only the size;
+             the bitmap is never cross-coded, so the shape stays blank and
+             no ZP bits are consumed for it;
+           - in a dictionary (Djbz), JB2Dict's code_record cross-codes with
+             libinfo[jshp.parent] -- the matched SHAPE number used as a
+             library index (GArray-checked there, so out of range is an
+             error), not the library number `match`. */
+        if (rectype == REC_MatchedRefineLibraryOnly && jim_is_image) {
+            /* size only */
+        } else if (rectype == REC_MatchedRefineLibraryOnly) {
+            if (parent < 0 || parent >= c->nlibinfo / 4) c->error = 1;
+            else code_bitmap_cross(c, &tmp_shape.bm, cbm, parent);
+        } else {
+            code_bitmap_cross(c, &tmp_shape.bm, cbm, match);
+        }
         if (cbm_owned) djvu_bm_free(c->ctx, &cbm_copy);
         if (rectype != REC_MatchedRefineLibraryOnly)
             code_rel_location(c, &blit, tmp_shape.bm.height, tmp_shape.bm.width);

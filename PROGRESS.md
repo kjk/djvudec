@@ -137,6 +137,13 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- JB2 MatchedRefineLibraryOnly follows DjVuLibre exactly (diff-fuzz
+  finding, traced record by record against an instrumented JB2Image.cpp):
+  in an image (Sjbz) DjVuLibre codes only the size and never cross-codes the
+  bitmap (blank shape, no ZP bits); in a dictionary (Djbz) it cross-codes
+  with libinfo[matched SHAPE number] rather than the library number. We
+  cross-coded in both with the library number, desynchronizing every later
+  record. Regression seeds: fuzz/crashes/diff (2).
 - INFO gamma/dpi read like `DjVuInfo::decode` (diff-fuzz finding): gamma is
   byte 8 / 10 clamped to [0.3, 5.0] (a 0 byte is 0.3, not "unset"); dpi is
   ignored when its high byte is 0xff and falls back to 300 outside 25..6000.
