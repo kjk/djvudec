@@ -174,6 +174,14 @@ static int img_add_blit(jb2_image *im, jb2_blit b)
                          djvu_free(im->ctx, im->blits); }
         im->blits = nb; im->cap_blits = nc;
     }
+    /* DjVuLibre's JB2Blit stores left/bottom as unsigned short, so a decoded
+       position outside 0..65535 wraps: bottom -12 becomes 65524 and the blit
+       lands off the page instead of being clipped to its visible rows. The
+       decoder state (last_left, last_bottom, ...) stays int on both sides and
+       the +=/-= library-rect adjustments are modular, so truncating once
+       here matches it exactly. (Found by the differential fuzz target.) */
+    b.left = (uint16_t)b.left;
+    b.bottom = (uint16_t)b.bottom;
     im->blits[im->nblits++] = b;
     return 0;
 }

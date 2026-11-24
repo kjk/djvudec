@@ -137,6 +137,11 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- JB2 blit positions wrap like DjVuLibre's (diff-fuzz finding): JB2Blit
+  stores left/bottom as unsigned short, so a decoded bottom of -12 is 65524
+  (off the page, not drawn) where we clipped the blit and painted its visible
+  rows. `img_add_blit` truncates to uint16; decoder state stays int on both
+  sides, so this is exact. Regression seeds: fuzz/crashes/diff (3).
 - fuzzing overhaul (`bun cmd/fuzz.ts` with no args now does the best default):
   per-codec libFuzzer targets (`test/fuzz_<name>.c`: doc, jb2, iw44, bzz,
   text, annot, outline, diff) seeded by `test/fuzz_seeds.c` from the corpus,
