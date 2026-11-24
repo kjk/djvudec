@@ -301,7 +301,13 @@ bun cmd/build-prof.ts
   (passed as `-dict=` when present): IFF chunk ids / FORM types / INFO
   fields (doc), S-expression keywords (annot), zone/field encodings (text,
   outline, iw44, jb2 framing). Add tokens there when a parser grows a
-  keyword. `fuzz/corpus/` **is** the checkpoint — kill
+  keyword. **Structure-aware mutation:** the doc target includes
+  `test/fuzz_mutator.h` (`LLVMFuzzerCustomMutator` + `CustomCrossOver`),
+  which parses the IFF tree, mutates one leaf payload or deletes /
+  duplicates / swaps / retags chunks, and re-serializes with correct sizes,
+  padding and (90% of the time) recomputed bundled-DIRM offsets; 20% of calls
+  stay plain byte mutation. In a 10-minute A/B from the same corpus it
+  reached ~10% more edges than byte mutation alone. `fuzz/corpus/` **is** the checkpoint — kill
   to stop, rerun to resume. Flags: `-target a,b`, `-repro FILE` (target
   inferred from `fuzz/crashes/<target>/`), `-check-crashes` (CI: replay every
   `fuzz/crashes/<target>/*`, expect exit 0), `-minimize` (`-merge=1` per

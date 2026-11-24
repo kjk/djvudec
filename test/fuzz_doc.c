@@ -6,11 +6,14 @@
  * the container/DIRM/INCL/shared-dict structure and cross-layer composition;
  * the per-codec targets (fuzz_jb2.c, fuzz_iw44.c, fuzz_bzz.c, fuzz_text.c,
  * fuzz_annot.c, fuzz_outline.c) reach the codecs at far higher exec/s.
- * Driven by cmd/fuzz.ts.
+ * Mutations are IFF-aware (fuzz_mutator.h): chunk sizes, padding and bundled
+ * DIRM offsets are recomputed after each mutation so the mutated bytes get
+ * past the container walker. Driven by cmd/fuzz.ts.
  *
  * Single-threaded on purpose: concurrency races are covered by the ASan
  * stress harness (test/djvudec_stress.c). */
 #include "fuzz_util.h"
+#include "fuzz_mutator.h"
 
 /* Cap work per input so one pathological file can't run unbounded and stall
  * the fuzzer's throughput. */
