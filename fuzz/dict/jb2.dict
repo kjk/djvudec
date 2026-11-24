@@ -1,0 +1,11 @@
+# libFuzzer dictionary for the jb2 target. The JB2 payload itself is
+# ZP-arithmetic coded (no literal tokens worth listing); these hit the
+# u24 length prefixes of the target's input framing and the FGbz header.
+u24_zero="\x00\x00\x00"
+u24_small="\x00\x00\x10"
+u24_max="\xff\xff\xff"
+fgbz_v0="\x00"
+fgbz_v0_idx="\x80"
+fgbz_ncolors="\x00\x02"
+zp_ff="\xff\xff\xff\xff"
+zp_00="\x00\x00\x00\x00"

@@ -1,0 +1,15 @@
+# libFuzzer dictionary for the outline target (decoded NAVM: u16 count, then
+# items [u8 nkids][u24 title len][title][u24 url len][url]).
+u16_one="\x00\x01"
+u16_max="\xff\xff"
+u24_zero="\x00\x00\x00"
+u24_small="\x00\x00\x02"
+u24_max="\xff\xff\xff"
+kids_max="\xff"
+url_page="#1"
+url_page0="#0"
+url_neg="#-1"
+url_big="#99999999999"
+url_id="#p0001.djvu"
+url_plus="#+1"
+url_minus="#-1"

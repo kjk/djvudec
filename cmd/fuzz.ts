@@ -71,6 +71,13 @@ const FUZZ = join(ROOT, "fuzz");
 const CORPUS = join(FUZZ, "corpus");
 const CRASHES = join(FUZZ, "crashes");
 const SEEDS = join(ROOT, "out", "fuzz-seeds");
+// fuzz/dict/<target>.dict (libFuzzer -dict): chunk ids, FORM types, field
+// encodings and annotation keywords the byte mutators would never guess.
+const DICTS = join(FUZZ, "dict");
+const dictArg = (t: FuzzTarget) => {
+  const f = join(DICTS, `${t}.dict`);
+  return existsSync(f) ? [`-dict=${f}`] : [];
+};
 
 type TargetCfg = {
   maxLen: number; // libFuzzer -max_len
@@ -297,6 +304,7 @@ function fuzzArgs(t: FuzzTarget, secs: number): string[] {
     corpusDir(t),
     `-artifact_prefix=${crashDir(t)}/`,
     `-max_len=${maxLen(t)}`,
+    ...dictArg(t),
     "-rss_limit_mb=4096",
     `-timeout=${c.timeout}`,
     `-report_slow_units=${c.slow}`,

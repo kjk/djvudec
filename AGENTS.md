@@ -297,7 +297,11 @@ bun cmd/build-prof.ts
   tracing in those numeric loops was ~45% of doc-target time (perf).
   **Seeds:** an empty `fuzz/corpus/<target>/` is filled by `fuzz_seeds`
   (`test/fuzz_seeds.c`), which cuts every deps/ corpus file into per-target
-  inputs (`-reseed` redoes it). `fuzz/corpus/` **is** the checkpoint — kill
+  inputs (`-reseed` redoes it). **Dictionaries:** `fuzz/dict/<target>.dict`
+  (passed as `-dict=` when present): IFF chunk ids / FORM types / INFO
+  fields (doc), S-expression keywords (annot), zone/field encodings (text,
+  outline, iw44, jb2 framing). Add tokens there when a parser grows a
+  keyword. `fuzz/corpus/` **is** the checkpoint — kill
   to stop, rerun to resume. Flags: `-target a,b`, `-repro FILE` (target
   inferred from `fuzz/crashes/<target>/`), `-check-crashes` (CI: replay every
   `fuzz/crashes/<target>/*`, expect exit 0), `-minimize` (`-merge=1` per

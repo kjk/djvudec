@@ -1,0 +1,14 @@
+# libFuzzer dictionary for the iw44 target: IW44 chunk header fields
+# (serial, slices; first chunk adds major/minor, u16 w/h, crcb delay) and
+# the u24 length prefixes of the target's input framing.
+serial0="\x00"
+slices_max="\xff"
+hdr_color="\x01\x02"
+hdr_gray="\x81\x02"
+dim_one="\x00\x01"
+dim_max="\xff\xff"
+dim_8k="\x20\x00"
+delay0="\x80"
+delay_max="\xff"
+u24_zero="\x00\x00\x00"
+u24_max="\xff\xff\xff"
