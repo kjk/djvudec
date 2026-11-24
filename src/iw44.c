@@ -1101,6 +1101,15 @@ int djvu_iw44_decode_chunk(iw_pixmap *pm, const uint8_t *data, size_t len)
             djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "IW44: incompatible codec");
             return -1;
         }
+        /* DjVuLibre IWCODEC_MINOR / DjvuNet MinorVersion. A newer minor is
+           rejected before the map is built: the header's width, height and
+           slice count are otherwise trusted, and a garbage minor (fuzz
+           slow-unit, minor 0xc2, 23359x50774, 100 slices) allocated three
+           ~1e6-block planes and decoded ZP padding across all of them. */
+        if (minor > 2) {
+            djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "IW44: recent codec");
+            return -1;
+        }
         w = (data[pos] << 8) | data[pos + 1]; pos += 2;
         h = (data[pos] << 8) | data[pos + 1]; pos += 2;
         if ((major & 0x7f) == 1 && minor >= 2) {

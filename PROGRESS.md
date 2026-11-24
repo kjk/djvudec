@@ -137,6 +137,11 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- IW44 rejects codec minor > 2 before building the coefficient map, matching
+  DjVuLibre (`IWCODEC_MINOR`) and DjvuNet (`MinorVersion`). A fuzz slow-unit
+  (minor 0xc2, 23359×50774, 100 slices, 575 bytes) otherwise allocated three
+  million-block planes and spent 9.3 s under ASan decoding ZP padding. It now
+  errors at the header.
 - BZZ fails at DjVuLibre's EndOfFile point: a truncated/garbage stream used
   to decode 0xff padding forever (up to 4 MB per block, block after block,
   until the allocator gave out -- a 143-byte fuzz input took 8.6 s under
