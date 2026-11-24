@@ -1,3 +1,6 @@
+# macOS Finder metadata
+.DS_Store
+
 # build outputs (harness objects + exes, bench snapshots, out/amalg, fuzz build)
 out/
 # render mismatch dumps (verify_diffs/ from -verify-render)
