@@ -137,6 +137,12 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- BZZ fails at DjVuLibre's EndOfFile point: a truncated/garbage stream used
+  to decode 0xff padding forever (up to 4 MB per block, block after block,
+  until the allocator gave out -- a 143-byte fuzz input took 8.6 s under
+  ASan; slow-unit-3a288e… in fuzz/crashes/bzz). It now errors once the ZP
+  coder reads 25 bytes past the data, exactly where DjVuLibre's ZPCodec
+  throws: 0.02 s. `-check-crashes` now replays with each target's timeout.
 - speed pass from fresh winperf profiles (test003C / test033C / test023C):
   background upscaling, not IW44 decoding, dominated -- `scaler_expand_row4`
   alone was 34% self on test003C, the scalar vertical lerp 12%, and first-touch

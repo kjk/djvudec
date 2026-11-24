@@ -54,6 +54,16 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
     int count[256];
     uint8_t *data;
 
+    /* DjVuLibre's ZPCodec throws ByteStream::EndOfFile once it reads 25
+       bytes past the end of the data (zp.eof marks the same point), which
+       fails the whole BZZ stream. Without this check a truncated or garbage
+       stream decodes 0xff padding forever: up to 4 MB per block, block after
+       block, until the allocator gives out (a 143-byte fuzz input took 8.6 s
+       under ASan). Valid streams never get there. */
+    if (d->zp.eof) {
+        djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "bzz: truncated stream");
+        return -1;
+    }
     if (size == 0)
         return 0;
     if (size > BZZ_MAXBLOCK * 1024) {
@@ -84,6 +94,10 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
         int ctxid = BZZ_CTXIDS - 1;
         int ctxoff = 0;
         int fc;
+        if (d->zp.eof) {   /* see the top of this function */
+            djvu_errorf(ctx, DJVU_SEVERITY_ERROR, "bzz: truncated stream");
+            return -1;
+        }
         if (ctxid > mtfno) ctxid = mtfno;
 
         if (djvu_zp_decode(&d->zp, &d->cxt[ctxoff + ctxid]) != 0) {

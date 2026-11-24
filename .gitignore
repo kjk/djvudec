@@ -30,3 +30,10 @@ fuzz/corpus.min/
 fuzz/*.log
 fuzz/corpus.old/
 fuzz/afl/
+# libFuzzer artifacts from a manual run in the repo root (fuzz.ts writes to
+# fuzz/crashes/<target>/, which IS tracked)
+/crash-*
+/slow-unit-*
+/timeout-*
+/oom-*
+/leak-*

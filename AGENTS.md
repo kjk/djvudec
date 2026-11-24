@@ -367,6 +367,14 @@ bun cmd/build-prof.ts
   `-check-crashes` on the libFuzzer build. `-afl` = AFL++ only,
   `-no-afl` = leave it out. Not in CI. `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
   is tracked so crash inputs become regression seeds.
+  **slow-unit / timeout artifacts:** replay each one first
+  (`bun cmd/fuzz.ts -repro <file>`, timing it). Commit it only if it exposed a
+  real slowness that you then fixed -- it becomes a regression seed, and
+  `-check-crashes` replays with the target's `-timeout`, so a regression to
+  a hang fails. Delete it if it is just an honestly big input that was slow
+  under fuzzing load (e.g. a byte-identical copy of a corpus seed). Root-level
+  `crash-*` / `slow-unit-*` / ... files are leftovers from manual libFuzzer
+  runs (gitignored).
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +
   amalgamation + UBSan crashes, macOS clang + full oracle + amalgamation, WASM

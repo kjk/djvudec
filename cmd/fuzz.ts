@@ -273,7 +273,9 @@ if (coverage) {
     // %p: one profile per process (libFuzzer may fork); timeouts generous --
     // a coverage build is uninstrumented by sanitizers but still unoptimized.
     const proc = Bun.spawn(
-      [fuzzExe(t, "cov"), "-runs=0", `-max_len=${maxLen(t)}`, "-rss_limit_mb=4096", "-timeout=60", ...(CFG[t].extra ?? []), dir],
+      // artifacts (a slow input under the unoptimized build) go to out/, not cwd
+      [fuzzExe(t, "cov"), "-runs=0", `-max_len=${maxLen(t)}`, "-rss_limit_mb=4096", "-timeout=60",
+        `-artifact_prefix=${out}/`, "-report_slow_units=100000", ...(CFG[t].extra ?? []), dir],
       { env: { ...process.env, LLVM_PROFILE_FILE: join(prof, `${t}-%p.profraw`) }, stdout: "ignore", stderr: "ignore" },
     );
     await proc.exited;
@@ -333,7 +335,9 @@ if (checkCrashes) {
     if (!hasExe(t, oneSan)) continue;
     for (const path of listArtifacts(t)) {
       n++;
-      const rc = await run(fuzzExe(t, oneSan), [...(CFG[t].extra ?? []), path]);
+      // -timeout: a slow-unit / timeout artifact that regresses to a hang
+      // fails instead of running for libFuzzer's default 1200 s
+      const rc = await run(fuzzExe(t, oneSan), [`-timeout=${CFG[t].timeout}`, ...(CFG[t].extra ?? []), path]);
       const name = `${t}/${basename(path)}`;
       if (rc !== 0) {
         fail++;
