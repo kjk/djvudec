@@ -347,7 +347,18 @@ bun cmd/build-prof.ts
   `out/fuzz_cov/html/`; `llvmTool()` finds the tools next to the fuzz clang,
   on PATH, or versioned (`llvm-cov-18`). Use it to see what fuzzing never
   reaches (first run: 85.6% of lines; weakest bitmap.c, scaler.c,
-  compose.c). `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
+  compose.c). **AFL++** (Linux/macOS, when `afl-fuzz` + `afl-clang-fast`
+  are on PATH, e.g. `apt install afl++`): the default rotation becomes
+  asan / msan / afl rounds. The AFL++ round builds the same harnesses with
+  `afl-clang-fast` (`out/fuzz_afl/`: ASan+UBSan, persistent mode via
+  libAFLDriver; `out/fuzz_aflcmp/`: CmpLog companion for the main
+  instance), runs one `-M` + `-S` instances over `-jobs` cores with the
+  same dictionaries, state in `fuzz/afl/<target>/` (gitignored). Finds flow
+  both ways: the main instance imports `fuzz/corpus/<t>` (`-F`), libFuzzer
+  reads `fuzz/afl/<t>/*/queue` as extra read-only corpus dirs. AFL crashes
+  are copied to `fuzz/crashes/<t>/afl-<hash>` and replay with `-repro` /
+  `-check-crashes` on the libFuzzer build. `-afl` = AFL++ only,
+  `-no-afl` = leave it out. Not in CI. `fuzz/corpus/` is gitignored; `fuzz/crashes/<target>/`
   is tracked so crash inputs become regression seeds.
 - GitHub Actions: `.github/workflows/ci.yml` (Windows MSVC + full oracle tests
   + amalgamation, Windows clang crash regression, Linux clang + full oracle +

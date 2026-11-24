@@ -137,6 +137,11 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- AFL++ joins the default fuzz rotation when installed (asan / msan / afl
+  rounds): afl-clang-fast builds of the same harnesses (ASan+UBSan +
+  a CmpLog companion), main + secondaries over all cores, corpus shared
+  with libFuzzer both ways (-F import; AFL queues as extra libFuzzer corpus
+  dirs), crashes copied to fuzz/crashes/<t>/afl-<hash>.
 - `bun cmd/fuzz.ts -coverage`: source-based coverage of src/ from the fuzz
   corpora (llvm-profdata + llvm-cov, per-file table + HTML in
   out/fuzz_cov/html). First run: 85.6% lines / 66.9% branches; least covered

@@ -188,10 +188,18 @@ export const isFuzzTarget = (s: string): s is FuzzTarget =>
 //                        (-fprofile-instr-generate -fcoverage-mapping), for
 //                        `fuzz.ts -coverage` reports. libFuzzer only
 //                        supplies main() to replay the corpus.
-export type FuzzSan = "asan" | "msan" | "cov";
+//   afl    out/fuzz_afl    AFL++ (afl-clang-fast, libFuzzer harness via its
+//                         libAFLDriver, persistent mode) with ASan + UBSan
+//   aflcmp out/fuzz_aflcmp AFL++ CmpLog companion (AFL_LLVM_CMPLOG, no
+//                         sanitizer), passed to afl-fuzz -c
+//   Neither builds the diff target.
+export type FuzzSan = "asan" | "msan" | "cov" | "afl" | "aflcmp";
+const isAflSan = (s: FuzzSan) => s === "afl" || s === "aflcmp";
+// AFL++ is Linux/macOS only; use it when afl-fuzz + afl-clang-fast are on PATH.
+export const aflAvailable = (): boolean =>
+  !isWindows && !!Bun.which("afl-fuzz") && !!Bun.which("afl-clang-fast");
 export const msanSupported = !isWindows && !isMac;
-const fuzzDir = (san: FuzzSan) =>
-  `${ROOT}/out/${san === "msan" ? "fuzz_msan" : san === "cov" ? "fuzz_cov" : "fuzz"}`;
+const fuzzDir = (san: FuzzSan) => `${ROOT}/out/${san === "asan" ? "fuzz" : `fuzz_${san}`}`;
 const FUZZ_DIR = fuzzDir("asan");
 export const ubsanEnabled = () => !isWindows && process.env.DJVU_FUZZ_UBSAN !== "0";
 
@@ -217,13 +225,17 @@ export async function buildFuzz(
     if (!msanSupported) throw new Error("MemorySanitizer needs Linux (clang has no MSan on Windows/macOS)");
     targets = targets.filter((t) => t !== "diff");
   }
+  if (isAflSan(san)) {
+    if (!aflAvailable()) throw new Error("AFL++ not found (afl-fuzz / afl-clang-fast on PATH; e.g. apt install afl++)");
+    targets = targets.filter((t) => t !== "diff");
+  }
   const FUZZ_DIR = fuzzDir(san);
   const fuzzExeS = (t: FuzzTarget) => fuzzExe(t, san);
   mkdirSync(FUZZ_DIR, { recursive: true });
   const libUnits = LIB_SRCS.map((s) => ({
     src: `${ROOT}/${s}`,
     obj: `${FUZZ_DIR}/${objBase(s)}.o`,
-    extra: FUZZ_NO_TRACE_CMP.has(s) ? "-fno-sanitize-coverage=trace-cmp" : "",
+    extra: FUZZ_NO_TRACE_CMP.has(s) && !isAflSan(san) ? "-fno-sanitize-coverage=trace-cmp" : "",
   }));
   const tgtUnits = targets.map((t) => ({
     t,
@@ -236,11 +248,18 @@ export async function buildFuzz(
     for (const t of targets) rmSync(fuzzExeS(t), { force: true });
   }
 
-  const clang = resolveFuzzClang();
+  // afl-clang-fast reads its mode from the environment (at compile AND link)
+  // and turns -fsanitize=fuzzer into its own driver.
+  const clang = isAflSan(san) ? "afl-clang-fast" : resolveFuzzClang();
+  const env: Record<string, string | undefined> = { ...process.env, AFL_QUIET: "1" };
+  if (san === "afl") { env.AFL_USE_ASAN = "1"; env.AFL_USE_UBSAN = "1"; }
+  if (san === "aflcmp") env.AFL_LLVM_CMPLOG = "1";
   // UBSan non-recoverable so a finding aborts and libFuzzer saves the input
   // (recoverable UBSan only logs, which a fuzzer never notices).
   const sanitize =
-    san === "cov"
+    isAflSan(san)
+      ? "fuzzer"
+      : san === "cov"
       ? "fuzzer -fprofile-instr-generate -fcoverage-mapping"
       : san === "msan"
       ? "memory,fuzzer -fsanitize-memory-track-origins"
@@ -270,7 +289,7 @@ export async function buildFuzz(
 
   console.log(`building fuzz targets [${targets.join(" ")}] (clang+${sanitize}; ${clang})...`);
   await Promise.all(
-    stale.map((u) => $`${clang} ${{ raw: cflags }} ${{ raw: u.extra }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`),
+    stale.map((u) => $`${clang} ${{ raw: cflags }} ${{ raw: u.extra }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`.env(env)),
   );
   for (const u of staleExes) {
     if (u.t === "diff") {
@@ -280,7 +299,7 @@ export async function buildFuzz(
       await $`${clangxx} -fsanitize=${{ raw: sanitize }} ${{ raw: [...libObjs, u.obj, ...oracle.objs].join(" ") }} ${{ raw: oracle.linkLibs }} -o ${fuzzExeS(u.t)}`;
       continue;
     }
-    await $`${clang} -fsanitize=${{ raw: sanitize }} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExeS(u.t)}`;
+    await $`${clang} -fsanitize=${{ raw: sanitize }} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExeS(u.t)}`.env(env);
   }
   if (isWindows && san === "asan") await copyAsanRuntimeDll(FUZZ_DIR);
   console.log("built fuzz targets");

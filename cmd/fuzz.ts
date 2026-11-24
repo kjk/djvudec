@@ -36,6 +36,16 @@
 // is skipped there). -msan / -asan pin one; -msan also applies to -repro,
 // -check-crashes and -minimize.
 //
+// AFL++: when afl-fuzz + afl-clang-fast are installed (Linux/macOS), the
+// default rotation adds an AFL++ round (asan, msan, afl, ...): the same
+// harnesses built with afl-clang-fast (ASan+UBSan, persistent mode via
+// libAFLDriver) plus a CmpLog companion (-c), one main + secondary instances
+// over -jobs cores, the libFuzzer dictionaries (-x). The two engines share
+// finds both ways: afl-fuzz imports fuzz/corpus/<t> (-F) and libFuzzer reads
+// fuzz/afl/<t>/*/queue as extra corpus dirs. AFL crashes are copied into
+// fuzz/crashes/<t>/ (afl-<hash>) so -repro / -check-crashes replay them on
+// the libFuzzer build. -afl runs only AFL++; -no-afl leaves it out.
+//
 // The fuzzers are always rebuilt from scratch. build-lib.ts does track sources
 // and the shared headers, but not the compile FLAGS, and this build's flags
 // vary by environment: DJVU_FUZZ_UBSAN switches the sanitizer set
@@ -61,6 +71,7 @@ import {
   mkdirSync,
   readdirSync,
   copyFileSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -76,6 +87,7 @@ import {
   isFuzzTarget,
   llvmTool,
   msanSupported,
+  aflAvailable,
   type FuzzSan,
   type FuzzTarget,
 } from "./build-lib";
@@ -137,6 +149,8 @@ function usage(): never {
   -reseed          (re)extract seeds into every selected corpus
   -asan / -msan    only the ASan+UBSan / MemorySanitizer build (default on
                    Linux: alternate rounds; elsewhere ASan only)
+  -afl / -no-afl   only AFL++ / no AFL++ rounds (default: AFL++ rounds join
+                   the rotation when afl-fuzz is installed)
   -repro FILE      replay one artifact (target from fuzz/crashes/<target>/)
   -check-crashes   replay every fuzz/crashes/<target>/* artifact (CI)
   -minimize        shrink each selected target's corpus (-merge=1)
@@ -157,6 +171,7 @@ let minimize = false;
 let coverage = false;
 let reseed = false;
 let sanMode: FuzzSan | "auto" = "auto";
+let noAfl = false;
 let targets: FuzzTarget[] = FUZZ_TARGETS.filter((t) => !(isWindows && t === "diff"));
 
 function intArg(v: string | undefined, name: string): number {
@@ -180,6 +195,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "-reseed") reseed = true;
   else if (a === "-asan") sanMode = "asan";
   else if (a === "-msan") sanMode = "msan";
+  else if (a === "-afl") sanMode = "afl";
+  else if (a === "-no-afl") noAfl = true;
   else if (a === "-target") {
     const list = (args[++i] ?? usage()).split(",").filter(Boolean);
     for (const t of list) {
@@ -282,12 +299,26 @@ if (coverage) {
 }
 
 // Fuzzing alternates sanitizer builds by round; every other mode uses one.
+if (sanMode === "afl" && !aflAvailable()) {
+  console.error("-afl: AFL++ not found (afl-fuzz / afl-clang-fast on PATH; e.g. apt install afl++)");
+  process.exit(2);
+}
 const fuzzSans: FuzzSan[] =
-  sanMode !== "auto" ? [sanMode] : msanSupported ? ["asan", "msan"] : ["asan"];
+  sanMode !== "auto"
+    ? [sanMode]
+    : [
+        "asan",
+        ...(msanSupported ? (["msan"] as FuzzSan[]) : []),
+        ...(aflAvailable() && !noAfl ? (["afl"] as FuzzSan[]) : []),
+      ];
 const modeOnly = checkCrashes || minimize;
-for (const s of modeOnly ? [oneSan] : fuzzSans) await buildFuzz(true, targets, s);
-// the diff target links the uninstrumented libdjvu oracle: no MSan build
-const hasExe = (t: FuzzTarget, s: FuzzSan) => !(s === "msan" && t === "diff");
+for (const s of modeOnly ? [oneSan] : fuzzSans) {
+  await buildFuzz(true, targets, s);
+  if (s === "afl") await buildFuzz(true, targets, "aflcmp");
+}
+// the diff target links the uninstrumented libdjvu oracle: no MSan or AFL++
+// build of it
+const hasExe = (t: FuzzTarget, s: FuzzSan) => !((s === "msan" || s === "afl") && t === "diff");
 for (const t of targets) {
   mkdirSync(corpusDir(t), { recursive: true });
   mkdirSync(crashDir(t), { recursive: true });
@@ -397,10 +428,86 @@ process.on("SIGINT", () => {
   interrupted = true;
 });
 
+// AFL++ state per target: fuzz/afl/<t>/<instance>/{queue,crashes,...}.
+const aflDir = (t: FuzzTarget) => join(FUZZ, "afl", t);
+const aflQueues = (t: FuzzTarget): string[] => {
+  const d = aflDir(t);
+  if (!existsSync(d)) return [];
+  return readdirSync(d)
+    .map((i) => join(d, i, "queue"))
+    .filter((q) => existsSync(q));
+};
+
+// Copy AFL++ crashes into fuzz/crashes/<t>/ as afl-<content hash> (dedupes
+// across rounds; replayable with -repro on the libFuzzer build).
+function collectAflCrashes(t: FuzzTarget): void {
+  const d = aflDir(t);
+  if (!existsSync(d)) return;
+  for (const inst of readdirSync(d)) {
+    const cd = join(d, inst, "crashes");
+    if (!existsSync(cd)) continue;
+    for (const f of readdirSync(cd)) {
+      if (!f.startsWith("id:")) continue;
+      const data = readFileSync(join(cd, f));
+      const h = new Bun.CryptoHasher("sha1").update(data).digest("hex").slice(0, 16);
+      const dst = join(crashDir(t), `afl-${h}`);
+      if (!existsSync(dst)) copyFileSync(join(cd, f), dst);
+    }
+  }
+}
+
+// One AFL++ round for target t: main (-M) + secondaries (-S) over -jobs
+// cores, each stopping after secs (-V). A secondary that fails
+// to start is reported (its output is otherwise discarded).
+async function runAfl(t: FuzzTarget, secs: number): Promise<number> {
+  const out = aflDir(t);
+  mkdirSync(out, { recursive: true });
+  const dict = join(DICTS, `${inputKind(t)}.dict`);
+  const env = {
+    ...process.env,
+    AFL_NO_UI: "1",
+    AFL_AUTORESUME: "1",
+    AFL_SKIP_CPUFREQ: "1",
+    AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: "1",
+    AFL_IMPORT_FIRST: "1",
+  };
+  const procs = [];
+  for (let i = 0; i < jobs; i++) {
+    const args = [
+      "-i", corpusDir(t), "-o", out,
+      i === 0 ? "-M" : "-S", i === 0 ? "main" : `s${i}`,
+      // -F (import libFuzzer's corpus) is main-only; the secondaries get
+      // it through the main's queue. CmpLog on the main only too: AFL++
+      // recommends one or two CmpLog instances, not all.
+      ...(i === 0 ? ["-F", corpusDir(t), "-c", fuzzExe(t, "aflcmp")] : []),
+      "-V", String(secs),
+      "-t", `${CFG[t].timeout * 1000}+`,
+      "-m", "none",
+      ...(existsSync(dict) ? ["-x", dict] : []),
+      "--", fuzzExe(t, "afl"),
+    ];
+    procs.push(
+      Bun.spawn(["afl-fuzz", ...args], {
+        env,
+        stdout: i === 0 ? "inherit" : "ignore",
+        stderr: i === 0 ? "inherit" : "ignore",
+      }),
+    );
+  }
+  const codes = await Promise.all(procs.map((p) => p.exited));
+  codes.slice(1).forEach((c, i) => {
+    if (c !== 0) console.error(`afl-fuzz secondary s${i + 1} exited ${c}`);
+  });
+  collectAflCrashes(t);
+  return codes[0];
+}
+
 function fuzzArgs(t: FuzzTarget, secs: number): string[] {
   const c = CFG[t];
   return [
     corpusDir(t),
+    // AFL++ finds, read-only (new libFuzzer units go to the first dir)
+    ...aflQueues(t),
     `-artifact_prefix=${crashDir(t)}/`,
     `-max_len=${maxLen(t)}`,
     ...dictArg(t),
@@ -435,7 +542,7 @@ while (!interrupted) {
     // A single target just runs until killed (one very long slice).
     const secs = one ? 365 * 24 * 3600 : slice * CFG[t].weight;
     console.log(`\n=== round ${round} (${san}): ${t} for ${secs}s ===`);
-    rc = await run(fuzzExe(t, san), fuzzArgs(t, secs));
+    rc = san === "afl" ? await runAfl(t, secs) : await run(fuzzExe(t, san), fuzzArgs(t, secs));
     // With jobs == 1 libFuzzer stops at the first finding: move on to the
     // next target (the artifact is listed at the end) instead of quitting.
   }
