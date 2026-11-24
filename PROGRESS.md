@@ -137,6 +137,12 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- BZZ inverse BWT: `pos[markerpos]` was never written, but a corrupt stream
+  can walk onto it -- an uninitialized (fresh buffer) or stale (reused
+  across blocks) read, found by the new MemorySanitizer fuzz build.
+  DjVuLibre memsets its `posn` array, so the slot is now zeroed to match.
+  No effect on valid streams (the walk reaches markerpos only at the end).
+  Regression seed: fuzz/crashes/bzz/msan-uninit-bwt-markerpos.
 - chunks scoped by FORM type like `DjVuFile::decode_chunk` (diff-fuzz
   finding): FORM:DJVU/DJVI backgrounds are BG44 only (PM44/BM44 ignored);
   a standalone FORM:PM44/BM44 is its PM44+BM44 chunks as one refinement

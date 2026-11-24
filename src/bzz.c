@@ -148,6 +148,11 @@ static int bzz_decode_block(bzz_dec *d, djvu_ctx *ctx)
         d->pos_cap = size;
     }
 
+    /* pos[markerpos] is never written below, but a corrupt stream can walk
+       onto it; DjVuLibre memsets posn, so that slot reads 0 there. Ours is
+       reused across blocks (stale) or fresh (uninitialized -- found by the
+       MSan fuzz build). Every other slot < size is written. */
+    d->pos[markerpos] = 0;
     for (i = 0; i < 256; i++) count[i] = 0;
     for (i = 0; i < markerpos; i++) {
         uint32_t c = data[i];
