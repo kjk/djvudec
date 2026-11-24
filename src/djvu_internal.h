@@ -839,6 +839,10 @@ static inline void djvu_render_timings_clear(djvu_render_timings *t)
 /* Composite a color page at ceil(width/subsample) x ceil(height/subsample);
    width/height are the full page dims. subsample==1 is the exact hard-stencil
    composite; subsample>1 anti-aliases the mask by ink coverage. */
+/* Whether DjVuLibre would composite this page in colour (compose.c). When
+   it would not, a compound page renders as its bitonal mask. */
+int djvu_compose_page_legal(djvu_doc *doc, int page_no, const jb2_image *mask,
+                            int width, int height);
 djvu_image *djvu_compose_page(djvu_doc *doc, int page_no, jb2_image *mask,
                               int width, int height, int subsample,
                               djvu_render_timings *t);

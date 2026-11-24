@@ -164,6 +164,26 @@ static void bitonal_accum_run(void *user, int x0, int x1, int py)
     acc_add(row + cx1, x1 - cx1 * c->sub);
 }
 
+/* Expand a GRAY8 image to RGB24 in place of the original (consumed). */
+static djvu_image *image_gray_to_rgb(djvu_ctx *ctx, djvu_image *img)
+{
+    uint8_t *rgb;
+    int x, y;
+    if (!img || img->format != DJVU_FORMAT_GRAY8) return img;
+    rgb = (uint8_t *)djvu_alloc(ctx, (size_t)img->width * img->height * 3);
+    if (!rgb) { djvu_image_destroy(ctx, img); return NULL; }
+    for (y = 0; y < img->height; y++) {
+        const uint8_t *s = img->data + (size_t)y * img->stride;
+        uint8_t *d = rgb + (size_t)y * img->width * 3;
+        for (x = 0; x < img->width; x++, d += 3) d[0] = d[1] = d[2] = s[x];
+    }
+    djvu_free(ctx, img->data);
+    img->data = rgb;
+    img->format = DJVU_FORMAT_RGB24;
+    img->stride = img->width * 3;
+    return img;
+}
+
 /* Rasterize a decoded JB2 mask to top-down gray8 (ink=0, paper=255). */
 static djvu_image *render_bitonal(djvu_ctx *ctx, jb2_image *img, int subsample)
 {
@@ -324,6 +344,12 @@ static djvu_image *page_render_timed_impl(djvu_doc *doc, int page_no, int subsam
     if (!out && info_ok && !ctx->no_compose &&
         (type == DJVU_PAGE_COMPOUND || type == DJVU_PAGE_PHOTO) &&
         djvu_form_bg_iw44_id(doc, form_off) != NULL) {
+        if (!djvu_compose_page_legal(doc, page_no, mask, pi.width, pi.height)) {
+            /* DjVuLibre's colour render falls back to the bitmap here; the
+               page is still planned as RGB24 (render_plan), so expand. */
+            if (mask) out = image_gray_to_rgb(ctx, render_bitonal(ctx, mask, subsample));
+            goto done;
+        }
         out = djvu_compose_page(doc, page_no, mask, pi.width, pi.height, subsample, t);
         if (out) goto done;
     }
@@ -486,10 +512,14 @@ static int page_render_into_impl(djvu_doc *doc, int page_no, int subsample,
             if (!mask)
                 return -1;
         }
-        rc = djvu_compose_page_into(doc, page_no, mask, pi.width, pi.height,
-                                    subsample, dst, stride);
+        if (djvu_compose_page_legal(doc, page_no, mask, pi.width, pi.height)) {
+            rc = djvu_compose_page_into(doc, page_no, mask, pi.width, pi.height,
+                                        subsample, dst, stride);
+            djvu_doc_jb2_mask_release(doc, mask, mask_owned);
+            return rc;
+        }
+        /* not composited (see djvu_compose_page_legal): render path below */
         djvu_doc_jb2_mask_release(doc, mask, mask_owned);
-        return rc;
     }
 
     /* Fallback: render normally (handles gray, rotation, subsampling) then copy

@@ -448,6 +448,53 @@ static int fgbz_palette_parse(djvu_ctx *ctx, const uint8_t *fgbz,
     return 0;
 }
 
+/* Dimensions from the primary (serial 0) IW44 chunk header of chunk_id in
+   the form, without decoding. 0 on success. */
+static int iw44_primary_dims(djvu_doc *doc, uint32_t form_off, const char *chunk_id,
+                             int *w, int *h)
+{
+    uint32_t sz;
+    const uint8_t *p = djvu_form_find_chunk(doc, form_off, chunk_id, &sz, NULL);
+    if (!p || sz < 8 || p[0] != 0) return -1;
+    *w = (p[4] << 8) | p[5];
+    *h = (p[6] << 8) | p[7];
+    return (*w > 0 && *h > 0) ? 0 : -1;
+}
+
+/* DjVuLibre only composites a page in colour when DjVuImage::get_pixmap's
+   checks pass (get_bg_pixmap + stencil): a background whose reduction vs the
+   page is 1..12 and, when there is a mask, a mask the size of the page plus a
+   foreground -- an FGbz palette with exactly one colour index per blit, or an
+   FG44 layer with reduction 1..12. Otherwise get_pixmap returns null and ddjvu
+   renders the bitonal mask instead (or nothing, for a photo page). Matching
+   that keeps damaged / unusual compound pages identical to the oracle; every
+   well-formed page passes. Cheap: IW44 dims come from the chunk headers. */
+int djvu_compose_page_legal(djvu_doc *doc, int page_no, const jb2_image *mask,
+                            int width, int height)
+{
+    uint32_t form_off = doc->pages[page_no].form_off, sz;
+    const char *bg_id = djvu_form_bg_iw44_id(doc, form_off);
+    const uint8_t *fgbz;
+    int w, h, red, legal;
+
+    if (!bg_id || iw44_primary_dims(doc, form_off, bg_id, &w, &h) != 0) return 0;
+    red = djvu_compute_red(width, height, w, h);
+    if (red < 1 || red > 12) return 0;
+    if (!mask) return 1;
+    if (mask->width != width || mask->height != height) return 0;
+    fgbz = djvu_form_find_chunk(doc, form_off, "FGbz", &sz, NULL);
+    if (fgbz) {
+        fgbz_palette fg;
+        legal = fgbz_palette_parse(doc->ctx, fgbz, sz, &fg) == 0 &&
+                fg.ncolor == mask->nblits;
+        fgbz_palette_free(doc->ctx, &fg);
+        return legal;
+    }
+    if (iw44_primary_dims(doc, form_off, "FG44", &w, &h) != 0) return 0;
+    red = djvu_compute_red(width, height, w, h);
+    return red >= 1 && red <= 12;
+}
+
 static int compose_background_topdown_rgb(djvu_doc *doc, uint32_t form_off,
                                           int width, int height,
                                           uint8_t *dst, int stride,

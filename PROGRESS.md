@@ -137,6 +137,16 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- colour composite only when DjVuLibre would (diff-fuzz finding):
+  `DjVuImage::get_pixmap` + `stencil` require a background with reduction
+  1..12 and, with a mask, a page-sized mask plus a foreground (FGbz palette
+  with one colour index per blit, or FG44 with reduction 1..12); otherwise
+  ddjvu renders the bitonal mask. We composited anyway (black FG when no FG,
+  FG44 reduction clamped to 1, palette/blit count mismatch, BG reduction
+  13..15). `djvu_compose_page_legal` (IW44 dims from chunk headers, no
+  decode) now gates both render paths; an illegal compound page renders its
+  mask expanded to RGB24, keeping the format `djvu_page_render_info`
+  promises. Regression seeds: fuzz/crashes/diff (11).
 - JB2 blit positions wrap like DjVuLibre's (diff-fuzz finding): JB2Blit
   stores left/bottom as unsigned short, so a decoded bottom of -12 is 65524
   (off the page, not drawn) where we clipped the blit and painted its visible
