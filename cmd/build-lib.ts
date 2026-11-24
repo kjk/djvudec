@@ -176,6 +176,13 @@ export const isFuzzTarget = (s: string): s is FuzzTarget =>
   (FUZZ_TARGETS as readonly string[]).includes(s);
 
 const FUZZ_DIR = `${ROOT}/out/fuzz`;
+
+// Numeric kernels (wavelet transform, color conversion, scaling, compositing)
+// keep edge coverage but drop -fsanitize=fuzzer's comparison tracing: a perf
+// profile of the doc target spent ~45% of its time in
+// __sanitizer_cov_trace_*cmp* called from these loops, where cmp feedback
+// (solving magic values) buys nothing.
+const FUZZ_NO_TRACE_CMP = new Set(["src/iw44.c", "src/scaler.c", "src/compose.c"]);
 export function fuzzExe(t: FuzzTarget): string {
   return `${FUZZ_DIR}/djvudec_fuzz_${t}${isWindows ? ".exe" : ""}`;
 }
@@ -191,11 +198,13 @@ export async function buildFuzz(
   const libUnits = LIB_SRCS.map((s) => ({
     src: `${ROOT}/${s}`,
     obj: `${FUZZ_DIR}/${objBase(s)}.o`,
+    extra: FUZZ_NO_TRACE_CMP.has(s) ? "-fno-sanitize-coverage=trace-cmp" : "",
   }));
   const tgtUnits = targets.map((t) => ({
     t,
     src: `${ROOT}/test/fuzz_${t}.c`,
     obj: `${FUZZ_DIR}/fuzz_${t}.o`,
+    extra: "",
   }));
   if (clean) {
     for (const u of [...libUnits, ...tgtUnits]) rmSync(u.obj, { force: true });
@@ -226,7 +235,7 @@ export async function buildFuzz(
 
   console.log(`building fuzz targets [${targets.join(" ")}] (clang+${sanitize}; ${clang})...`);
   await Promise.all(
-    stale.map((u) => $`${clang} ${{ raw: cflags }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`),
+    stale.map((u) => $`${clang} ${{ raw: cflags }} ${{ raw: u.extra }} -I${ROOT}/src -c -o ${u.obj} ${u.src}`),
   );
   for (const u of staleExes) {
     await $`${clang} -fsanitize=${sanitize} ${{ raw: [...libObjs, u.obj].join(" ") }} ${{ raw: CLANG_C_LINK_LIBS }} -o ${fuzzExe(u.t)}`;

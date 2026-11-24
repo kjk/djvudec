@@ -23,7 +23,7 @@ enum { FUZZ_MAX_PAGES = 20 };
  * past this budget get only the subsampled render (plus text, zones, links) --
  * every codec is still exercised; only the redundant full-res composite is
  * skipped. */
-#define FUZZ_MAX_FULLRES_PIXELS ((unsigned long long)16 << 20)
+#define FUZZ_MAX_FULLRES_PIXELS ((unsigned long long)4 << 20)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
@@ -52,7 +52,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         const char *id = djvu_doc_page_id(doc, i);
         (void)djvu_doc_page_title(doc, i);
         if (id) (void)djvu_doc_page_by_name(doc, id);
-        fz_drive_page(doc, ctx, i, 4, (opts >> 4) & 1, &budget);
+        fz_drive_page(doc, ctx, i, 0, (opts >> 4) & 1, &budget);
     }
     (void)djvu_doc_page_by_name(doc, "#1");
 

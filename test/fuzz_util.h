@@ -24,8 +24,10 @@
 
 /* Full-resolution renders are skipped above this many pixels per page (the
    subsampled render still runs). Full-res composite is the dominant cost per
-   input and adds no codec coverage over the subsampled one on big pages. */
-#define FZ_MAX_FULLRES_PAGE_PIXELS ((unsigned long long)4 << 20)
+   input and adds no codec coverage over the subsampled one on big pages.
+   Per-input cost matters twice: for exec/s, and because libFuzzer replays
+   the whole corpus at the start of every fuzz.ts time slice. */
+#define FZ_MAX_FULLRES_PAGE_PIXELS ((unsigned long long)1 << 20)
 
 static size_t fz_live;
 
@@ -202,6 +204,11 @@ HU_UNUSED static void fz_render(djvu_doc *doc, djvu_ctx *ctx, int page, int sub,
     }
 }
 
+/* sub <= 0 in fz_drive_page: pick the smallest subsample >= 2 whose output
+   is at most this many pixels (real 300-600 dpi pages are 8-50 Mpx; a fixed
+   subsample of 4 still composes millions of pixels per page). */
+#define FZ_SUB_TARGET_PIXELS ((unsigned long long)512 << 10)
+
 /* Full-res + subsampled render (render or render_into), text, zones, links.
    Full-res is skipped on pages above FZ_MAX_FULLRES_PAGE_PIXELS and once
    *fullres_budget (pixels, shared across a document) is spent. */
@@ -222,6 +229,8 @@ HU_UNUSED static void fz_drive_page(djvu_doc *doc, djvu_ctx *ctx, int page, int 
         *fullres_budget -= px;
         fz_render(doc, ctx, page, 1, into);
     }
+    if (sub <= 0)
+        for (sub = 2; sub < 64 && px / ((unsigned long long)sub * sub) > FZ_SUB_TARGET_PIXELS; sub++) {}
     fz_render(doc, ctx, page, sub, into);
 
     text = djvu_page_text(doc, page);

@@ -289,7 +289,12 @@ bun cmd/build-prof.ts
   targets exist for throughput: a whole multi-MB document runs at < 1 exec/s
   under ASan, the codec targets at 20-3000/s. **Per-input cost matters
   twice**: libFuzzer replays the whole corpus at the start of every slice,
-  so keep targets' expensive full-res renders capped (they are).
+  so keep targets' expensive full-res renders capped (they are: full res
+  only up to 1 Mpx/page, otherwise an adaptive subsample to ~0.5 Mpx; doc
+  `-max_len` is 300 KB and its corpus is standalone pages + small whole
+  files). `src/iw44.c`, `scaler.c`, `compose.c` are built with
+  `-fno-sanitize-coverage=trace-cmp` (`FUZZ_NO_TRACE_CMP`): comparison
+  tracing in those numeric loops was ~45% of doc-target time (perf).
   **Seeds:** an empty `fuzz/corpus/<target>/` is filled by `fuzz_seeds`
   (`test/fuzz_seeds.c`), which cuts every deps/ corpus file into per-target
   inputs (`-reseed` redoes it). `fuzz/corpus/` **is** the checkpoint — kill

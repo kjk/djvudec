@@ -79,8 +79,12 @@ type TargetCfg = {
   weight: number; // relative time slice per round
 };
 
+// doc: max_len 300 KB, not the 4 MB it used to be. The doc corpus is
+// standalone single pages cut out of the corpus files (fuzz_seeds) plus whole
+// files that small; multi-MB inputs ran at < 1 exec/s and libFuzzer replays
+// the corpus at the start of every slice.
 const CFG: Record<FuzzTarget, TargetCfg> = {
-  doc: { maxLen: 4_000_000, timeout: 25, slow: 20, weight: 2 },
+  doc: { maxLen: 300_000, timeout: 20, slow: 10, weight: 2 },
   jb2: { maxLen: 300_000, timeout: 10, slow: 5, weight: 2 },
   iw44: { maxLen: 300_000, timeout: 10, slow: 5, weight: 2 },
   bzz: { maxLen: 100_000, timeout: 10, slow: 5, weight: 1 },
@@ -295,8 +299,6 @@ function fuzzArgs(t: FuzzTarget, secs: number): string[] {
     `-max_len=${maxLen(t)}`,
     "-rss_limit_mb=4096",
     `-timeout=${c.timeout}`,
-    // The biggest doc seeds honestly cost seconds under ASan; libFuzzer's
-    // default 10s slow-unit reporter would flag their mutations under load.
     `-report_slow_units=${c.slow}`,
     `-max_total_time=${secs}`,
     "-print_final_stats=1",
