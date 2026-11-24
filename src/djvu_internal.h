@@ -336,8 +336,12 @@ const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
                                     const char *id, uint32_t *out_size,
                                     uint32_t *start);
 
-/* Background/photo IW44 chunk id for this form: "BG44" (normal pages), or
-   "PM44"/"BM44" (standalone FORM:PM44/BM44). NULL if none. */
+/* FORM at form_off is a standalone IW44 photo (FORM:PM44 / FORM:BM44). */
+int djvu_form_is_iw44(djvu_doc *doc, uint32_t form_off);
+
+/* Background/photo IW44 chunk id for this form: "BG44" (FORM:DJVU/DJVI), or
+   "PM44"/"BM44" (standalone FORM:PM44/BM44, whichever comes first; both ids
+   form one refinement chain there). NULL if none. */
 const char *djvu_form_bg_iw44_id(djvu_doc *doc, uint32_t form_off);
 
 /* Parse a decoded (BZZ-decompressed) NAVM payload into an outline tree

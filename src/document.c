@@ -177,8 +177,9 @@ static int page_load_info(djvu_doc *doc, djvu_page_int *pg)
     form_end = off + 8 + pg->form_size;
     if (form_end > len) form_end = (uint32_t)len;
 
-    /* sub-chunks begin after FORM(4) + size(4) + type(4) */
-    pos = off + 12;
+    /* sub-chunks begin after FORM(4) + size(4) + type(4); INFO counts only
+       in FORM:DJVU/DJVI (DjVuFile ignores it in a FORM:PM44/BM44) */
+    pos = djvu_form_is_iw44(doc, off) ? form_end : off + 12;
     while (pos + 8 <= form_end) {
         const uint8_t *id = data + pos;
         uint32_t csize = djvu_rd_u32be(data + pos + 4);
@@ -356,6 +357,13 @@ static void page_index_scan(djvu_doc *doc, djvu_page_int *pg)
 
     if (!doc || !pg) return;
     pg->chunk_flags = 0;
+    /* a standalone FORM:PM44/BM44 is a photo: DjVuLibre ignores mask,
+       foreground, dictionary and INCL chunks in it */
+    if (djvu_form_is_iw44(doc, pg->form_off)) {
+        if (djvu_form_bg_iw44_id(doc, pg->form_off))
+            pg->chunk_flags |= DJVU_PG_BG44;
+        return;
+    }
     if (djvu_form_find_chunk(doc, pg->form_off, "Sjbz", &sz, NULL))
         pg->chunk_flags |= DJVU_PG_SJBZ;
     if (djvu_form_bg_iw44_id(doc, pg->form_off))
@@ -943,14 +951,29 @@ const uint8_t *djvu_form_find_chunk(djvu_doc *doc, uint32_t form_off,
     return NULL;
 }
 
+int djvu_form_is_iw44(djvu_doc *doc, uint32_t form_off)
+{
+    const uint8_t *t;
+    if (!doc || (size_t)form_off + 12 > doc->len) return 0;
+    t = doc->data + form_off + 8;
+    return djvu_tag_eq(t, "PM44") || djvu_tag_eq(t, "BM44");
+}
+
+/* Chunks are scoped by FORM type as in DjVuFile::decode_chunk: a FORM:DJVU
+   (or DJVI) background is BG44 only -- PM44/BM44 chunks there are ignored;
+   a standalone FORM:PM44/BM44 photo is its PM44 and BM44 chunks (either id,
+   one refinement chain; the first one present names the layer). */
 const char *djvu_form_bg_iw44_id(djvu_doc *doc, uint32_t form_off)
 {
     uint32_t sz;
+    const uint8_t *pm, *bm;
     if (!doc) return NULL;
-    if (djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL)) return "BG44";
-    if (djvu_form_find_chunk(doc, form_off, "PM44", &sz, NULL)) return "PM44";
-    if (djvu_form_find_chunk(doc, form_off, "BM44", &sz, NULL)) return "BM44";
-    return NULL;
+    if (!djvu_form_is_iw44(doc, form_off))
+        return djvu_form_find_chunk(doc, form_off, "BG44", &sz, NULL) ? "BG44" : NULL;
+    pm = djvu_form_find_chunk(doc, form_off, "PM44", &sz, NULL);
+    bm = djvu_form_find_chunk(doc, form_off, "BM44", &sz, NULL);
+    if (pm && (!bm || pm < bm)) return "PM44";
+    return bm ? "BM44" : NULL;
 }
 
 djvu_doc *djvu_doc_open(djvu_ctx *ctx, const uint8_t *data, size_t len)

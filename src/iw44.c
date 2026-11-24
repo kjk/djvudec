@@ -1151,14 +1151,30 @@ int djvu_iw44_decode_chunk(iw_pixmap *pm, const uint8_t *data, size_t len)
     return 0;
 }
 
+/* Next PM44 or BM44 chunk at/after *start: in a standalone IW44 photo both
+   ids feed one refinement chain, in file order (DjVuFile::decode_chunk). */
+static const uint8_t *next_photo_chunk(djvu_doc *doc, uint32_t form_off,
+                                       uint32_t *start, uint32_t *sz)
+{
+    uint32_t s1 = *start, s2 = *start, z1 = 0, z2 = 0;
+    const uint8_t *a = djvu_form_find_chunk(doc, form_off, "PM44", &z1, &s1);
+    const uint8_t *b = djvu_form_find_chunk(doc, form_off, "BM44", &z2, &s2);
+    if (a && (!b || a < b)) { *start = s1; *sz = z1; return a; }
+    if (b) { *start = s2; *sz = z2; return b; }
+    return NULL;
+}
+
 int djvu_iw44_decode_form(djvu_doc *doc, uint32_t form_off, const char *chunk_id,
                           iw_pixmap *pm, int max_chunks)
 {
     uint32_t start = 0, sz;
     const uint8_t *chunk;
     int n = 0;
+    int photo = djvu_form_is_iw44(doc, form_off) &&
+                (!strcmp(chunk_id, "PM44") || !strcmp(chunk_id, "BM44"));
 
-    while ((chunk = djvu_form_find_chunk(doc, form_off, chunk_id, &sz, &start)) != NULL) {
+    while ((chunk = photo ? next_photo_chunk(doc, form_off, &start, &sz)
+                          : djvu_form_find_chunk(doc, form_off, chunk_id, &sz, &start)) != NULL) {
         if (max_chunks > 0 && n >= max_chunks) break;
         if (djvu_iw44_decode_chunk(pm, chunk, sz) != 0) return -1;
         n++;

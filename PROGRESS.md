@@ -137,6 +137,12 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- chunks scoped by FORM type like `DjVuFile::decode_chunk` (diff-fuzz
+  finding): FORM:DJVU/DJVI backgrounds are BG44 only (PM44/BM44 ignored);
+  a standalone FORM:PM44/BM44 is its PM44+BM44 chunks as one refinement
+  chain (dims from the first, INFO / Sjbz / FG / dict / INCL ignored, gamma
+  2.2). We let a stray BG44 or INFO define a photo's size and treated a
+  PM44 form with a mask as compound. Regression seeds: fuzz/crashes/diff (2).
 - JB2 MatchedRefineLibraryOnly follows DjVuLibre exactly (diff-fuzz
   finding, traced record by record against an instrumented JB2Image.cpp):
   in an image (Sjbz) DjVuLibre codes only the size and never cross-codes the

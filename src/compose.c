@@ -164,6 +164,7 @@ static double page_gamma(djvu_doc *doc, uint32_t form_off)
     uint32_t sz;
     const uint8_t *info = djvu_form_find_chunk(doc, form_off, "INFO", &sz, NULL);
     double g = 2.2;
+    if (djvu_form_is_iw44(doc, form_off)) return g; /* INFO ignored there */
     if (info && sz >= 9) g = (double)info[8] / 10.0;
     if (g < 0.3) g = 0.3;
     if (g > 5.0) g = 5.0;
