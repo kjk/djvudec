@@ -137,6 +137,35 @@ wavelet paths, caching, and multithreading are impl details, not features.
 NB: we render INFO rotation (render.c, `image_rotate_cw`); the C# port does not.
 
 ## Change log (most recent first)
+- speed pass from fresh winperf profiles (test003C / test033C / test023C):
+  background upscaling, not IW44 decoding, dominated -- `scaler_expand_row4`
+  alone was 34% self on test003C, the scalar vertical lerp 12%, and first-touch
+  page faults on the output image ~22%. Changes (all byte-identical: 1252
+  renders, every corpus file's first/middle/last page at subsamples 1-4,
+  compared with the pre-change binary; oracle suite unchanged):
+  * exact 3x / 4x / 12x row expansion where the NEON table kernels (see
+    "Apple Silicon background scaling" below) don't apply -- x86, and 4x / 12x
+    on 32-bit Arm: each interpolation phase is computed for the whole row with
+    `scaler_interp_row` (SSE2/NEON), then the phases are interleaved with
+    4-byte copies (`scaler_expand_periodic`; not compiled on aarch64);
+  * the vertical lerp uses `scaler_interp_row` instead of a scalar loop (the
+    NEON commit made the same change independently);
+  * every other ratio (fractional ratios at subsample > 1, other integers):
+    gather each output pixel's two neighbours, then one SIMD lerp pass with a
+    per-byte phase (`scaler_lerp_bytes`) instead of the per-pixel scalar loop;
+  * native BGR: with `djvu_ctx_set_bgr` the IW44 color conversion and the
+    FGbz palette produce B,G,R directly, `compose_finalize` is a plain flip,
+    and the direct top-down compositor now also serves BGR and page-cache
+    renders (the path SumatraPDF uses), reusing the cached full-size
+    background instead of copying it into a second full-size buffer.
+  Interleaved before/after (best of 2-3 runs; machine load made absolute times
+  swing up to 2x, the ratios were stable): plain render subsample 1 -6%,
+  subsample 2 -11%, subsample 3 -8% (factor-4 pages -15..23%); SumatraPDF-style
+  render (`djvudec_dump -bench-render -sumatra`, new) first paint at
+  subsample 1 -27..41%, cached repaint -63..72%.
+  Tried and dropped: one fused vertical+horizontal SIMD kernel over
+  per-source-row gathers for every ratio -- byte-exact and good at subsample 2,
+  but 5-8% slower at subsample 1 than the 4-byte-copy interleave.
 - AFL++ joins the default fuzz rotation when installed (asan / msan / afl
   rounds): afl-clang-fast builds of the same harnesses (ASan+UBSan +
   a CmpLog companion), main + secondaries over all cores, corpus shared

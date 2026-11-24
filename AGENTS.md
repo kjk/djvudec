@@ -192,6 +192,13 @@ bun cmd/build-prof.ts
   prints a before/after breakdown per stage (faster of 2 per stage).
   (`djvudec_dump -reps N` changes the rep count, but `bench-perf.ts` parses
   exactly two.)
+  `-sumatra` / `-sumatra-cached` (djvudec_dump `-bench-render` only) time
+  the SumatraPDF engine's way of rendering instead: BGR, per-page cache + lock
+  hooks, `djvu_page_render_into` a buffer allocated and touched outside the
+  timer; `-sumatra` drops the page cache before each timed render (first
+  paint), `-sumatra-cached` keeps it (repaint). Pass them through
+  `bench-perf.ts`-style runs to measure the path SumatraPDF actually takes,
+  which differs from plain `djvu_page_render` (RGB, no cache).
   Same flags on `djvudec_dump`: `bun cmd/build-dump.ts` /
   `djvudec_dump -bench-render -warm 1 -layers file.djvu`.
 - `bun cmd/tests.ts <-all | -rand N | file.djvu ... | -failures path>

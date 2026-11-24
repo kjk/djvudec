@@ -1193,8 +1193,9 @@ static int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 
 /* Convert one planar YCbCr row (int8 samples) to interleaved RGB24.
    y/b/r point at w samples; dst is w*3 bytes. Byte-exact vs scalar recipe. */
+/* bgr != 0 writes B,G,R instead of R,G,B (same values, swapped bytes). */
 static void ycbcr_row_to_rgb(const int8_t *y, const int8_t *b, const int8_t *r,
-                             uint8_t *dst, int w)
+                             uint8_t *dst, int w, int bgr)
 {
     int x = 0;
 #ifdef DJVU_IW44_SSE2
@@ -1221,8 +1222,8 @@ static void ycbcr_row_to_rgb(const int8_t *y, const int8_t *b, const int8_t *r,
             __m128i bu = _mm_packus_epi16(tb, tb);
             /* Pack 8 RGB pixels: unpack to R G B 0 dwords, write 3 bytes each. */
             {
-                __m128i rg = _mm_unpacklo_epi8(ru, gu);
-                __m128i bz = _mm_unpacklo_epi8(bu, _mm_setzero_si128());
+                __m128i rg = _mm_unpacklo_epi8(bgr ? bu : ru, gu);
+                __m128i bz = _mm_unpacklo_epi8(bgr ? ru : bu, _mm_setzero_si128());
                 __m128i pack0 = _mm_unpacklo_epi16(rg, bz); /* px 0-3: R G B 0 */
                 __m128i pack1 = _mm_unpacklo_epi16(_mm_unpackhi_epi64(rg, rg),
                                                    _mm_unpackhi_epi64(bz, bz));
@@ -1269,9 +1270,9 @@ static void ycbcr_row_to_rgb(const int8_t *y, const int8_t *b, const int8_t *r,
             /* Interleave RGB: vst3 writes 8 pixels as RGBRGB... */
             {
                 uint8x8x3_t rgb;
-                rgb.val[0] = ru;
+                rgb.val[0] = bgr ? bu : ru;
                 rgb.val[1] = gu;
-                rgb.val[2] = bu;
+                rgb.val[2] = bgr ? ru : bu;
                 vst3_u8(dst, rgb);
                 dst += 24;
             }
@@ -1286,9 +1287,9 @@ static void ycbcr_row_to_rgb(const int8_t *y, const int8_t *b, const int8_t *r,
         int tr = yv + 128 + t2;
         int tg = t3 - (t2 >> 1);
         int tb = t3 + bv * 2;
-        dst[0] = (uint8_t)clamp255(tr);
+        dst[bgr ? 2 : 0] = (uint8_t)clamp255(tr);
         dst[1] = (uint8_t)clamp255(tg);
-        dst[2] = (uint8_t)clamp255(tb);
+        dst[bgr ? 0 : 2] = (uint8_t)clamp255(tb);
         dst += 3;
     }
 }
@@ -1304,7 +1305,7 @@ static void gray_y_row_to_rgb(const int8_t *y, uint8_t *dst, int w)
     }
 }
 
-static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
+static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip, int bgr)
 {
     djvu_ctx *ctx;
     int w, h, row, color;
@@ -1343,7 +1344,7 @@ static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
             int src_row = flip ? (h - 1 - row) : row;
             size_t off = (size_t)src_row * (size_t)w;
             ycbcr_row_to_rgb(yp + off, bp + off, rp + off,
-                             rgb + (size_t)row * (size_t)w * 3, w);
+                             rgb + (size_t)row * (size_t)w * 3, w, bgr);
         }
     } else {
         for (row = 0; row < h; row++) {
@@ -1356,16 +1357,16 @@ static int iw44_render_rgb_impl(iw_pixmap *pm, uint8_t *rgb, int flip)
     return 0;
 }
 
-int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb)
+int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb, int bgr)
 {
-    return iw44_render_rgb_impl(pm, rgb, 0);
+    return iw44_render_rgb_impl(pm, rgb, 0, bgr);
 }
 
 /* DJVU_DEBUG_ONLY_BEGIN */
 /* Test-harness only (src/debug.c); not in dist/djvu.c. */
 int djvu_iw44_render_rgb(iw_pixmap *pm, uint8_t *rgb)
 {
-    return iw44_render_rgb_impl(pm, rgb, 1);
+    return iw44_render_rgb_impl(pm, rgb, 1, 0);
 }
 
 /* Render a single plane (0=Y,1=Cb,2=Cr) as gray (value+128), using the same

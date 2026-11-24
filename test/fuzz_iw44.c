@@ -38,7 +38,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             (unsigned long long)w * (unsigned long long)h <= FZ_MAX_IW_PIXELS) {
             uint8_t *rgb = (uint8_t *)malloc((size_t)w * (size_t)h * 3);
             if (rgb) {
-                djvu_iw44_render_rgb_raw(pm, rgb);
+                djvu_iw44_render_rgb_raw(pm, rgb, 0);
                 free(rgb);
             }
         }

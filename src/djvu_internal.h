@@ -787,9 +787,11 @@ size_t djvu_iw44_mem_size(const iw_pixmap *pm);
 
 /* Render full-resolution, bottom-up (row 0 = bottom), matching DjVuLibre's
    internal GPixmap orientation; used by the compositor. `rgb` must hold
-   width*height*3 bytes (R,G,B order). Gray images are expanded to gray RGB.
-   Returns 0 on success. */
-int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb);
+   width*height*3 bytes, R,G,B order (B,G,R when bgr != 0 -- the compositor
+   passes ctx->bgr so color output is produced in the caller's byte order
+   from the start). Gray images are expanded to gray RGB. Returns 0 on
+   success. */
+int djvu_iw44_render_rgb_raw(iw_pixmap *pm, uint8_t *rgb, int bgr);
 
 /* DJVU_DEBUG_ONLY_BEGIN */
 /* Test-harness only (src/debug.c). Everything between the DJVU_DEBUG_ONLY

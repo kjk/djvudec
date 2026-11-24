@@ -50,6 +50,9 @@ Verification after any speed change:
 | Word-scan RLE encode + ink-run visit (`bitmap.c`) | Replaces hot `memchr` in compress/stamp | 0/1-only `bm_find_01` |
 | SSE2 `scaler_interp_row` + unrolled RGB fill | Helps 3× BG expand compound pages | `test008C` / `test075C` scale path |
 | red=3 expansion delta table (`scaler_expand_row3`) | Was 17.1% self on `test041C` | Exact 6/16 + 11/16 results per byte difference |
+| Periodic-phase row expansion for exact 3× (x86) / 4× / 12× (`scaler_expand_periodic`): each phase lerped for the whole row with `scaler_interp_row`, then interleaved with 4-byte copies | 4× page −15..23%, 12× −5..10% (plain render) | Byte-exact; superseded the unrolled scalar 4×/12× loops |
+| SIMD vertical lerp + gather/`scaler_lerp_bytes` horizontal pass for every other ratio (fractional ratios at subsample > 1) | Subsample 2/3 renders −8..12% overall | Replaced the per-pixel scalar `hinfo` loop and the generic grouped expander |
+| Native BGR (`djvu_ctx_set_bgr`): IW44 color conversion and FGbz palette produce B,G,R; `compose_finalize` only flips; direct top-down compositor serves BGR + page-cache renders, reusing the cached full-size background | SumatraPDF-style first paint −27..41%, cached repaint −63..72% (subsample 1) | Byte-exact (-verify-render is BGR + cache; -verify-into checks RGB == BGR) |
 | Unrolled exact 4× / 12× row expansion (`scaler_expand_row4/12`) | Removes per-pixel coord load on common reductions | Other integer scales use the grouped path |
 | Direct top-down composite for FGbz / FG44 at subsample 1 | Skips the intermediate bottom-up pixmap + flip | `compose_page_direct_rgb` |
 | IW44 local ZP renorm (`iw_zp_renorm_*`) | `decode_buckets` was 54.7% self on `test043C p5` | a/fence stay in locals across the coefficient loops |
@@ -167,9 +170,9 @@ otherwise.
 
 - **FG44** stamping: FGbz solid runs already ~30% faster composite on
   `test008C`; FG44 still samples often — tile by FG cell when mask is dense.  
-- **`compose_finalize` / BGR flip**: BGR order is already folded into the
-  final copy (`djvu_ctx_set_bgr`); what is left is a SIMD (`pshufb`-style)
-  version of that copy.  
+- **`compose_finalize` / BGR flip**: done -- BGR is produced natively, the
+  finalize step is a plain row flip, and SumatraPDF's path (BGR + page cache)
+  now uses the direct top-down compositor at subsample 1.  
 - Bitonal stamp is already run-based — do not over-invest.
 
 ### 6. Allocation / arena
@@ -282,7 +285,7 @@ stay amalgamation-safe (`static`, unique names). AVX2 only via runtime dispatch.
 | `compose_finalize` BGR/flip | Open (small) |
 | Bitonal run stamp | **Done** (algorithmic) |
 | Color run stamp | **Done** (FGbz big win) |
-| Scaler bilinear | **Done** for `scaler_interp_row` (SSE2/NEON) and red=3 row expansion (NEON); other paths scalar |
+| Scaler bilinear | **Done**: vertical lerp, periodic 3×/4×/12× expansion and the generic gather + `scaler_lerp_bytes` pass are SSE2/NEON; only the horizontal pre-reduction path (ratios < 1/2) is still scalar |
 | JB2/ZP | **Not vectorizable** |
 
 DjvuNet SIMD inspiration was YCbCr→RGB (integer recipe matches our scalar;

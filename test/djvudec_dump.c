@@ -42,12 +42,44 @@ static void run_info(djvu_doc *doc)
     }
 }
 
+/* -sumatra (1) / -sumatra-cached (2): see usage */
+static int g_sumatra_mode;
+
+/* One timed render the SumatraPDF way: djvu_page_render_into a BGR caller
+   buffer (sized from djvu_page_render_info, allocated and touched outside the
+   timer, like a reused DIB). Mode 1 drops the page cache first (first paint). */
+static int bench_render_page_sumatra(djvu_doc *doc, int page0, int warm, int sub,
+                                     double *total_ms)
+{
+    djvu_render_info ri;
+    uint8_t *dst;
+    int stride, w, rc;
+    double t0;
+
+    if (djvu_page_render_info(doc, page0, sub, &ri) != 0) return 1;
+    stride = ri.width * (ri.format == DJVU_FORMAT_GRAY8 ? 1 : 3);
+    dst = (uint8_t *)malloc((size_t)stride * (size_t)ri.height);
+    if (!dst) return 1;
+    memset(dst, 0, (size_t)stride * (size_t)ri.height);
+    for (w = 0; w < warm; w++)
+        if (djvu_page_render_into(doc, page0, sub, dst, stride) != 0) { free(dst); return 1; }
+    if (g_sumatra_mode == 1) djvu_doc_drop_page_cache(doc, page0);
+    t0 = djvu_bench_now_ms();
+    rc = djvu_page_render_into(doc, page0, sub, dst, stride);
+    *total_ms = djvu_bench_now_ms() - t0;
+    free(dst);
+    return rc != 0;
+}
+
 static int bench_render_page(djvu_doc *doc, int page0, int warm, int sub,
                              double *total_ms, djvu_render_timings *layer)
 {
     djvu_ctx *ctx = doc->ctx;
     int w;
     double t0;
+
+    if (g_sumatra_mode)
+        return bench_render_page_sumatra(doc, page0, warm, sub, total_ms);
 
     for (w = 0; w < warm; w++) {
         djvu_image *img = djvu_page_render_timed(doc, page0, sub, NULL);
@@ -275,6 +307,10 @@ static void usage(void)
         "  -reps N            timed renders/page for -bench-render (default 2)\n"
         "  -sub N             with -bench-render/-profile: subsample N (default 1)\n"
         "  -layers            with -bench-render: per-stage jb2/iw44/composite/rotate\n"
+        "  -sumatra           with -bench-render: render like SumatraPDF (BGR, page\n"
+        "                     cache + lock hooks, render_into a reused buffer); the\n"
+        "                     page cache is dropped before each timed render\n"
+        "  -sumatra-cached    same, keeping the page cache (repaint from cache)\n"
         "  -profile N         render page N times with winperf section marks (see\n"
         "                     bun cmd/prof.ts); needs -page for multipage files\n"
         "  -profile-document N  open, render every page, close N times with\n"
@@ -318,6 +354,8 @@ static int parse_args(int argc, char **argv, opts_t *o)
         else if (!strcmp(argv[i], "-title")) o->do_title = 1;
         else if (!strcmp(argv[i], "-bench-render")) o->do_bench_render = 1;
         else if (!strcmp(argv[i], "-cache-probe")) o->do_cache_probe = 1;
+        else if (!strcmp(argv[i], "-sumatra")) g_sumatra_mode = 1;
+        else if (!strcmp(argv[i], "-sumatra-cached")) g_sumatra_mode = 2;
         else if (!strcmp(argv[i], "-layers")) o->do_layers = 1;
         else if (!strcmp(argv[i], "-profile") && i + 1 < argc) {
             o->profile_loops = atoi(argv[++i]);
@@ -509,13 +547,15 @@ int main(int argc, char **argv)
     }
 
     djvu_init();
-    if (o.do_cache_probe)
+    if (o.do_cache_probe || g_sumatra_mode)
         ctx = djvu_ctx_new(NULL, NULL, hu_lock_cb, hu_unlock_cb, hu_on_error, NULL);
     else
         ctx = djvu_ctx_new(NULL, NULL, NULL, NULL, hu_on_error, NULL);
     if (!ctx) { free(data); return 1; }
-    if (o.do_cache_probe)
+    if (o.do_cache_probe || g_sumatra_mode)
         djvu_ctx_set_cache_per_page(ctx, 1);
+    if (g_sumatra_mode)
+        djvu_ctx_set_bgr(ctx, 1);
 
     if (o.do_bzz) {
         size_t olen = 0;
